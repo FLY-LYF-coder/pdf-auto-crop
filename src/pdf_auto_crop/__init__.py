@@ -8,6 +8,8 @@ CropBox mechanism rather than rasterisation.
 Public API entry points:
     - ``pdf_auto_crop.cli``  -- command-line interface.
     - ``pdf_auto_crop.gui``  -- tkinter front-end with a manual crop editor.
+    - ``pdf_auto_crop.compositor``  -- arrange figures from several PDFs on one
+      sheet and write them out as a single vector PDF.
     - ``pdf_auto_crop.config.CropConfig``  -- configuration dataclass.
     - ``pdf_auto_crop.smart_detector.smart_detect_figures``  -- default,
       layout-adaptive algorithm.
@@ -21,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 #: Names re-exported lazily so that ``import pdf_auto_crop`` stays cheap (the
 #: detectors pull in OpenCV and NumPy, which the lightweight config/history
@@ -31,6 +33,9 @@ _LAZY_EXPORTS = {
     "detect_figures": "pdf_auto_crop.detector",
     "CropConfig": "pdf_auto_crop.config",
     "ManualBoxStore": "pdf_auto_crop.gui_edit",
+    "Composition": "pdf_auto_crop.compositor",
+    "Figure": "pdf_auto_crop.compositor",
+    "Placement": "pdf_auto_crop.compositor",
 }
 
 __all__ = ["__version__", *sorted(_LAZY_EXPORTS)]

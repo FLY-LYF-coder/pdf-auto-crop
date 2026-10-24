@@ -302,6 +302,9 @@ class App(tk.Tk):
         ttk.Button(bar, text="选择文件夹…", command=self._choose_folder).grid(
             row=0, column=2, padx=6, sticky="w"
         )
+        ttk.Button(bar, text="组合…", command=self._open_compositor).grid(
+            row=0, column=2, padx=(6, 0), sticky="w"
+        )
         ttk.Label(bar, text="输入:").grid(row=0, column=3, padx=(10, 4), sticky="e")
         # An explicit width caps each entry's *natural* size.  Without it a
         # long path sets that width and shoves the "分析" button off the right
@@ -563,6 +566,22 @@ class App(tk.Tk):
             "已选择文件夹。点「分析」查看第一页，或直接点「导出」批量处理。",
             level=gui_hints.LEVEL_OK,
         )
+
+    def _open_compositor(self) -> None:
+        """Open the figure compositor in its own window.
+
+        Imported lazily: the compositor pulls in the compositing module, and
+        a user who only ever crops should not pay for it.
+        """
+        try:
+            from .compositor_gui import open_compositor
+        except ImportError as exc:  # pragma: no cover -- environment dependent
+            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
+            return
+        try:
+            open_compositor(self, self._last_config or CropConfig())
+        except Exception as exc:  # noqa: BLE001 -- reported in the status bar
+            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
 
     def _choose_output(self) -> None:
         folder = filedialog.askdirectory(title="选择输出文件夹")

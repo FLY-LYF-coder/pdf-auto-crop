@@ -37,6 +37,10 @@ preserved.
 | Crop + re-rasterise | Fuzzy pixels | Small |
 | `pdf-auto-crop` (CropBox) | Crisp vectors, real text | Small-medium |
 
+The same idea carries the other way round: the **组合** (compose) window takes
+figures from several PDFs and writes them onto one sheet as vector content
+with real, selectable labels — no rasterising anywhere.
+
 ---
 
 ## Installation
@@ -71,7 +75,7 @@ python scripts/make_test_pdfs.py
 pytest tests/ -q
 ```
 
-The suite is 263 tests.  Two of them deserve a note, because they encode bugs
+The suite is 291 tests.  Three of them deserve a note, because they encode bugs
 that a coordinate comparison cannot see:
 
 - `test_crop_lands_on_the_requested_region` puts a marker of a unique colour in
@@ -81,10 +85,18 @@ that a coordinate comparison cannot see:
   compares numbers in a single convention.
 - `test_shown_boxes_equal_the_exported_cropbox` asserts that what the GUI draws
   is what lands in the file, including the white border.
+- `test_bake_reproduces_what_the_viewer_sees` does the same for the
+  compositor: it renders the source page, finds the coloured figure in the
+  *pixels*, and demands the baked figure match it — for every page rotation.
+  The oracle involves no coordinate arithmetic at all, so a mistake in the
+  bake cannot satisfy both sides.  (It has to be a non-square page with an
+  off-centre figure: a square page with a centred figure is symmetric under
+  every rotation and hides exactly the mistakes the test is for.)
 
 The GUI itself is exercised end to end by
-`python scripts/gui_edit_screenshot.py`, which drives the real window with
-synthetic mouse events and writes screenshots to `diag_out/`.  Both that
+`python scripts/gui_edit_screenshot.py` and
+`python scripts/compositor_screenshot.py`, which drive the real windows with
+synthetic mouse events and write screenshots to `diag_out/`.  Both that
 directory and the generated fixtures are git-ignored.
 
 ---
@@ -234,6 +246,71 @@ preserved exactly.
 
 > Manual editing is per-file.  In batch mode (a folder of PDFs) there is no
 > single page to draw on, so the export is purely automatic.
+
+---
+
+## Composing figures
+
+The cropping window splits one page into its figures.  The **组合** (compose)
+window does the other half of the job: take figures from *several* PDFs,
+arrange them on one sheet, number them, and write the result as a single PDF.
+
+Open it with the **组合…** button in the main window's toolbar.
+
+### The workflow
+
+1. **导入 PDF…** — pick a PDF and the same detector used for cropping finds
+   the figures on every page; they land in the palette on the left.
+   **导入已裁剪的图…** takes a PDF that is already one figure per page and
+   uses each page whole.
+2. **Double-click** a palette entry to drop it onto the sheet, or drag it in
+   from the list.
+3. **Drag** a figure to move it, drag an orange corner handle to resize it.
+4. **Type a label** in the properties panel — `(a)`, `(b)`, … — or let
+   **自动编号** number them in order.
+5. **导出 PDF…** writes the sheet.
+
+### On the sheet
+
+| Gesture | Effect |
+| ------- | ------ |
+| Drag a figure | Move it |
+| Drag an orange corner handle | Resize, keeping the figure's aspect ratio |
+| Arrow keys | Nudge 1 pt; hold `Shift` for 10 pt |
+| `Delete` | Remove the selected figure |
+| 置于顶层 / 置于底层 | Change the stacking order |
+
+A scientific figure must not be stretched, so resizing keeps the aspect
+ratio: the figure grows away from the corner opposite the handle you drag.
+
+**横向排列** lays the figures out in a row, **网格排列** in a grid.  Both give
+every figure the same cell, so the sheet comes out even rather than ragged;
+a figure whose aspect differs from the cell is fitted into it, not
+stretched.
+
+Labels are **图下** (centred under the figure — the journal convention) by
+default; **角上** puts them in the corner of the figure instead.
+
+### What the output is
+
+The sheet is written with the same vector-preserving mechanism as the
+cropper: each figure is embedded as a Form XObject (the same thing LaTeX's
+`\includegraphics` does for PDF input) and each label is inserted as real,
+selectable text.  Nothing is rasterised, so the result stays sharp at any
+zoom and the text can be searched and copied.
+
+The exported page is either the sheet you arranged (A4 landscape or
+portrait) or, with **适应内容**, exactly as large as the content — which is
+what you want for a figure going into a manuscript.
+
+### Known limits
+
+- The output is large: MuPDF keeps the embedded source page's resources, so
+  a figure lifted out of a dense, image-heavy paper carries the images with
+  it.  Cropping the source page first (this tool's job) keeps the figure
+  small.
+- The sheet holds one copy of each figure.  The same figure cannot be placed
+  twice — import it twice if you need it twice.
 
 ---
 
@@ -480,6 +557,29 @@ doc.close()
 (bottom-left origin) — the same convention `crop_and_save_pdf` expects.  See
 [Coordinate convention](#coordinate-convention).
 
+The compositor has the same kind of entry points:
+
+```python
+from pathlib import Path
+import pymupdf as fitz
+from pdf_auto_crop import compositor as comp
+
+sheet = comp.Composition(width=842, height=595)        # A4 landscape, in points
+for i, fig in enumerate(comp.detect_figures(Path("input.pdf")), start=1):
+    w, h = comp.figure_display_size(fig)
+    sheet.placements.append(comp.Placement(
+        figure=fig,
+        rect=fitz.Rect(20 + (i - 1) * 200, 250, 20 + (i - 1) * 200 + w, 250 + h),
+        label=comp.auto_label(i),                       # "(a)", "(b)", ...
+    ))
+comp.export_composition(sheet, Path("composed.pdf"), fit_to_content=False)
+```
+
+`detect_figures` returns the same rectangles the cropping pipeline produces,
+and `export_composition` writes the sheet with the figures embedded as vector
+and the labels as real text.  With `fit_to_content=True` (the default) the
+page is sized to the content instead of the sheet.
+
 ---
 
 ## Known limitations
@@ -605,6 +705,8 @@ pdf-auto-crop/
 │       ├── __main__.py         # `python -m pdf_auto_crop` -> GUI or wizard
 │       ├── batch.py            # batch scanning + processing
 │       ├── cli.py              # argparse CLI + wizard bootstrap
+│       ├── compositor.py       # figure compositor: model, bake, export
+│       ├── compositor_gui.py    # compose window (palette + sheet + labels)
 │       ├── config.py           # CropConfig dataclass
 │       ├── detector.py         # detect_figures() — the "legacy" algorithm
 │       ├── geometry.py         # mm ↔ pt, raster ↔ PDF rect math
@@ -625,12 +727,17 @@ pdf-auto-crop/
 ├── scripts/
 │   ├── make_test_pdfs.py       # Generates the 7 fixtures
 │   ├── compare_algorithms.py   # legacy vs smart across all fixtures
+│   ├── compositor_screenshot.py # Drives the compose window with real events
 │   ├── gui_screenshot.py       # Headless GUI smoke test + screenshot
-│   └── gui_edit_screenshot.py  # Drives the manual editor with real events
+│   ├── gui_edit_screenshot.py  # Drives the manual editor with real events
+│   ├── probe_bake_fix2.py      # Measures the compositor's bake geometry
+│   ├── probe_clip_rule3.py     # Measures the clip frame on odd page boxes
+│   └── probe_normalised_bake.py # Verifies the two-step bake end to end
 └── tests/
     ├── fixtures/               # generated by scripts/make_test_pdfs.py
     ├── fixtures_diag/          # generated D1-D8 layout-diagnostic PDFs
     ├── test_batch.py           # batch scanning + per-PDF processing
+    ├── test_compositor.py      # compositor model, bake, export fidelity
     ├── test_end_to_end.py      # CLI invocation tests, one per case
     ├── test_gui.py             # hint engine + GUI worker bodies
     ├── test_gui_edit.py        # manual editor geometry + store

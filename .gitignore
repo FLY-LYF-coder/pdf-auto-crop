@@ -63,3 +63,24 @@ examples/*_out/
 # cloning, before pytest.  They are binary, reproducible, and add ~2.4 MB.
 tests/fixtures/
 tests/fixtures_diag/
+
+# One-off measurement scripts.  The three that document the compositor's
+# geometry are kept (probe_bake_fix2.py, probe_clip_rule3.py,
+# probe_normalised_bake.py); the rest were steps on the way to them, and some
+# of them carry absolute paths to private files.
+scripts/_probe_path.py
+scripts/probe_bake_clip.py
+scripts/probe_bake_fidelity.py
+scripts/probe_bake_fix.py
+scripts/probe_bake_rotate_square.py
+scripts/probe_clip_rule.py
+scripts/probe_clip_rule2.py
+scripts/probe_clip_scan.py
+scripts/probe_clip_space.py
+scripts/probe_compositor.py
+scripts/probe_mupdf_origin.py
+scripts/probe_offset_debug.py
+scripts/probe_roadmap.py
+scripts/probe_rotation_census.py
+scripts/probe_rotation_semantics.py
+scripts/probe_two_stage.py
