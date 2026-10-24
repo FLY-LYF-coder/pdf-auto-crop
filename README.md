@@ -75,7 +75,7 @@ python scripts/make_test_pdfs.py
 pytest tests/ -q
 ```
 
-The suite is 291 tests.  Three of them deserve a note, because they encode bugs
+The suite is 376 tests.  Three of them deserve a note, because they encode bugs
 that a coordinate comparison cannot see:
 
 - `test_crop_lands_on_the_requested_region` puts a marker of a unique colour in
@@ -93,11 +93,24 @@ that a coordinate comparison cannot see:
   off-centre figure: a square page with a centred figure is symmetric under
   every rotation and hides exactly the mistakes the test is for.)
 
-The GUI itself is exercised end to end by
-`python scripts/gui_edit_screenshot.py` and
-`python scripts/compositor_screenshot.py`, which drive the real windows with
-synthetic mouse events and write screenshots to `diag_out/`.  Both that
-directory and the generated fixtures are git-ignored.
+The parts a unit test cannot reach — the canvas, the tools, the property
+panel — are exercised end to end by the scripts, which drive the **real**
+windows with synthetic mouse events and check what comes out:
+
+```bash
+python scripts/gui_edit_screenshot.py     # the cropping window
+python scripts/compositor_screenshot.py   # the compose window
+python scripts/gui_compositor_button.py   # the 组合… button on the main window
+python scripts/gui_screenshot.py          # the main window
+```
+
+`compositor_screenshot.py` is the one that covers the compositor: it drops
+figures, drags and resizes them, draws every kind of graphic element, types
+free text and a LaTeX formula, turns things, aligns and spreads a group,
+zooms with the wheel, and finally checks the exported PDF — the vector
+content, the fonts, the dash patterns and the opacities.
+
+Both `diag_out/` and the generated fixtures are git-ignored.
 
 ---
 
