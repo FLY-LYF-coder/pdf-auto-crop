@@ -68,11 +68,13 @@ page with a centred figure:
 from __future__ import annotations
 
 import hashlib
+import math
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
 
@@ -86,10 +88,108 @@ LABEL_OVERLAY = "overlay"  # bottom-left corner, on top of the figure
 #: Base-14 fonts that need no embedding.  ``tiro`` is Times-Roman, which
 #: matches the body font of most papers.
 FONT_ASCII = "tiro"
-FONT_CJK = "china-s"  # PyMuPDF's built-in Simplified Chinese face
+
+#: The Simplified-Chinese face PyMuPDF carries itself.
+FONT_CJK = "china-s"
+
+#: The label fonts the compositor offers, in the order the GUI lists them.
+#: Every one of them is a base-14 face or a face PyMuPDF ships, so a label
+#: never drags a font file into the output.
+LABEL_FONTS: Dict[str, str] = {
+    "Times-Roman": "tiro",
+    "Times-Bold": "tibo",
+    "Times-Italic": "tiit",
+    "Times-Bold Italic": "tibiz",
+    "Helvetica": "helv",
+    "Helvetica-Bold": "hebo",
+    "Helvetica-Oblique": "hebi",
+    "Courier": "cour",
+    "Courier-Bold": "cobo",
+    "Symbol": "symb",
+    "ZapfDingbats": "zadb",
+    "宋体 (中文)": FONT_CJK,
+}
+
+#: The default label font.
+LABEL_FONT_DEFAULT = "Times-Roman"
+
+#: The label colour used until the user picks another one.
+LABEL_COLOR_DEFAULT: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 #: Gap between a figure and its label, in points.
 LABEL_GAP_PT = 4.0
+
+#: The graphic elements that can be drawn on top of the figures.
+SHAPE_ARROW = "arrow"
+SHAPE_RECT = "rect"
+SHAPE_ELLIPSE = "ellipse"
+SHAPE_LINE = "line"
+
+SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ELLIPSE,
+                                 SHAPE_LINE)
+
+#: The colour a new shape is drawn in.
+SHAPE_COLOR_DEFAULT: Tuple[float, float, float] = (0.85, 0.1, 0.1)
+
+#: The line width a new shape is drawn with, in points.
+SHAPE_WIDTH_DEFAULT = 1.5
+
+
+def _font_has_text(fontname: str, text: str) -> bool:
+    """Whether a font can render every character of ``text``."""
+    try:
+        font = fitz.Font(fontname=fontname)
+    except Exception:  # noqa: BLE001 -- an unknown face simply has no glyphs
+        return False
+    return all(font.has_glyph(ord(ch)) for ch in text)
+
+
+def _safe_font_name(name: str) -> str:
+    """A PDF-safe font name.
+
+    PyMuPDF hands the name straight to the PDF as a resource name, and a name
+    with a space in it is rejected outright -- which is exactly what
+    "Times New Roman.ttf" produces on Windows.
+    """
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return cleaned or "font"
+
+
+def resolve_label_font(text: str, font: str = "", fontfile: str = ""
+                       ) -> Tuple[str, str]:
+    """Which font to write a label with.
+
+    Returns ``(fontname, fontfile)``.  A font file is embedded in the output;
+    a base-14 name is not.  When the chosen face cannot render the text -- an
+    ASCII face asked for Chinese, say -- the Chinese face is used instead,
+    because a label that shows nothing is worse than a label in another
+    typeface.
+    """
+    if fontfile:
+        path = Path(fontfile)
+        if path.is_file():
+            return _safe_font_name(path.stem), str(path)
+    name = LABEL_FONTS.get(font) or LABEL_FONTS[LABEL_FONT_DEFAULT]
+    if _font_has_text(name, text):
+        return name, ""
+    if _font_has_text(FONT_CJK, text):
+        return FONT_CJK, ""
+    return name, ""
+
+
+def text_width(text: str, fontname: str, fontsize: float,
+               fontfile: str = "") -> float:
+    """How wide a label will be, in points."""
+    if fontfile:
+        try:
+            return fitz.Font(fontfile=fontfile).text_length(
+                text, fontsize=fontsize)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        return fitz.get_text_length(text, fontname=fontname, fontsize=fontsize)
+    except Exception:  # noqa: BLE001
+        return len(text) * fontsize * 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +268,7 @@ class Placement:
     """A figure positioned on the composition page.
 
     ``rect`` is in composition **user space** and is the figure's bounding
-    box *including* whatever space its label needs?  No -- the rect is the
-    figure alone; the label is placed relative to it.  Keeping the two
+    box alone -- the label is placed relative to it.  Keeping the two
     separate means moving the figure never drags its label into the artwork.
     """
 
@@ -178,15 +277,28 @@ class Placement:
     label: str = ""
     label_mode: str = LABEL_BELOW
     label_size: float = 9.0
+    #: The label's typeface: a key of :data:`LABEL_FONTS`, or empty for the
+    #: default.
+    label_font: str = ""
+    #: An optional font file to embed instead of a built-in face.
+    label_fontfile: str = ""
+    #: The label's colour, as (r, g, b) in 0..1.
+    label_color: Tuple[float, float, float] = LABEL_COLOR_DEFAULT
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
+        self.label_color = tuple(float(c) for c in self.label_color)[:3]
 
     @property
     def aspect(self) -> float:
         """Width / height of the figure as the viewer sees it."""
         w, h = figure_display_size(self.figure)
         return w / h if h else 1.0
+
+    def label_font_info(self) -> Tuple[str, str]:
+        """The ``(fontname, fontfile)`` the label is written with."""
+        return resolve_label_font(
+            self.label, self.label_font, self.label_fontfile)
 
     def to_dict(self) -> dict:
         return {
@@ -195,6 +307,9 @@ class Placement:
             "label": self.label,
             "label_mode": self.label_mode,
             "label_size": self.label_size,
+            "label_font": self.label_font,
+            "label_fontfile": self.label_fontfile,
+            "label_color": list(self.label_color),
         }
 
     @classmethod
@@ -205,6 +320,64 @@ class Placement:
             label=data.get("label", ""),
             label_mode=data.get("label_mode", LABEL_BELOW),
             label_size=float(data.get("label_size", 9.0)),
+            label_font=data.get("label_font", ""),
+            label_fontfile=data.get("label_fontfile", ""),
+            label_color=tuple(
+                data.get("label_color", LABEL_COLOR_DEFAULT)),
+        )
+
+
+@dataclass
+class Shape:
+    """A simple graphic element drawn on top of the figures.
+
+    The two points are in the composition's user space, like everything else
+    here.  An arrow runs from ``start`` to ``end`` and puts its head at
+    ``end``; a box or an ellipse is the rectangle spanned by the two points.
+    """
+
+    kind: str
+    start: fitz.Point
+    end: fitz.Point
+    #: The stroke (and fill) colour, as (r, g, b) in 0..1.
+    color: Tuple[float, float, float] = SHAPE_COLOR_DEFAULT
+    #: The stroke width, in points.
+    width: float = SHAPE_WIDTH_DEFAULT
+    #: Whether a box or an ellipse is filled (translucently).
+    fill: bool = False
+
+    def __post_init__(self) -> None:
+        self.start = fitz.Point(self.start)
+        self.end = fitz.Point(self.end)
+        self.color = tuple(float(c) for c in self.color)[:3]
+
+    @property
+    def rect(self) -> fitz.Rect:
+        """The box the shape occupies."""
+        return fitz.Rect(
+            min(self.start.x, self.end.x), min(self.start.y, self.end.y),
+            max(self.start.x, self.end.x), max(self.start.y, self.end.y),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "kind": self.kind,
+            "start": [self.start.x, self.start.y],
+            "end": [self.end.x, self.end.y],
+            "color": list(self.color),
+            "width": self.width,
+            "fill": self.fill,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Shape":
+        return cls(
+            kind=data["kind"],
+            start=fitz.Point(*data["start"]),
+            end=fitz.Point(*data["end"]),
+            color=tuple(data.get("color", SHAPE_COLOR_DEFAULT)),
+            width=float(data.get("width", SHAPE_WIDTH_DEFAULT)),
+            fill=bool(data.get("fill", False)),
         )
 
 
@@ -215,16 +388,20 @@ class Composition:
     width: float
     height: float
     placements: List[Placement] = field(default_factory=list)
+    #: Graphic elements drawn on top of the figures.
+    shapes: List[Shape] = field(default_factory=list)
     margin_pt: float = 0.0
 
     def content_bounds(self) -> Optional[fitz.Rect]:
         """Bounding box of everything placed, labels included."""
-        if not self.placements:
-            return None
         boxes = [fitz.Rect(p.rect) for p in self.placements]
         for p in self.placements:
             if p.label and p.label_mode == LABEL_BELOW:
                 boxes.append(label_rect(p))
+        for s in self.shapes:
+            boxes.append(s.rect)
+        if not boxes:
+            return None
         out = boxes[0]
         for b in boxes[1:]:
             out |= b
@@ -244,6 +421,7 @@ class Composition:
             "height": self.height,
             "margin_pt": self.margin_pt,
             "placements": [p.to_dict() for p in self.placements],
+            "shapes": [s.to_dict() for s in self.shapes],
         }
 
     @classmethod
@@ -253,6 +431,7 @@ class Composition:
             height=float(data["height"]),
             margin_pt=float(data.get("margin_pt", 0.0)),
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
+            shapes=[Shape.from_dict(s) for s in data.get("shapes", [])],
         )
 
 
@@ -508,11 +687,52 @@ def auto_label(index: int, style: str = "letter") -> str:
 # ---------------------------------------------------------------------------
 
 
-def _font_for(text: str) -> str:
-    """Pick a base-14 font that can render ``text``."""
-    if all(ord(c) < 128 for c in text):
-        return FONT_ASCII
-    return FONT_CJK
+def _draw_arrow_head(page: fitz.Page, tip: fitz.Point, tail: fitz.Point,
+                     color: Tuple[float, float, float], width: float) -> None:
+    """Two short strokes at the tip, so the arrow points somewhere."""
+    dx = tip.x - tail.x
+    dy = tip.y - tail.y
+    length = math.hypot(dx, dy)
+    if length < 1e-6:
+        return
+    ux, uy = dx / length, dy / length
+    head = max(6.0, 3.0 * width)
+    # The head starts a little behind the tip, so the point stays sharp.
+    bx, by = tip.x - ux * head * 0.45, tip.y - uy * head * 0.45
+    for sign in (1, -1):
+        angle = math.radians(25.0) * sign
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+        px = bx + (ux * cos_a - uy * sin_a) * head
+        py = by + (ux * sin_a + uy * cos_a) * head
+        page.draw_line(tip, fitz.Point(px, py), color=color, width=width)
+
+
+def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
+    """Draw one graphic element on a page.
+
+    The shape's points are in user space; the page counts downwards, so they
+    are flipped here -- the one place the two conventions meet.
+    """
+    p0 = fitz.Point(shape.start.x, page_height - shape.start.y)
+    p1 = fitz.Point(shape.end.x, page_height - shape.end.y)
+    color = shape.color
+    width = shape.width
+    fill_opacity = 0.25 if shape.fill else 0
+
+    if shape.kind == SHAPE_LINE:
+        page.draw_line(p0, p1, color=color, width=width)
+    elif shape.kind in (SHAPE_RECT, SHAPE_ELLIPSE):
+        r = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
+                      max(p0.x, p1.x), max(p0.y, p1.y))
+        if shape.kind == SHAPE_RECT:
+            page.draw_rect(r, color=color, width=width, fill=shape.fill,
+                           fill_opacity=fill_opacity)
+        else:
+            page.draw_oval(r, color=color, width=width, fill=shape.fill,
+                           fill_opacity=fill_opacity)
+    else:  # arrow
+        page.draw_line(p0, p1, color=color, width=width)
+        _draw_arrow_head(page, p1, p0, color, width)
 
 
 def export_composition(
@@ -559,6 +779,8 @@ def export_composition(
     out = fitz.open()
     try:
         page = out.new_page(width=w, height=h)
+
+        # 1. the figures
         for placement in comp.placements:
             rect = fitz.Rect(
                 placement.rect.x0 + dx, placement.rect.y0 + dy,
@@ -572,10 +794,26 @@ def export_composition(
             finally:
                 baked.close()
 
+        # 2. the graphic elements, on top of the figures
+        for shape in comp.shapes:
+            moved = Shape(
+                kind=shape.kind,
+                start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+                end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                color=shape.color, width=shape.width, fill=shape.fill,
+            )
+            draw_shape(page, moved, h)
+
+        # 3. the labels, on top of everything
+        for placement in comp.placements:
             if not placement.label:
                 continue
+            rect = fitz.Rect(
+                placement.rect.x0 + dx, placement.rect.y0 + dy,
+                placement.rect.x1 + dx, placement.rect.y1 + dy,
+            )
             size = placement.label_size
-            font = _font_for(placement.label)
+            fontname, fontfile = placement.label_font_info()
             if placement.label_mode == LABEL_OVERLAY:
                 baseline = fitz.Point(
                     rect.x0 + 3,
@@ -584,16 +822,15 @@ def export_composition(
             else:
                 # insert_text has no alignment parameter, so the centred
                 # position is computed from the measured text width.
-                width = fitz.get_text_length(
-                    placement.label, fontname=font, fontsize=size
-                )
+                width = text_width(placement.label, fontname, size, fontfile)
                 baseline = fitz.Point(
                     (rect.x0 + rect.x1) / 2 - width / 2,
                     h - (rect.y0 - LABEL_GAP_PT) + size * 0.2,
                 )
             page.insert_text(
                 baseline, placement.label, fontsize=size,
-                fontname=font, color=(0, 0, 0),
+                fontname=fontname, fontfile=fontfile or None,
+                color=placement.label_color,
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out.save(str(out_path), garbage=4, deflate=True)
@@ -640,13 +877,25 @@ __all__ = [
     "Composition",
     "Figure",
     "LABEL_BELOW",
+    "LABEL_COLOR_DEFAULT",
+    "LABEL_FONT_DEFAULT",
+    "LABEL_FONTS",
     "LABEL_OVERLAY",
     "Placement",
+    "SHAPE_ARROW",
+    "SHAPE_COLOR_DEFAULT",
+    "SHAPE_ELLIPSE",
+    "SHAPE_KINDS",
+    "SHAPE_LINE",
+    "SHAPE_RECT",
+    "SHAPE_WIDTH_DEFAULT",
+    "Shape",
     "auto_label",
     "bake_figure",
     "clear_bake_cache",
     "detect_figures",
     "displayed_size",
+    "draw_shape",
     "embed_rotation",
     "export_composition",
     "figure_display_size",
@@ -655,7 +904,9 @@ __all__ = [
     "label_rect",
     "load_composition",
     "region_to_page_rect",
+    "resolve_label_font",
     "save_composition",
     "source_visible_rect",
+    "text_width",
     "to_mupdf_rect",
 ]

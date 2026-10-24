@@ -267,8 +267,11 @@ Open it with the **组合…** button in the main window's toolbar.
    from the list.
 3. **Drag** a figure to move it, drag an orange corner handle to resize it.
 4. **Type a label** in the properties panel — `(a)`, `(b)`, … — or let
-   **自动编号** number them in order.
-5. **导出 PDF…** writes the sheet.
+   **自动编号** number them in order.  The label's font, size and colour are
+   editable too (see [Labels](#labels-font-size-and-colour)).
+5. **Pick a tool** in the toolbar to draw arrows, boxes, circles or lines on
+   the sheet (see [Graphic elements](#graphic-elements)).
+6. **导出 PDF…** writes the sheet.
 
 ### On the sheet
 
@@ -277,7 +280,7 @@ Open it with the **组合…** button in the main window's toolbar.
 | Drag a figure | Move it |
 | Drag an orange corner handle | Resize, keeping the figure's aspect ratio |
 | Arrow keys | Nudge 1 pt; hold `Shift` for 10 pt |
-| `Delete` | Remove the selected figure |
+| `Delete` | Remove the selected figure or graphic element |
 | 置于顶层 / 置于底层 | Change the stacking order |
 
 A scientific figure must not be stretched, so resizing keeps the aspect
@@ -291,13 +294,54 @@ stretched.
 Labels are **图下** (centred under the figure — the journal convention) by
 default; **角上** puts them in the corner of the figure instead.
 
+### Labels: font, size and colour
+
+Each label carries its own font, size and colour, so a figure can use the
+journal's typeface while the rest stay in the default.
+
+| Control | What it does |
+| ------- | ------------ |
+| 字体 | One of twelve built-in faces — Times, Helvetica, Courier, Symbol, ZapfDingbats and their bold/italic variants, plus 宋体 for Chinese |
+| 文件… | Use a `.ttf`/`.otf` from disk instead; the font is **embedded** in the exported PDF |
+| 字号 | 4 – 48 pt |
+| 颜色 | Any colour; the swatch next to it shows the current one |
+
+The built-in faces are the PDF base-14 fonts, so nothing is embedded and the
+output stays small and free of licensing questions.  A font file you pick is
+embedded, which does grow the file.
+
+If the chosen face has no glyph for a character — an ASCII font asked to
+write 中文, say — the label falls back to a Chinese face automatically.  A
+missing glyph is worse than a different typeface, so the fallback is silent
+rather than a row of empty boxes.
+
+### Graphic elements
+
+The toolbar's second row selects a drawing tool: **选择/移动**, **箭头**
+(arrow), **方框** (box), **圆圈** (circle), **直线** (line).  With a drawing
+tool active, drag on the sheet to create the element.
+
+Once an element is selected, the properties panel gives it a **线色** (line
+colour), a **线宽** (line width, 0.2 – 12 pt) and a **半透明填充** (translucent
+fill, for boxes and circles).  Elements can be dragged, nudged with the arrow
+keys and deleted with `Delete`.
+
+Only the *stroke* of an element is grabbable, so a translucent box drawn over
+a figure does not stop you from selecting the figure underneath it.  When the
+cursor is on both, the element wins — it is the thing drawn on top.
+
+Everything stays vector: an arrow is a line plus two short strokes for the
+head, a box is a rectangle, a circle is an ellipse.  No bitmap is introduced
+anywhere in the composition.
+
 ### What the output is
 
 The sheet is written with the same vector-preserving mechanism as the
 cropper: each figure is embedded as a Form XObject (the same thing LaTeX's
 `\includegraphics` does for PDF input) and each label is inserted as real,
-selectable text.  Nothing is rasterised, so the result stays sharp at any
-zoom and the text can be searched and copied.
+selectable text.  The graphic elements are drawn as real vector paths.  Nothing
+is rasterised, so the result stays sharp at any zoom and the text can be
+searched and copied.
 
 The exported page is either the sheet you arranged (A4 landscape or
 portrait) or, with **适应内容**, exactly as large as the content — which is
@@ -311,6 +355,10 @@ what you want for a figure going into a manuscript.
   small.
 - The sheet holds one copy of each figure.  The same figure cannot be placed
   twice — import it twice if you need it twice.
+- A label written with an **embedded** font file comes out of a copy-paste
+  with a non-breaking space instead of a plain one — that is how PyMuPDF maps
+  the space glyph for a subset font.  Searching the PDF for the text still
+  finds it.
 
 ---
 
@@ -571,7 +619,18 @@ for i, fig in enumerate(comp.detect_figures(Path("input.pdf")), start=1):
         figure=fig,
         rect=fitz.Rect(20 + (i - 1) * 200, 250, 20 + (i - 1) * 200 + w, 250 + h),
         label=comp.auto_label(i),                       # "(a)", "(b)", ...
+        label_font="Helvetica-Bold",                    # any of comp.LABEL_FONTS
+        label_size=12.0,
+        label_color=(0.8, 0.0, 0.0),                   # r, g, b in 0..1
     ))
+
+# A graphic element on top of the figures: an arrow, a box or a circle.
+sheet.shapes.append(comp.Shape(
+    kind=comp.SHAPE_ARROW,
+    start=fitz.Point(120, 240), end=fitz.Point(120, 320),
+    color=(0.85, 0.1, 0.1), width=1.5,
+))
+
 comp.export_composition(sheet, Path("composed.pdf"), fit_to_content=False)
 ```
 
@@ -579,6 +638,12 @@ comp.export_composition(sheet, Path("composed.pdf"), fit_to_content=False)
 and `export_composition` writes the sheet with the figures embedded as vector
 and the labels as real text.  With `fit_to_content=True` (the default) the
 page is sized to the content instead of the sheet.
+
+A `Shape`'s two points are in the composition's user space, like everything
+else here: an arrow runs from `start` to `end` and puts its head at `end`, and
+a box or an ellipse is the rectangle spanned by the two points.  The drawing
+order is figures, then graphic elements, then labels — a label under an arrow
+is unreadable.
 
 ---
 

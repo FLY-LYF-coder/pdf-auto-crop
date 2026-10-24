@@ -14,6 +14,7 @@ not so subtly, the wrong way round.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +23,14 @@ import pytest
 
 from pdf_auto_crop import compositor as comp
 from pdf_auto_crop.config import CropConfig
+
+try:  # tkinter may be missing on a headless box
+    from pdf_auto_crop import compositor_gui
+except ImportError:  # pragma: no cover
+    compositor_gui = None
+
+needs_tk = pytest.mark.skipif(
+    compositor_gui is None, reason="tkinter is not available")
 
 MM = 72.0 / 25.4
 
@@ -443,16 +452,205 @@ def test_export_of_a_cjk_label_uses_a_cjk_font(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Canvas geometry
+# Labels: font, size, colour
 # ---------------------------------------------------------------------------
 
-try:  # tkinter may be missing on a headless box
-    from pdf_auto_crop import compositor_gui
-except ImportError:  # pragma: no cover
-    compositor_gui = None
 
-needs_tk = pytest.mark.skipif(
-    compositor_gui is None, reason="tkinter is not available")
+def test_label_font_falls_back_to_chinese_when_needed() -> None:
+    """An ASCII face cannot draw Chinese, so the Chinese face is used."""
+    name, fontfile = comp.resolve_label_font("(a)", "Helvetica")
+    assert name == "helv"
+    assert fontfile == ""
+
+    name, fontfile = comp.resolve_label_font("图一", "Helvetica")
+    assert name == comp.FONT_CJK
+
+    # A face that *can* draw it is left alone.
+    name, _ = comp.resolve_label_font("图一", "宋体 (中文)")
+    assert name == comp.FONT_CJK
+
+
+def test_an_unknown_font_name_falls_back_to_the_default() -> None:
+    name, _ = comp.resolve_label_font("(a)", "No Such Face")
+    assert name == comp.LABEL_FONTS[comp.LABEL_FONT_DEFAULT]
+
+
+def test_text_width_grows_with_the_size() -> None:
+    small = comp.text_width("(a)", "tiro", 9)
+    large = comp.text_width("(a)", "tiro", 18)
+    assert large == pytest.approx(small * 2, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Shapes
+# ---------------------------------------------------------------------------
+
+
+def _shape_composition() -> comp.Composition:
+    c = comp.Composition(width=400, height=400)
+    c.shapes.append(comp.Shape(comp.SHAPE_ARROW, fitz.Point(100, 100),
+                                fitz.Point(300, 300),
+                                color=(1.0, 0.0, 0.0), width=2.0))
+    c.shapes.append(comp.Shape(comp.SHAPE_RECT, fitz.Point(50, 200),
+                                fitz.Point(150, 300),
+                                color=(0.0, 0.0, 1.0), width=1.0, fill=True))
+    return c
+
+
+def test_shape_survives_a_json_round_trip(tmp_path) -> None:
+    c = _shape_composition()
+    path = comp.save_composition(c, tmp_path / "layout.json")
+    back = comp.load_composition(path)
+    assert len(back.shapes) == 2
+    arrow = back.shapes[0]
+    assert arrow.kind == comp.SHAPE_ARROW
+    assert arrow.start == fitz.Point(100, 100)
+    assert arrow.end == fitz.Point(300, 300)
+    assert arrow.color == pytest.approx((1.0, 0.0, 0.0))
+    assert arrow.width == pytest.approx(2.0)
+    assert back.shapes[1].fill is True
+
+
+def test_placement_keeps_its_font_and_colour_through_json(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(20, 20, 220, 220), label="(a)",
+        label_font="Helvetica-Bold", label_size=13.0,
+        label_color=(0.8, 0.1, 0.1)))
+    path = comp.save_composition(c, tmp_path / "layout.json")
+    back = comp.load_composition(path)
+    p = back.placements[0]
+    assert p.label_font == "Helvetica-Bold"
+    assert p.label_size == pytest.approx(13.0)
+    assert p.label_color == pytest.approx((0.8, 0.1, 0.1))
+
+
+def test_shapes_are_part_of_the_content_bounds() -> None:
+    c = _shape_composition()
+    bounds = c.content_bounds()
+    assert bounds is not None
+    assert bounds.contains(fitz.Rect(50, 100, 300, 300))
+
+
+def test_export_draws_the_shapes_as_vectors(tmp_path) -> None:
+    c = _shape_composition()
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        page = doc[0]
+        assert len(page.get_images()) == 0, "a shape must not become a bitmap"
+        assert len(page.get_drawings()) >= 4, "the shapes are missing"
+    finally:
+        doc.close()
+
+
+def test_the_shape_lands_where_it_was_drawn(tmp_path) -> None:
+    """The red arrow must be on the page, where it was put."""
+    c = comp.Composition(width=400, height=400)
+    c.shapes.append(comp.Shape(comp.SHAPE_ARROW, fitz.Point(100, 100),
+                                fitz.Point(300, 300), color=(1.0, 0.0, 0.0)))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    arr = _render(out, dpi=72)
+    red = (arr[:, :, 0] > 150) & (arr[:, :, 1] < 120) & (arr[:, :, 2] < 120)
+    ys, xs = np.where(red)
+    assert len(xs) > 0
+    # The arrow runs from (100, 100) to (300, 300) in user space, i.e. from
+    # the top-left to the bottom-right of the rendered page.
+    assert 95 <= xs.min() <= 115, xs.min()
+    assert 285 <= xs.max() <= 305, xs.max()
+    assert 95 <= ys.min() <= 115, ys.min()
+    assert 285 <= ys.max() <= 305, ys.max()
+
+
+def test_fitting_the_page_moves_the_shapes_with_it(tmp_path) -> None:
+    """The page is resized to the content, so the shapes move with it."""
+    c = comp.Composition(width=800, height=800)
+    c.shapes.append(comp.Shape(comp.SHAPE_ARROW, fitz.Point(400, 400),
+                                fitz.Point(500, 500), color=(1.0, 0.0, 0.0)))
+    out = comp.export_composition(c, tmp_path / "out.pdf")
+    doc = fitz.open(str(out))
+    try:
+        assert doc[0].rect.width == pytest.approx(100, abs=2)
+        assert doc[0].rect.height == pytest.approx(100, abs=2)
+    finally:
+        doc.close()
+
+
+def test_the_label_is_written_in_the_chosen_font_and_colour(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(20, 20, 220, 220), label="(a)",
+        label_font="Helvetica-Bold", label_size=13.0,
+        label_color=(0.8, 0.1, 0.1)))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        spans = [s for b in doc[0].get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        assert len(spans) == 1
+        span = spans[0]
+        assert span["text"] == "(a)"
+        assert "Helvetica" in span["font"]
+        assert span["size"] == pytest.approx(13.0, abs=0.2)
+        assert span["color"] == 0xCC1A1A, hex(span["color"])
+    finally:
+        doc.close()
+
+
+def test_a_font_file_with_a_space_in_its_name_is_usable(tmp_path) -> None:
+    """Windows font files are called "Times New Roman.ttf" and the like.
+
+    The name goes into the PDF as a resource name, where a space is illegal,
+    so the export used to fail with "bad fontname chars".
+    """
+    src, region = _build_source(tmp_path)
+    font = tmp_path / "Times New Roman.ttf"
+    if not Path("C:/Windows/Fonts/times.ttf").exists():
+        pytest.skip("no system font to copy")
+    shutil.copy("C:/Windows/Fonts/times.ttf", font)
+
+    name, fontfile = comp.resolve_label_font("(a)", "", str(font))
+    assert " " not in name
+    assert name == "Times_New_Roman"
+
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(20, 20, 220, 220), label="(a)",
+        label_font="Times New Roman.ttf", label_fontfile=str(font)))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        assert "(a)" in doc[0].get_text()
+        assert doc.get_page_fonts(0), "the font was not embedded"
+    finally:
+        doc.close()
+
+
+def test_the_canvas_font_follows_the_chosen_face() -> None:
+    """Tk does not know a base-14 name, so the preview needs a real family."""
+    assert compositor_gui.tk_font("Times-Roman", 12) == (
+        "Times New Roman", 12, "normal")
+    assert compositor_gui.tk_font("Helvetica-Bold", 12) == (
+        "Arial", 12, "bold")
+    assert compositor_gui.tk_font("Times-Bold Italic", 12) == (
+        "Times New Roman", 12, "bold italic")
+    assert compositor_gui.tk_font("Courier", 12) == ("Courier New", 12, "normal")
+    # A size below Tk's minimum is bumped up rather than refused.
+    assert compositor_gui.tk_font("Times-Roman", 2)[1] == 8
+
+
+# ---------------------------------------------------------------------------
+# Canvas geometry
+# ---------------------------------------------------------------------------
 
 
 @needs_tk
@@ -488,6 +686,46 @@ def test_a_handle_drags_the_corner_it_is_drawn_in() -> None:
     assert compositor_gui.USER_CORNER(rect, 1) == (rect.x1, rect.y1)
     assert compositor_gui.USER_CORNER(rect, 2) == (rect.x1, rect.y0)
     assert compositor_gui.USER_CORNER(rect, 3) == (rect.x0, rect.y0)
+
+
+@needs_tk
+def test_the_colour_helpers_round_trip() -> None:
+    assert compositor_gui.hex_to_rgb("#ff8000") == pytest.approx(
+        (1.0, 0.50196, 0.0), abs=1e-4)
+    assert compositor_gui.rgb_to_hex((1.0, 0.50196, 0.0)) == "#ff8000"
+    # Nonsense in, sensible out -- the colour picker is not the only source.
+    assert compositor_gui.hex_to_rgb("nonsense") == (0.0, 0.0, 0.0)
+    assert compositor_gui.rgb_to_hex((2.0, -1.0, 0.5)) == "#ff0080"
+
+
+@needs_tk
+def test_distance_to_segment() -> None:
+    assert compositor_gui.distance_to_segment(5, 5, 0, 0, 10, 0) == \
+        pytest.approx(5.0)
+    # Beyond the end, the distance is to the end point.
+    assert compositor_gui.distance_to_segment(20, 0, 0, 0, 10, 0) == \
+        pytest.approx(10.0)
+    # A degenerate segment is a point.
+    assert compositor_gui.distance_to_segment(3, 4, 0, 0, 0, 0) == \
+        pytest.approx(5.0)
+
+
+@needs_tk
+def test_a_press_on_a_graphic_element_starts_a_drag() -> None:
+    """An element under the cursor must be grabbable.
+
+    Picking the element and leaving the drag mode empty is what makes an
+    element sit still while the cursor drags it.
+    """
+    # The element is on top of the figure: the element wins.
+    assert compositor_gui.resolve_pick(2, 1, "body") == (None, 2, "shape-body")
+    # The element on its own.
+    assert compositor_gui.resolve_pick(0, None, None) == (None, 0, "shape-body")
+    # No element: the figure is picked, and the drag mode is the figure's.
+    assert compositor_gui.resolve_pick(None, 1, "body") == (1, None, "body")
+    assert compositor_gui.resolve_pick(None, 1, "handle2") == (1, None, "handle2")
+    # Nothing at all.
+    assert compositor_gui.resolve_pick(None, None, None) == (None, None, None)
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ except AttributeError:  # pragma: no cover
     pass
 
 import numpy as np  # noqa: E402
+import pytest  # noqa: E402
 import pymupdf as fitz  # noqa: E402
 from PIL import ImageGrab  # noqa: E402
 
@@ -224,6 +225,76 @@ def main() -> int:
               and 0 <= r.y0 and r.y1 <= win.sheet_h + 1 for r in rects))
     _shot(win, "04_arranged.png")
 
+    # -- label formatting ------------------------------------------------
+    win._selected = 0
+    win._selected_shape = None
+    win._sync_properties()
+    win.var_label_font.set("Helvetica-Bold")
+    win._on_label_changed()
+    win.var_label_size.set("14")
+    win._on_label_changed()
+    win.var_label_color.set("#cc0000")
+    win._on_label_changed()
+    win.update()
+    placement = win.composition.placements[0]
+    check("the label font can be changed",
+          placement.label_font == "Helvetica-Bold", placement.label_font)
+    check("the label size can be changed",
+          abs(placement.label_size - 14.0) < 1e-6, str(placement.label_size))
+    check("the label colour can be changed",
+          placement.label_color == pytest.approx((0.8, 0.0, 0.0), abs=0.01),
+          str(placement.label_color))
+    _shot(win, "06_label_style.png")
+
+    # -- drawing a graphic element ---------------------------------------
+    n_shapes = len(win.composition.shapes)
+    win.var_tool.set("arrow")
+    win._on_tool_changed()
+    check("the arrow tool is active", win.tool == "arrow", win.tool)
+    _drag(win, 700, 200, 780, 260)
+    check("dragging draws an arrow",
+          len(win.composition.shapes) == n_shapes + 1,
+          f"{len(win.composition.shapes)} shapes")
+    if win.composition.shapes:
+        arrow = win.composition.shapes[-1]
+        check("the arrow has the right kind", arrow.kind == "arrow", arrow.kind)
+        check("the arrow runs from where the press was to where the release was",
+              arrow.start.x < arrow.end.x and arrow.start.y > arrow.end.y,
+              f"{arrow.start} -> {arrow.end}")
+        check("the new arrow is selected", win._selected_shape is not None)
+
+    # A box and a circle, to show the other two tools work too.
+    for tool, x0, y0, x1, y1 in (("rect", 700, 320, 800, 400),
+                                 ("ellipse", 700, 420, 800, 500)):
+        win.var_tool.set(tool)
+        win._on_tool_changed()
+        _drag(win, x0, y0, x1, y1)
+    check("all three graphic tools drew something",
+          len(win.composition.shapes) == n_shapes + 3,
+          f"{len(win.composition.shapes)} shapes")
+    _shot(win, "07_shapes.png")
+
+    # -- moving a graphic element ----------------------------------------
+    win.var_tool.set("select")
+    win._on_tool_changed()
+    arrow = win.composition.shapes[-3]
+    before = fitz.Point(arrow.start.x, arrow.start.y)
+    cx, cy = win._to_canvas(arrow.start.x, arrow.start.y)
+    _drag(win, int(cx), int(cy), int(cx) + 30, int(cy))
+    arrow = win.composition.shapes[-3]
+    check("a graphic element can be dragged",
+          arrow.start.x > before.x + 10,
+          f"{before.x:.1f} -> {arrow.start.x:.1f}")
+
+    # -- deleting a graphic element --------------------------------------
+    n_shapes = len(win.composition.shapes)
+    win._selected_shape = 0
+    win._delete_selected()
+    win.update()
+    check("a graphic element can be deleted",
+          len(win.composition.shapes) == n_shapes - 1,
+          f"{len(win.composition.shapes)} shapes")
+
     # -- export -----------------------------------------------------------
     out = WORK / "composed.pdf"
     comp.export_composition(
@@ -243,14 +314,49 @@ def main() -> int:
               abs(page.rect.width - win.sheet_w) < 1
               and abs(page.rect.height - win.sheet_h) < 1,
               f"{page.rect.width:.0f}x{page.rect.height:.0f}")
-        pix = page.get_pixmap(dpi=72)
-        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
-            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+        spans = [s for b in page.get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        a_span = [s for s in spans if s["text"] == "(a)"]
+        check("the exported label uses the chosen font",
+              a_span and "Helvetica" in a_span[0]["font"],
+              a_span[0]["font"] if a_span else "no span")
+        check("the exported label uses the chosen size",
+              a_span and abs(a_span[0]["size"] - 14.0) < 0.2,
+              str(a_span[0]["size"]) if a_span else "no span")
+        check("the exported label uses the chosen colour",
+              a_span and a_span[0]["color"] == 0xCC0000,
+              hex(a_span[0]["color"]) if a_span else "no span")
     finally:
         doc.close()
 
     # Each figure has a colour of its own, so each one can be looked for in
     # the exported page and compared with the box it was dropped into.
+    #
+    # The check runs on an export that holds *only* the figures.  The graphic
+    # elements and the labels are painted on top of them, and the default red
+    # is close enough to the orange panel that the anti-aliased edge of a red
+    # label lands inside the orange colour mask -- which makes the panel look
+    # taller than it is.
+    saved_shapes = list(win.composition.shapes)
+    saved_labels = [p.label for p in win.composition.placements]
+    win.composition.shapes = []
+    for p in win.composition.placements:
+        p.label = ""
+    pos_out = WORK / "composed_figures_only.pdf"
+    comp.export_composition(
+        win.composition, pos_out, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h))
+    win.composition.shapes = saved_shapes
+    for p, label in zip(win.composition.placements, saved_labels):
+        p.label = label
+    doc = fitz.open(str(pos_out))
+    try:
+        pix = doc[0].get_pixmap(dpi=72)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    finally:
+        doc.close()
+
     for idx, placement in enumerate(win.composition.placements):
         colour = figure_colour(
             fixture, placement.figure.page_index, placement.figure.region)
