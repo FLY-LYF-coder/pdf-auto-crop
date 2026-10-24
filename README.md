@@ -331,6 +331,15 @@ and the aspect ratio it was given.
 they are and the ones in between are moved so that the gaps between them come
 out equal — 水平等间距 and 垂直等间距 for the two directions.
 
+### Groups
+
+**组合** (or `Ctrl`+`G`) makes the selection one object that travels
+together; **取消组合** (or `Ctrl`+`U`) lets it go its own ways again.  Clicking
+any member of a group picks the whole group, and `Ctrl`+click adds it to the
+selection.  A group is remembered in the saved layout, and the objects keep
+their own place in the sheet — grouping changes how they are *handled*, not
+what the exported PDF contains.
+
 ### Labels: font, size and colour
 
 Each label carries its own font, size and colour, so a figure can use the

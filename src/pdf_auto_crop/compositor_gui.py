@@ -568,19 +568,26 @@ class ComposeWindow(tk.Toplevel):
         ttk.Button(edits, text="垂直翻转", width=8,
                    command=lambda: self._flip_selected("y")).pack(side=tk.LEFT,
                                                                    padx=1)
+        groups = ttk.Frame(right)
+        groups.grid(row=4, column=0, sticky="ew", pady=2)
+        ttk.Button(groups, text="组合", width=6,
+                   command=self._group_selected).pack(side=tk.LEFT, padx=1)
+        ttk.Button(groups, text="取消组合", width=8,
+                   command=self._ungroup_selected).pack(side=tk.LEFT, padx=1)
         ttk.Button(right, text="删除选中", command=self._delete_selected).grid(
-            row=4, column=0, sticky="ew", pady=2)
-        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
             row=5, column=0, sticky="ew", pady=2)
+        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
+            row=6, column=0, sticky="ew", pady=2)
 
         ttk.Label(
             right,
             text="拖动图体移动，橙点缩放\n编号可直接拖到任意位置\n"
                  "Ctrl+点击 多选（可一起对齐/分布）\n"
+                 "Ctrl+G 组合 · Ctrl+U 取消组合\n"
                  "滚轮缩放画布，中键平移\n"
                  "方向键微调 · Delete 删除",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=6, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(10, 0))
 
     # -- the label tab ------------------------------------------------------
 
@@ -1574,6 +1581,34 @@ class ComposeWindow(tk.Toplevel):
                 update_selection(
                     self._sel_figs, self._sel_shapes, self._sel_texts,
                     kind, index, additive)
+            # An object that belongs to a group brings the whole group
+            # along: a group is one thing, as far as the cursor is
+            # concerned.
+            if mode == "body" and index is not None:
+                members = self._expand_to_group("figure", index)
+                if additive:
+                    # Ctrl+click adds the group, not just the one object.
+                    for m in members:
+                        if m not in self._sel_figs:
+                            self._sel_figs.append(m)
+                else:
+                    self._sel_figs = members
+            elif mode == "shape-body" and index is not None:
+                members = self._expand_to_group("shape", index)
+                if additive:
+                    for m in members:
+                        if m not in self._sel_shapes:
+                            self._sel_shapes.append(m)
+                else:
+                    self._sel_shapes = members
+            elif mode == "text-body" and index is not None:
+                members = self._expand_to_group("text", index)
+                if additive:
+                    for m in members:
+                        if m not in self._sel_texts:
+                            self._sel_texts.append(m)
+                else:
+                    self._sel_texts = members
             if label_idx is not None and label_idx in self._sel_figs:
                 mode = "label"
 
@@ -1760,8 +1795,69 @@ class ComposeWindow(tk.Toplevel):
         self._drag_shapes = {}
         self._update_count()
 
+    def _group_selected(self) -> None:
+        """Make the selection one object that travels together."""
+        if not (self._sel_figs or self._sel_shapes or self._sel_texts):
+            self._status("先选中要组合的元素。")
+            return
+        if len(self._sel_figs) + len(self._sel_shapes) + len(self._sel_texts) < 2:
+            self._status("至少选中两个元素才能组合。")
+            return
+        # An object that is already in a group joins that group instead of
+        # starting a new one.
+        existing = None
+        for group in self.composition.groups:
+            if any(group.holds("figure", i) for i in self._sel_figs) or \
+                    any(group.holds("shape", i) for i in self._sel_shapes) or \
+                    any(group.holds("text", i) for i in self._sel_texts):
+                existing = group
+                break
+        if existing is None:
+            existing = comp.Group()
+            self.composition.groups.append(existing)
+        for i in self._sel_figs:
+            if i not in existing.figs:
+                existing.figs.append(i)
+        for i in self._sel_shapes:
+            if i not in existing.shapes:
+                existing.shapes.append(i)
+        for i in self._sel_texts:
+            if i not in existing.texts:
+                existing.texts.append(i)
+        self._redraw()
+        self._status("已组合：组内的元素会一起移动。")
+
+    def _ungroup_selected(self) -> None:
+        """Let the objects of a group go their own ways again."""
+        removed = 0
+        for group in list(self.composition.groups):
+            if (any(group.holds("figure", i) for i in self._sel_figs)
+                    or any(group.holds("shape", i) for i in self._sel_shapes)
+                    or any(group.holds("text", i) for i in self._sel_texts)):
+                self.composition.groups.remove(group)
+                removed += 1
+        if not removed:
+            self._status("选中的元素不在任何组里。")
+            return
+        self._redraw()
+        self._status("已取消组合。")
+
+    def _expand_to_group(self, kind: str, index: int) -> List[int]:
+        """The members of the group an object belongs to, or just itself."""
+        group = self.composition.group_of(kind, index)
+        if group is None:
+            return [index]
+        return group.members(kind)
+
     def _on_key(self, event: tk.Event) -> None:
         key = event.keysym
+        # Ctrl+G groups the selection, Ctrl+U lets it go.
+        if (event.state & 0x0004) and key.lower() == "g":
+            self._group_selected()
+            return
+        if (event.state & 0x0004) and key.lower() == "u":
+            self._ungroup_selected()
+            return
         if key in ("Delete", "BackSpace"):
             self._delete_selected()
             return
@@ -2324,9 +2420,11 @@ class ComposeWindow(tk.Toplevel):
     def _delete_selected(self) -> None:
         """Remove everything that is selected."""
         if self._sel_texts:
+            # Back to front, so the indices stay valid while deleting.
             for i in sorted(self._sel_texts, reverse=True):
                 if 0 <= i < len(self.composition.texts):
                     del self.composition.texts[i]
+                    self.composition.regroup_after_removal("text", i)
             self._sel_texts = []
             self._sync_properties()
             self._redraw()
@@ -2337,6 +2435,7 @@ class ComposeWindow(tk.Toplevel):
             for i in sorted(self._sel_shapes, reverse=True):
                 if 0 <= i < len(self.composition.shapes):
                     del self.composition.shapes[i]
+                    self.composition.regroup_after_removal("shape", i)
             self._sel_shapes = []
             self._sync_properties()
             self._redraw()
@@ -2347,6 +2446,7 @@ class ComposeWindow(tk.Toplevel):
         for i in sorted(self._sel_figs, reverse=True):
             if 0 <= i < len(self.composition.placements):
                 del self.composition.placements[i]
+                self.composition.regroup_after_removal("figure", i)
         self._sel_figs = []
         self._sync_properties()
         self._redraw()

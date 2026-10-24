@@ -1077,6 +1077,51 @@ def test_the_text_rotation_survives_a_json_round_trip() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Groups
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_survives_a_json_round_trip() -> None:
+    c = comp.Composition(width=400, height=400)
+    c.figs = []
+    group = comp.Group(figs=[0, 2], shapes=[1])
+    c.groups.append(group)
+    back = comp.Composition.from_dict(c.to_dict())
+    assert len(back.groups) == 1
+    assert back.groups[0].figs == [0, 2]
+    assert back.groups[0].shapes == [1]
+    assert back.groups[0].texts == []
+
+
+def test_the_group_of_an_object_is_found() -> None:
+    c = comp.Composition(width=400, height=400)
+    c.groups.append(comp.Group(figs=[1, 2]))
+    assert c.group_of("figure", 2) is not None
+    assert c.group_of("figure", 3) is None
+    assert c.group_of("shape", 1) is None
+
+
+def test_the_groups_follow_the_objects_when_one_is_removed() -> None:
+    """Removing an object shifts the ones behind it, and the groups with
+    them -- otherwise a group would hold the wrong objects."""
+    c = comp.Composition(width=400, height=400)
+    c.groups.append(comp.Group(figs=[1, 2, 3]))
+    c.regroup_after_removal("figure", 1)
+    assert c.groups[0].figs == [1, 2]
+    # And when the last member goes, the empty group is dropped.
+    c.regroup_after_removal("figure", 1)
+    c.regroup_after_removal("figure", 1)
+    assert c.groups == []
+
+
+def test_a_group_keeps_its_members_when_one_is_removed() -> None:
+    c = comp.Composition(width=400, height=400)
+    c.groups.append(comp.Group(shapes=[0, 2]))
+    c.regroup_after_removal("shape", 0)
+    assert c.groups[0].shapes == [1]
+
+
+# ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------
 

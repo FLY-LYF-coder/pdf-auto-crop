@@ -427,6 +427,31 @@ def main() -> int:
     win._arrange("grid")
     win.update()
 
+    # -- grouping ----------------------------------------------------------
+    win._selected = 0
+    win._sel_figs = [0, 1]
+    win._sel_shapes = []
+    win._sel_texts = []
+    win._group_selected()
+    win.update()
+    check("objects can be grouped",
+          len(win.composition.groups) == 1
+          and sorted(win.composition.groups[0].figs) == [0, 1],
+          str([g.figs for g in win.composition.groups]))
+    # Clicking a member brings the whole group with it.
+    win._sel_figs = []
+    win._selected = 0
+    second = win.composition.placements[1]
+    cx, cy = win._to_canvas((second.rect.x0 + second.rect.x1) / 2,
+                            (second.rect.y0 + second.rect.y1) / 2)
+    _click(win, int(cx), int(cy))
+    check("clicking a member selects the whole group",
+          set(win._sel_figs) == {0, 1}, str(win._sel_figs))
+    win._ungroup_selected()
+    win.update()
+    check("a group can be dissolved",
+          not win.composition.groups, str(win.composition.groups))
+
     # -- spreading a group out --------------------------------------------
     # Three free-standing boxes: on a grid the figures overlap, so there is
     # nothing sensible to spread there.

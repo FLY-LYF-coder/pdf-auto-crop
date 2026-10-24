@@ -690,6 +690,47 @@ class TextItem:
 
 
 @dataclass
+class Group:
+    """A set of objects that travel together.
+
+    The members are held by their place in the composition's lists, which
+    is stable: objects are added at the end, and removing one shifts the
+    indices after it -- so the groups have to be told about that.
+    """
+
+    figs: List[int] = field(default_factory=list)
+    shapes: List[int] = field(default_factory=list)
+    texts: List[int] = field(default_factory=list)
+
+    def members(self, kind: str) -> List[int]:
+        """The members of one kind."""
+        if kind == "figure":
+            return list(self.figs)
+        if kind == "shape":
+            return list(self.shapes)
+        return list(self.texts)
+
+    def holds(self, kind: str, index: int) -> bool:
+        """Whether an object is in this group."""
+        return index in self.members(kind)
+
+    def to_dict(self) -> dict:
+        return {
+            "figs": list(self.figs),
+            "shapes": list(self.shapes),
+            "texts": list(self.texts),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Group":
+        return cls(
+            figs=[int(i) for i in data.get("figs", [])],
+            shapes=[int(i) for i in data.get("shapes", [])],
+            texts=[int(i) for i in data.get("texts", [])],
+        )
+
+
+@dataclass
 class Composition:
     """A page being assembled."""
 
@@ -700,7 +741,35 @@ class Composition:
     shapes: List[Shape] = field(default_factory=list)
     #: Free-standing text: annotations, notes, formulas.
     texts: List[TextItem] = field(default_factory=list)
+    #: Objects that travel together.
+    groups: List[Group] = field(default_factory=list)
     margin_pt: float = 0.0
+
+    def group_of(self, kind: str, index: int) -> Optional[Group]:
+        """The group an object belongs to, if any."""
+        for group in self.groups:
+            if group.holds(kind, index):
+                return group
+        return None
+
+    def regroup_after_removal(self, kind: str, removed: int) -> None:
+        """Fix the groups after an object has been taken out of the list.
+
+        The objects behind the removed one move up by one place, so the
+        groups have to move with them -- and the group that held the removed
+        object loses it.
+        """
+        members = "figs" if kind == "figure" else (
+            "shapes" if kind == "shape" else "texts")
+        for group in self.groups:
+            fixed = []
+            for i in getattr(group, members):
+                if i == removed:
+                    continue
+                fixed.append(i - 1 if i > removed else i)
+            setattr(group, members, fixed)
+        self.groups = [g for g in self.groups
+                       if g.figs or g.shapes or g.texts]
 
     def content_bounds(self) -> Optional[fitz.Rect]:
         """Bounding box of everything placed, labels included."""
@@ -738,6 +807,7 @@ class Composition:
             "placements": [p.to_dict() for p in self.placements],
             "shapes": [s.to_dict() for s in self.shapes],
             "texts": [t.to_dict() for t in self.texts],
+            "groups": [g.to_dict() for g in self.groups],
         }
 
     @classmethod
@@ -749,6 +819,7 @@ class Composition:
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
             shapes=[Shape.from_dict(s) for s in data.get("shapes", [])],
             texts=[TextItem.from_dict(t) for t in data.get("texts", [])],
+            groups=[Group.from_dict(g) for g in data.get("groups", [])],
         )
 
 
