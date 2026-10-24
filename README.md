@@ -270,7 +270,8 @@ Open it with the **组合…** button in the main window's toolbar.
    **自动编号** number them in order.  The label's font, size and colour are
    editable too (see [Labels](#labels-font-size-and-colour)).
 5. **Pick a tool** in the toolbar to draw arrows, boxes, circles or lines on
-   the sheet (see [Graphic elements](#graphic-elements)).
+   the sheet, or to drop a piece of text (see [Graphic elements](#graphic-elements)
+   and [The view](#the-view)).
 6. **导出 PDF…** writes the sheet.
 
 ### On the sheet
@@ -313,6 +314,10 @@ sheet instead.
 Aligning moves objects; it never resizes them, so a figure keeps the size
 and the aspect ratio it was given.
 
+**分布** spreads a group out instead: the two outermost objects stay where
+they are and the ones in between are moved so that the gaps between them come
+out equal — 水平等间距 and 垂直等间距 for the two directions.
+
 ### Labels: font, size and colour
 
 Each label carries its own font, size and colour, so a figure can use the
@@ -324,21 +329,46 @@ journal's typeface while the rest stay in the default.
 | 文件… | Use a `.ttf`/`.otf` from disk instead; the font is **embedded** in the exported PDF |
 | 字号 | 4 – 48 pt |
 | 颜色 | Any colour; the swatch next to it shows the current one |
+| 加粗 / 斜体 | Bold and italic, on top of the face itself |
+| LaTeX 公式 | Write the label as mathematics (see [Free text and formulas](#free-text-and-formulas)) |
 
 The built-in faces are the PDF base-14 fonts, so nothing is embedded and the
 output stays small and free of licensing questions.  A font file you pick is
 embedded, which does grow the file.
 
-If the chosen face has no glyph for a character — an ASCII font asked to
+If the chosen face has no glyph for a character — an ASCII face asked to
 write 中文, say — the label falls back to a Chinese face automatically.  A
 missing glyph is worse than a different typeface, so the fallback is silent
 rather than a row of empty boxes.
 
+**位置** puts the label 图下 (centred under the figure — the journal
+convention), 角上 (in the corner of the figure) or 自由 (wherever you want it).
+It can also simply be **dragged**: grab the label on the sheet and pull it
+anywhere, and it stays there when the figure is moved — the offset is kept
+relative to the figure, not to the page.
+
+### Free text and formulas
+
+The 文本 and 文本框 tools drop a piece of text on the sheet: a note of your
+own, a caption, a formula.  The text is written as real, selectable text, in
+any of the faces above, with 字号, 颜色, 加粗, 斜体 and an optional frame
+around it.
+
+Ticking **LaTeX 公式** typesets the text as mathematics instead: `\frac{1}{2}`,
+`\sum_{i=1}^{n} x_i`, `\alpha`, `\sqrt{2}` and the rest of the usual
+notation.  Matplotlib's mathtext does the typesetting — no TeX installation
+needed — and the result is drawn as **vector** PDF with the font embedded, so
+it stays sharp and the symbols remain selectable.
+
+Matplotlib is an optional dependency: without it a formula falls back to
+plain text rather than failing.
+
 ### Graphic elements
 
-The toolbar's second row selects a drawing tool: **选择/移动**, **箭头**
-(arrow), **方框** (box), **圆圈** (circle), **直线** (line).  With a drawing
-tool active, drag on the sheet to create the element.
+The **工具** dropdown offers the shapes PowerPoint offers — 箭头 (a line with a
+head), 方框, 圆角框, 圆圈, 三角形, 菱形, 平行四边形, 右箭头, 左箭头, 上箭头,
+下箭头 and 直线 — plus 文本 and 文本框.  Pick one and drag on the sheet to
+create the element.
 
 Once an element is selected, the properties panel styles it:
 
@@ -348,25 +378,45 @@ Once an element is selected, the properties panel styles it:
 | 边框宽 | The border width, 0.2 – 12 pt |
 | 边框线型 | 实线 (solid), 虚线 (dashed) or 点线 (dotted) |
 | 边框透明 | How opaque the border is, 0 – 100 % |
-| 填充色 | The colour inside a box or a circle |
+| 填充色 | The colour inside the shape |
 | 填充 | Fill the inside at all |
 | 填充透明 | How opaque the fill is, 0 – 100 % |
+| 角度 | How far the element is turned, in degrees |
+| 内容 | A caption in the middle of the shape, as in PowerPoint |
 
-The border and the fill are styled separately, so a box may have a red
-border and a pale yellow wash inside it, with the border dashed and the fill
-half transparent.  The styles apply to every selected element at once.
-
-Elements can be dragged, nudged with the arrow keys and deleted with
-`Delete`.
+The styles apply to every selected element at once.  Elements can be dragged,
+nudged with the arrow keys, copied (复制), flipped (水平/垂直翻转) and deleted
+with `Delete`.
 
 Only the *stroke* of an element is grabbable, so a translucent box drawn over
 a figure does not stop you from selecting the figure underneath it.  When the
 cursor is on both, the element wins — it is the thing drawn on top.
 
+A figure — an embedded PDF page — cannot be mirrored: doing so would mean
+rasterising it, and giving up the vector output the tool is about.  Turning
+one is fine, though: a quarter turn swaps its width and height and keeps its
+size.
+
 Everything stays vector: an arrow is a line plus two short strokes for the
-head, a box is a rectangle, a circle is an ellipse.  The dash pattern and
+head, a box is a rectangle, a triangle is a polygon.  The dash pattern and
 the opacities are written into the PDF as such.  No bitmap is introduced
 anywhere in the composition.
+
+### The view
+
+| Gesture | Effect |
+| ------- | ------ |
+| Mouse wheel | Zoom in or out, around the cursor |
+| Middle-button drag | Pan the view |
+| − / + in the footer | Zoom in or out |
+| 适应窗口 in the footer | Back to the view that fits the sheet |
+
+### The page
+
+**纸张** picks the page: A4 横向, A4 纵向, 适应内容 (as large as the content)
+or **自定义**, where the width and height are given in millimetres.  The
+arrangements (横向/网格) shrink their cells to fit the page, and keep room
+under the bottom row for the labels.
 
 ### What the output is
 
@@ -517,6 +567,13 @@ of trusting a constant.
    (un-closed) ink mask so dilation artefacts do not pad the crop.
 10. **Convert to PDF coordinates** (origin = bottom-left, units = pt) and
     **sort** top-down, left-to-right.
+11. **Fold in the figure's own labels.**  The detector finds the *ink* of a
+    plot, so the axis ticks, the axis titles and the figure's title — a
+    millimetre or two outside the frame — are not part of the box it
+    returns, and a crop taken from that box loses them.  The page's own text
+    says where they are, so the text blocks that belong to a detected
+    figure are folded into it.  Captions ("Fig. 3: ...") and body text are
+    left out: a caption belongs to the figure but is not part of it.
 
 Because step 5 and step 7 are chosen from the page's own measurements,
 `--merge-gap-mm` and `--morph-kernel-multiplier` have no effect under `smart`.
@@ -830,6 +887,8 @@ pdf-auto-crop/
 │       ├── compositor_gui.py    # compose window (palette + sheet + labels)
 │       ├── config.py           # CropConfig dataclass
 │       ├── detector.py         # detect_figures() — the "legacy" algorithm
+│       ├── dpi.py              # high-DPI awareness for the windows
+│       ├── figure_text.py      # folds a figure's axis labels into its box
 │       ├── geometry.py         # mm ↔ pt, raster ↔ PDF rect math
 │       ├── gui.py              # tkinter window (preview + manual editor)
 │       ├── gui_edit.py         # manual box store + canvas ↔ PDF geometry
@@ -844,6 +903,7 @@ pdf-auto-crop/
 │       ├── presets.py          # tight / standard / loose presets
 │       ├── preview.py          # PNG overlay generation
 │       ├── smart_detector.py   # layout-adaptive detector (default)
+│       ├── tex.py              # LaTeX mathematics → vector PDF
 │       └── ui_utils.py         # ANSI colours, prompts, progress bar
 ├── scripts/
 │   ├── make_test_pdfs.py       # Generates the 7 fixtures

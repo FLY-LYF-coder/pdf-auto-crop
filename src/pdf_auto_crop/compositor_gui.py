@@ -89,6 +89,34 @@ TOOL_TEXTBOX = "textbox"
 SHAPE_TOOLS = (comp.SHAPE_ARROW, comp.SHAPE_RECT, comp.SHAPE_ELLIPSE,
                comp.SHAPE_LINE)
 
+#: The shapes the toolbar offers, in the order they are listed.  The names
+#: are the ones PowerPoint uses, so the list reads the way a user expects.
+SHAPE_CHOICES: Tuple[Tuple[str, str], ...] = (
+    ("方框", comp.SHAPE_RECT),
+    ("圆角框", comp.SHAPE_ROUNDRECT),
+    ("圆圈", comp.SHAPE_ELLIPSE),
+    ("三角形", comp.SHAPE_TRIANGLE),
+    ("菱形", comp.SHAPE_DIAMOND),
+    ("平行四边形", comp.SHAPE_PARALLELOGRAM),
+    ("箭头", comp.SHAPE_ARROW),
+    ("右箭头", comp.SHAPE_RIGHT_ARROW),
+    ("左箭头", comp.SHAPE_LEFT_ARROW),
+    ("上箭头", comp.SHAPE_UP_ARROW),
+    ("下箭头", comp.SHAPE_DOWN_ARROW),
+    ("直线", comp.SHAPE_LINE),
+)
+
+#: Every tool the toolbar offers: what it is called and what it draws.
+TOOL_CHOICES: Tuple[Tuple[str, str], ...] = (
+    ("选择/移动", "select"),
+) + SHAPE_CHOICES + (
+    ("文本", TOOL_TEXT),
+    ("文本框", TOOL_TEXTBOX),
+)
+
+#: The name of a tool -> the thing it draws.
+TOOL_BY_NAME: Dict[str, str] = dict(TOOL_CHOICES)
+
 
 def distance_to_segment(px: float, py: float, x0: float, y0: float,
                         x1: float, y1: float) -> float:
@@ -306,6 +334,11 @@ class ComposeWindow(tk.Toplevel):
         #: Where on the label the cursor grabbed it, so it does not jump.
         self._drag_label_grab: Tuple[float, float] = (0.0, 0.0)
         self._zoom = 1.0
+        #: The user's own zoom, on top of the zoom that fits the sheet.
+        self._zoom_factor = 1.0
+        self._fit_zoom = 1.0
+        self._pan_origin: Optional[Tuple[float, float]] = None
+        self._pan_from: Tuple[float, float] = (0.0, 0.0)
         self._origin = (0.0, 0.0)
 
         #: The active tool: "select" moves things, the others draw.
@@ -395,44 +428,55 @@ class ComposeWindow(tk.Toplevel):
         self.var_sheet = tk.StringVar(value="A4 横向")
         ttk.Combobox(
             bar, textvariable=self.var_sheet, state="readonly", width=10,
-            values=["A4 横向", "A4 纵向", "适应内容"],
+            values=["A4 横向", "A4 纵向", "适应内容", "自定义"],
         ).grid(row=0, column=4, sticky="w")
         self.var_sheet.trace_add("write", lambda *_a: self._on_sheet_changed())
 
-        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=5, padx=(12, 4), sticky="e")
+        # The custom page size, in millimetres.
+        ttk.Label(bar, text="宽").grid(row=0, column=5, padx=(12, 2), sticky="e")
+        self.var_sheet_w = tk.StringVar(value="297")
+        self.ent_sheet_w = ttk.Entry(bar, textvariable=self.var_sheet_w, width=6)
+        self.ent_sheet_w.grid(row=0, column=6, sticky="w")
+        self.var_sheet_w.trace_add("write", lambda *_a: self._on_sheet_changed())
+        ttk.Label(bar, text="高 mm").grid(row=0, column=7, padx=(6, 2), sticky="e")
+        self.var_sheet_h = tk.StringVar(value="210")
+        self.ent_sheet_h = ttk.Entry(bar, textvariable=self.var_sheet_h, width=6)
+        self.ent_sheet_h.grid(row=0, column=8, sticky="w")
+        self.var_sheet_h.trace_add("write", lambda *_a: self._on_sheet_changed())
+
+        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=9, padx=(12, 4), sticky="e")
         self.var_margin = tk.StringVar(value="3")
-        ttk.Entry(bar, textvariable=self.var_margin, width=6).grid(row=0, column=6, sticky="w")
+        ttk.Entry(bar, textvariable=self.var_margin, width=6).grid(
+            row=0, column=10, sticky="w")
         self.var_margin.trace_add("write", lambda *_a: self._on_margin_changed())
 
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=7, sticky="ns", padx=8)
+            row=0, column=11, sticky="ns", padx=8)
         ttk.Button(bar, text="自动编号", command=self._auto_label).grid(
-            row=0, column=8, padx=(0, 6), sticky="w")
+            row=0, column=12, padx=(0, 6), sticky="w")
         ttk.Button(bar, text="横向排列", command=lambda: self._arrange("row")).grid(
-            row=0, column=9, padx=6, sticky="w")
+            row=0, column=13, padx=6, sticky="w")
         ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
-            row=0, column=10, padx=6, sticky="w")
+            row=0, column=14, padx=6, sticky="w")
 
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=11, padx=12, sticky="e")
+            row=0, column=15, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=12, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=16, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
-        self.var_tool = tk.StringVar(value="select")
-        for text, value in (("选择/移动", "select"), ("箭头", comp.SHAPE_ARROW),
-                            ("方框", comp.SHAPE_RECT), ("圆圈", comp.SHAPE_ELLIPSE),
-                            ("直线", comp.SHAPE_LINE),
-                            ("文本", TOOL_TEXT), ("文本框", TOOL_TEXTBOX)):
-            ttk.Radiobutton(
-                tools, text=text, value=value, variable=self.var_tool,
-                command=self._on_tool_changed,
-            ).pack(side=tk.LEFT, padx=2)
+        self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
+        self.cmb_tool = ttk.Combobox(
+            tools, textvariable=self.var_tool, state="readonly", width=12,
+            values=[name for name, _ in TOOL_CHOICES],
+        )
+        self.cmb_tool.pack(side=tk.LEFT)
+        self.cmb_tool.bind("<<ComboboxSelected>>", self._on_tool_changed)
         ttk.Separator(tools, orient=tk.VERTICAL).pack(side=tk.LEFT,
                                                        fill=tk.Y, padx=10)
         ttk.Label(
-            tools, text="选中后可在右侧改边框与填充；Ctrl+点击 可多选并对齐",
+            tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐",
             style="Hint.TLabel",
         ).pack(side=tk.LEFT)
 
@@ -470,6 +514,11 @@ class ComposeWindow(tk.Toplevel):
         # The same for the release: a modified drag has to end too.
         self.canvas.bind("<Control-ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Shift-ButtonRelease-1>", self._on_release)
+        # The wheel zooms the view, and the middle button pans it.
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Button-2>", self._on_pan_start)
+        self.canvas.bind("<B2-Motion>", self._on_pan_move)
+        self.canvas.bind("<ButtonRelease-2>", self._on_pan_end)
         self.canvas.bind("<Delete>", self._on_key)
         self.canvas.bind("<BackSpace>", self._on_key)
         self.canvas.bind("<Escape>", self._on_key)
@@ -506,18 +555,29 @@ class ComposeWindow(tk.Toplevel):
             row=1, column=0, sticky="ew", pady=(10, 2))
         ttk.Button(right, text="置于底层", command=lambda: self._restack(-1)).grid(
             row=2, column=0, sticky="ew", pady=2)
+        edits = ttk.Frame(right)
+        edits.grid(row=3, column=0, sticky="ew", pady=(8, 2))
+        ttk.Button(edits, text="复制", width=6,
+                   command=self._duplicate_selected).pack(side=tk.LEFT, padx=1)
+        ttk.Button(edits, text="水平翻转", width=8,
+                   command=lambda: self._flip_selected("x")).pack(side=tk.LEFT,
+                                                                   padx=1)
+        ttk.Button(edits, text="垂直翻转", width=8,
+                   command=lambda: self._flip_selected("y")).pack(side=tk.LEFT,
+                                                                   padx=1)
         ttk.Button(right, text="删除选中", command=self._delete_selected).grid(
-            row=3, column=0, sticky="ew", pady=(8, 2))
-        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
             row=4, column=0, sticky="ew", pady=2)
+        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
+            row=5, column=0, sticky="ew", pady=2)
 
         ttk.Label(
             right,
             text="拖动图体移动，橙点缩放\n编号可直接拖到任意位置\n"
                  "Ctrl+点击 多选（可一起对齐/分布）\n"
+                 "滚轮缩放画布，中键平移\n"
                  "方向键微调 · Delete 删除",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=6, column=0, sticky="w", pady=(10, 0))
 
     # -- the label tab ------------------------------------------------------
 
@@ -590,6 +650,17 @@ class ComposeWindow(tk.Toplevel):
             style_box, text="LaTeX 公式", variable=self.var_label_formula,
             command=self._on_label_changed)
         self.chk_label_formula.pack(side=tk.LEFT)
+
+        ttk.Label(tab, text="角度").grid(row=6, column=0, sticky="w", pady=3)
+        self.var_fig_rotation = tk.StringVar(value="0")
+        self.spin_fig_rotation = ttk.Spinbox(
+            tab, from_=-180, to=180, increment=1,
+            textvariable=self.var_fig_rotation, width=6)
+        self.spin_fig_rotation.grid(row=6, column=1, sticky="w", pady=3)
+        self.var_fig_rotation.trace_add(
+            "write", lambda *_a: self._on_figure_changed())
+        ttk.Label(tab, text="度", style="Hint.TLabel").grid(
+            row=6, column=2, sticky="w", padx=(4, 0))
 
     # -- the free text tab --------------------------------------------------
 
@@ -721,6 +792,35 @@ class ComposeWindow(tk.Toplevel):
         self.var_shape_fill_opacity.trace_add(
             "write", lambda *_a: self._on_shape_changed())
 
+        ttk.Label(tab, text="角度").grid(row=7, column=0, sticky="w", pady=3)
+        self.var_shape_rotation = tk.StringVar(value="0")
+        self.spin_shape_rotation = ttk.Spinbox(
+            tab, from_=-180, to=180, increment=1,
+            textvariable=self.var_shape_rotation, width=6,
+        )
+        self.spin_shape_rotation.grid(row=7, column=1, sticky="w", pady=3)
+        self.var_shape_rotation.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+        ttk.Label(tab, text="度", style="Hint.TLabel").grid(
+            row=7, column=2, sticky="w", padx=(4, 0))
+
+        ttk.Label(tab, text="内容").grid(row=8, column=0, sticky="w", pady=3)
+        self.var_shape_text = tk.StringVar(value="")
+        self.ent_shape_text = ttk.Entry(tab, textvariable=self.var_shape_text)
+        self.ent_shape_text.grid(row=8, column=1, columnspan=2, sticky="ew", pady=3)
+        self.var_shape_text.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(tab, text="文字字号").grid(row=9, column=0, sticky="w", pady=3)
+        self.var_shape_text_size = tk.StringVar(value="9")
+        self.spin_shape_text_size = ttk.Spinbox(
+            tab, from_=4, to=48, increment=1,
+            textvariable=self.var_shape_text_size, width=6,
+        )
+        self.spin_shape_text_size.grid(row=9, column=1, sticky="w", pady=3)
+        self.var_shape_text_size.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
     # -- the alignment tab ---------------------------------------------------
 
     def _build_align_tab(self, tab: ttk.Frame) -> None:
@@ -763,8 +863,17 @@ class ComposeWindow(tk.Toplevel):
         foot.pack(side=tk.BOTTOM, fill=tk.X)
         self.lbl_status = ttk.Label(foot, text="", style="Hint.TLabel")
         self.lbl_status.pack(side=tk.LEFT)
+        ttk.Button(foot, text="−", width=3,
+                   command=lambda: self._zoom_by(1.0 / 1.15)).pack(side=tk.RIGHT)
+        self.lbl_zoom = ttk.Label(foot, text="100%", style="Hint.TLabel",
+                                  width=6, anchor="e")
+        self.lbl_zoom.pack(side=tk.RIGHT, padx=4)
+        ttk.Button(foot, text="+", width=3,
+                   command=lambda: self._zoom_by(1.15)).pack(side=tk.RIGHT)
+        ttk.Button(foot, text="适应窗口", width=8,
+                   command=self._zoom_fit).pack(side=tk.RIGHT, padx=6)
         self.lbl_count = ttk.Label(foot, text="", style="Hint.TLabel")
-        self.lbl_count.pack(side=tk.RIGHT)
+        self.lbl_count.pack(side=tk.RIGHT, padx=(0, 12))
 
     # -- status ------------------------------------------------------------
 
@@ -783,6 +892,10 @@ class ComposeWindow(tk.Toplevel):
         if self.palette:
             text += f"  ·  素材 {len(self.palette)} 个"
         self.lbl_count.configure(text=text)
+        try:
+            self.lbl_zoom.configure(text=f"{self._zoom_factor * 100:.0f}%")
+        except tk.TclError:  # pragma: no cover -- before the footer exists
+            pass
 
     # -- import ------------------------------------------------------------
 
@@ -879,10 +992,23 @@ class ComposeWindow(tk.Toplevel):
 
     def _on_sheet_changed(self) -> None:
         mode = self.var_sheet.get()
+        custom = mode == "自定义"
+        # The size fields only mean something for a custom page.
+        for entry in (self.ent_sheet_w, self.ent_sheet_h):
+            entry.configure(state="normal" if custom else "disabled")
         if mode == "A4 横向":
             self.sheet_w, self.sheet_h = SHEET_LANDSCAPE
         elif mode == "A4 纵向":
             self.sheet_w, self.sheet_h = SHEET_PORTRAIT
+        elif custom:
+            try:
+                w = mm_to_pt(float(self.var_sheet_w.get()))
+                h = mm_to_pt(float(self.var_sheet_h.get()))
+            except ValueError:
+                return
+            if w <= 0 or h <= 0:
+                return
+            self.sheet_w, self.sheet_h = w, h
         else:
             bounds = self.composition.content_bounds()
             if bounds is not None:
@@ -897,6 +1023,58 @@ class ComposeWindow(tk.Toplevel):
             self.composition.margin_pt = mm_to_pt(float(self.var_margin.get()))
         except ValueError:
             return
+        self._redraw()
+
+    # -- the view: zoom and pan --------------------------------------------
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        """The wheel zooms the view around the cursor."""
+        step = 1.15 if event.delta > 0 else 1.0 / 1.15
+        target = self._zoom_factor * step
+        if not 0.05 <= target <= 20.0:
+            return
+        # The point under the cursor has to stay under the cursor.
+        ux, uy = self._to_user(event.x, event.y)
+        self._zoom_factor = target
+        self._redraw()
+        nx, ny = self._to_canvas(ux, uy)
+        self._origin = (self._origin[0] + (event.x - nx),
+                        self._origin[1] + (event.y - ny))
+        self._redraw()
+
+    def _on_pan_start(self, event: tk.Event) -> None:
+        self._pan_origin = (event.x, event.y)
+        self._pan_from = self._origin
+
+    def _on_pan_move(self, event: tk.Event) -> None:
+        if self._pan_origin is None:
+            return
+        dx = event.x - self._pan_origin[0]
+        dy = event.y - self._pan_origin[1]
+        self._origin = (self._pan_from[0] + dx, self._pan_from[1] + dy)
+        self._redraw()
+
+    def _on_pan_end(self, event: tk.Event) -> None:
+        self._pan_origin = None
+
+    def _zoom_by(self, factor: float) -> None:
+        """Zoom in or out around the middle of the canvas."""
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        target = self._zoom_factor * factor
+        if not 0.05 <= target <= 20.0:
+            return
+        ux, uy = self._to_user(cw / 2, ch / 2)
+        self._zoom_factor = target
+        self._redraw()
+        nx, ny = self._to_canvas(ux, uy)
+        self._origin = (self._origin[0] + (cw / 2 - nx),
+                        self._origin[1] + (ch / 2 - ny))
+        self._redraw()
+
+    def _zoom_fit(self) -> None:
+        """Back to the view that fits the whole sheet."""
+        self._zoom_factor = 1.0
         self._redraw()
 
     # -- coordinate mapping -------------------------------------------------
@@ -922,7 +1100,11 @@ class ComposeWindow(tk.Toplevel):
         ch = max(1, self.canvas.winfo_height())
         # A point of the sheet is this many pixels on this display.
         pp = dpi.pixels_per_point(self)
-        self._zoom = min(cw / (self.sheet_w * pp), ch / (self.sheet_h * pp), pp)
+        # The zoom that fits the sheet, and the user's own factor on top of
+        # it -- the wheel changes the factor, so the view stays where the
+        # user put it.
+        self._fit_zoom = min(cw / (self.sheet_w * pp), ch / (self.sheet_h * pp), pp)
+        self._zoom = self._fit_zoom * self._zoom_factor
         pw = max(1, self.sheet_w * self._zoom)
         ph = max(1, self.sheet_h * self._zoom)
         self._origin = (cw / 2 - pw / 2, ch / 2 - ph / 2)
@@ -966,6 +1148,12 @@ class ComposeWindow(tk.Toplevel):
 
     def _draw_placement(self, idx: int, placement: comp.Placement) -> None:
         left, top, right, bottom = self._canvas_rect(placement.rect)
+        # A turned figure takes up the box its corners sweep, the same way
+        # it does on the exported page.
+        if abs(placement.rotation) > 1e-6:
+            box = comp.rotated_bbox(fitz.Rect(left, top, right, bottom),
+                                    placement.rotation)
+            left, top, right, bottom = box.x0, box.y0, box.x1, box.y1
         # Every selected figure is outlined; the handles belong to the one
         # the property panel is editing.
         selected = idx in self._sel_figs
@@ -976,10 +1164,15 @@ class ComposeWindow(tk.Toplevel):
             tw, th = int(right - left), int(bottom - top)
             if tw > 0 and th > 0:
                 scaled = img.resize((tw, th), Image.LANCZOS)
+                if abs(placement.rotation) > 1e-6:
+                    # Pillow turns anticlockwise; the sheet turns clockwise.
+                    scaled = scaled.rotate(-placement.rotation, expand=True,
+                                           resample=Image.BICUBIC)
                 photo = ImageTk.PhotoImage(scaled)
                 self._photo_cache[placement.figure.key] = photo
                 self.canvas.create_image(
-                    left, top, image=photo, anchor=tk.NW, tags=("fig", str(idx))
+                    (left + right) / 2, (top + bottom) / 2, image=photo,
+                    anchor=tk.CENTER, tags=("fig", str(idx))
                 )
         else:
             self.canvas.create_rectangle(
@@ -1081,6 +1274,13 @@ class ComposeWindow(tk.Toplevel):
         """Draw a graphic element on the canvas."""
         x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
         x1, y1 = self._to_canvas(shape.end.x, shape.end.y)
+        # A turned shape is turned about the middle of its own box -- the
+        # canvas counts downwards, the same way the exported page does.
+        centre = fitz.Point((x0 + x1) / 2, (y0 + y1) / 2)
+        p0 = comp.rotate_point(fitz.Point(x0, y0), centre, shape.rotation)
+        p1 = comp.rotate_point(fitz.Point(x1, y1), centre, shape.rotation)
+        left, top = min(p0.x, p1.x), min(p0.y, p1.y)
+        right, bottom = max(p0.x, p1.x), max(p0.y, p1.y)
         r, g, b = shape.color
         colour = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
         width = max(1, int(round(shape.width * self._zoom)))
@@ -1100,30 +1300,52 @@ class ComposeWindow(tk.Toplevel):
                 int((fb * a + (1 - a)) * 255),
             )
 
-        if shape.kind in (comp.SHAPE_RECT, comp.SHAPE_ELLIPSE):
-            left, top = min(x0, x1), min(y0, y1)
-            right, bottom = max(x0, x1), max(y0, y1)
-            if shape.kind == comp.SHAPE_RECT:
-                item = self.canvas.create_rectangle(
-                    left, top, right, bottom, outline=colour, width=width,
-                    fill=fill_colour, dash=dash,
-                )
-            else:
-                item = self.canvas.create_oval(
-                    left, top, right, bottom, outline=colour, width=width,
-                    fill=fill_colour, dash=dash,
-                )
-        else:
+        box = fitz.Rect(left, top, right, bottom)
+        if shape.kind == comp.SHAPE_LINE:
             item = self.canvas.create_line(
-                x0, y0, x1, y1, fill=colour, width=width, arrow=tk.LAST,
-                dash=dash,
-                arrowshape=(8, 10, 4) if shape.kind == comp.SHAPE_ARROW else (),
-            )
+                p0.x, p0.y, p1.x, p1.y, fill=colour, width=width, dash=dash,
+                tags=("shape", tag))
+        elif shape.kind == comp.SHAPE_ARROW:
+            item = self.canvas.create_line(
+                p0.x, p0.y, p1.x, p1.y, fill=colour, width=width, dash=dash,
+                arrow=tk.LAST, arrowshape=(8, 10, 4), tags=("shape", tag))
+        elif shape.kind == comp.SHAPE_ELLIPSE:
+            item = self.canvas.create_oval(
+                left, top, right, bottom, outline=colour, width=width,
+                fill=fill_colour, dash=dash, tags=("shape", tag))
+        elif shape.kind in (comp.SHAPE_RECT, comp.SHAPE_ROUNDRECT):
+            item = self.canvas.create_rectangle(
+                left, top, right, bottom, outline=colour, width=width,
+                fill=fill_colour, dash=dash, tags=("shape", tag))
+        else:
+            points = comp.shape_outline(shape.kind, box)
+            flat: List[float] = []
+            for point in points:
+                flat.extend((point.x, point.y))
+            if flat:
+                item = self.canvas.create_polygon(
+                    flat, outline=colour, width=width, fill=fill_colour,
+                    dash=dash, tags=("shape", tag))
+            else:  # pragma: no cover -- every kind has an outline
+                item = self.canvas.create_line(
+                    p0.x, p0.y, p1.x, p1.y, fill=colour, width=width,
+                    tags=("shape", tag))
         self.canvas.addtag_withtag("shape", item)
         self.canvas.itemconfigure(item, tags=("shape", tag))
 
+        if shape.text:
+            tw, th = comp.text_width(shape.text, "helv", shape.text_size), \
+                shape.text_size * 1.25
+            self.canvas.create_text(
+                (left + right) / 2, (top + bottom) / 2, text=shape.text,
+                fill="#%02x%02x%02x" % tuple(
+                    int(c * 255) for c in shape.caption_rgb),
+                font=tk_font("Helvetica", int(shape.text_size)),
+                anchor=tk.CENTER, tags=("shape", tag))
+
         if primary:
-            for hx, hy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+            for hx, hy in ((left, top), (right, top), (right, bottom),
+                           (left, bottom)):
                 self.canvas.create_rectangle(
                     hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
                     hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
@@ -1144,6 +1366,10 @@ class ComposeWindow(tk.Toplevel):
         for i in range(len(self.composition.placements) - 1, -1, -1):
             p = self.composition.placements[i]
             left, top, right, bottom = self._canvas_rect(p.rect)
+            if abs(p.rotation) > 1e-6:
+                box = comp.rotated_bbox(fitz.Rect(left, top, right, bottom),
+                                        p.rotation)
+                left, top, right, bottom = box.x0, box.y0, box.x1, box.y1
             if left <= cx <= right and top <= cy <= bottom:
                 return i, "body"
         return None, None
@@ -1158,24 +1384,36 @@ class ComposeWindow(tk.Toplevel):
             shape = self.composition.shapes[i]
             x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
             x1, y1 = self._to_canvas(shape.end.x, shape.end.y)
-            if shape.kind in (comp.SHAPE_RECT, comp.SHAPE_ELLIPSE):
-                left, top = min(x0, x1), min(y0, y1)
-                right, bottom = max(x0, x1), max(y0, y1)
-                if shape.kind == comp.SHAPE_ELLIPSE:
-                    cxr, cyr = (left + right) / 2, (top + bottom) / 2
-                    rx = max((right - left) / 2, 1e-6)
-                    ry = max((bottom - top) / 2, 1e-6)
-                    r = math.hypot((cx - cxr) / rx, (cy - cyr) / ry)
-                    if abs(r - 1.0) * min(rx, ry) <= SHAPE_HIT_PX:
+            centre = fitz.Point((x0 + x1) / 2, (y0 + y1) / 2)
+            p0 = comp.rotate_point(fitz.Point(x0, y0), centre, shape.rotation)
+            p1 = comp.rotate_point(fitz.Point(x1, y1), centre, shape.rotation)
+            left, top = min(p0.x, p1.x), min(p0.y, p1.y)
+            right, bottom = max(p0.x, p1.x), max(p0.y, p1.y)
+            if shape.kind == comp.SHAPE_ELLIPSE:
+                cxr, cyr = (left + right) / 2, (top + bottom) / 2
+                rx = max((right - left) / 2, 1e-6)
+                ry = max((bottom - top) / 2, 1e-6)
+                r = math.hypot((cx - cxr) / rx, (cy - cyr) / ry)
+                if abs(r - 1.0) * min(rx, ry) <= SHAPE_HIT_PX:
+                    return i
+            elif shape.kind in (comp.SHAPE_LINE, comp.SHAPE_ARROW):
+                if distance_to_segment(cx, cy, p0.x, p0.y, p1.x, p1.y) \
+                        <= SHAPE_HIT_PX:
+                    return i
+            else:
+                # A closed outline: the box for a rectangle, the shape's own
+                # outline for a polygon.
+                box = fitz.Rect(left, top, right, bottom)
+                points = comp.shape_outline(shape.kind, box) or [
+                    fitz.Point(left, top), fitz.Point(right, top),
+                    fitz.Point(right, bottom), fitz.Point(left, bottom),
+                ]
+                for j in range(len(points)):
+                    a = points[j]
+                    b = points[(j + 1) % len(points)]
+                    if distance_to_segment(cx, cy, a.x, a.y, b.x, b.y) \
+                            <= SHAPE_HIT_PX:
                         return i
-                elif (top <= cy <= bottom
-                        and min(abs(cx - left), abs(cx - right)) <= SHAPE_HIT_PX):
-                    return i
-                elif (left <= cx <= right
-                      and min(abs(cy - top), abs(cy - bottom)) <= SHAPE_HIT_PX):
-                    return i
-            elif distance_to_segment(cx, cy, x0, y0, x1, y1) <= SHAPE_HIT_PX:
-                return i
         return None
 
     def _hit_text(self, cx: float, cy: float) -> Optional[int]:
@@ -1540,6 +1778,8 @@ class ComposeWindow(tk.Toplevel):
         for widget in (self.chk_label_bold, self.chk_label_italic,
                        self.chk_label_formula):
             widget.configure(state="normal" if has_fig else "disabled")
+        self.spin_fig_rotation.configure(
+            state="normal" if has_fig else "disabled")
         if has_fig:
             p = self.composition.placements[self._selected]
             self.var_label.set(p.label)
@@ -1549,6 +1789,7 @@ class ComposeWindow(tk.Toplevel):
             self.var_label_bold.set(bool(p.label_bold))
             self.var_label_italic.set(bool(p.label_italic))
             self.var_label_formula.set(bool(p.label_formula))
+            self.var_fig_rotation.set(f"{p.rotation:g}")
             self._set_swatch(self.btn_label_color, p.label_color)
             self.nb.select(self.tab_label)
         else:
@@ -1593,6 +1834,12 @@ class ComposeWindow(tk.Toplevel):
             state="normal" if has_shape else "disabled")
         self.spin_shape_fill_opacity.configure(
             state="normal" if has_shape else "disabled")
+        self.spin_shape_rotation.configure(
+            state="normal" if has_shape else "disabled")
+        self.ent_shape_text.configure(
+            state="normal" if has_shape else "disabled")
+        self.spin_shape_text_size.configure(
+            state="normal" if has_shape else "disabled")
         if has_shape:
             shape = self.composition.shapes[self._selected_shape]
             self.var_shape_width.set(f"{shape.width:g}")
@@ -1603,6 +1850,9 @@ class ComposeWindow(tk.Toplevel):
             self.var_shape_opacity.set(f"{round(shape.stroke_opacity * 100):g}")
             self.var_shape_fill_opacity.set(
                 f"{round(shape.fill_opacity * 100):g}")
+            self.var_shape_rotation.set(f"{shape.rotation:g}")
+            self.var_shape_text.set(shape.text)
+            self.var_shape_text_size.set(f"{shape.text_size:g}")
             self._set_swatch(self.btn_shape_color, shape.color)
             self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
             self.nb.select(self.tab_shape)
@@ -1614,7 +1864,7 @@ class ComposeWindow(tk.Toplevel):
                                           int(b * 255)))
 
     def _on_tool_changed(self) -> None:
-        self.tool = self.var_tool.get()
+        self.tool = TOOL_BY_NAME.get(self.var_tool.get(), "select")
         self.canvas.configure(cursor="crosshair" if self.tool != "select"
                               else "")
         self._status("已选择工具：{}".format(self.var_tool.get()))
@@ -1667,6 +1917,9 @@ class ComposeWindow(tk.Toplevel):
         dash = self.var_shape_dash.get()
         opacity = self._shape_opacity(self.var_shape_opacity.get())
         fill_opacity = self._shape_opacity(self.var_shape_fill_opacity.get())
+        rotation = self._shape_rotation()
+        text = self.var_shape_text.get()
+        text_size = self._shape_text_size()
         for i in self._sel_shapes:
             if not 0 <= i < len(self.composition.shapes):
                 continue
@@ -1678,9 +1931,109 @@ class ComposeWindow(tk.Toplevel):
             shape.dash = dash
             shape.stroke_opacity = opacity
             shape.fill_opacity = fill_opacity
+            shape.rotation = rotation
+            shape.text = text
+            shape.text_size = text_size
         self._set_swatch(self.btn_shape_color, color)
         self._set_swatch(self.btn_shape_fill_color, fill_color)
         self._redraw()
+
+    def _shape_rotation(self) -> float:
+        try:
+            return float(self.var_shape_rotation.get()) % 360.0
+        except ValueError:
+            return 0.0
+
+    def _shape_text_size(self) -> float:
+        try:
+            return max(4.0, min(48.0, float(self.var_shape_text_size.get())))
+        except ValueError:
+            return 9.0
+
+    def _on_figure_changed(self) -> None:
+        """Apply the figure's angle to every selected figure."""
+        if not self._sel_figs:
+            return
+        try:
+            rotation = float(self.var_fig_rotation.get()) % 360.0
+        except ValueError:
+            return
+        for i in self._sel_figs:
+            if 0 <= i < len(self.composition.placements):
+                self.composition.placements[i].rotation = rotation
+        self._redraw()
+
+    def _duplicate_selected(self) -> None:
+        """A copy of everything that is selected, a little to one side."""
+        made = False
+        for i in list(self._sel_figs):
+            if not 0 <= i < len(self.composition.placements):
+                continue
+            p = self.composition.placements[i]
+            self.composition.placements.append(dataclasses.replace(
+                p, rect=fitz.Rect(p.rect.x0 + 10, p.rect.y0 - 10,
+                                   p.rect.x1 + 10, p.rect.y1 - 10)))
+            made = True
+        for i in list(self._sel_shapes):
+            if not 0 <= i < len(self.composition.shapes):
+                continue
+            shape = self.composition.shapes[i]
+            self.composition.shapes.append(dataclasses.replace(
+                shape,
+                start=fitz.Point(shape.start.x + 10, shape.start.y - 10),
+                end=fitz.Point(shape.end.x + 10, shape.end.y - 10)))
+            made = True
+        for i in list(self._sel_texts):
+            if not 0 <= i < len(self.composition.texts):
+                continue
+            item = self.composition.texts[i]
+            self.composition.texts.append(dataclasses.replace(
+                item, position=fitz.Point(item.position.x + 10,
+                                          item.position.y - 10)))
+            made = True
+        if not made:
+            self._status("先选中要复制的元素。")
+            return
+        self._selected = None
+        self._selected_shape = None
+        self._selected_text = None
+        self._redraw()
+        self._update_count()
+        self._status("已复制所选元素。")
+
+    def _flip_selected(self, axis: str) -> None:
+        """Mirror the selected graphic elements.
+
+        A figure is an embedded PDF page, and mirroring one would mean
+        rasterising it -- which would give up the vector output the whole
+        tool is about.  So figures are left alone; the elements, whose
+        geometry is ours to turn, are mirrored about their own middle.
+        """
+        flipped = 0
+        for i in self._sel_shapes:
+            if not 0 <= i < len(self.composition.shapes):
+                continue
+            shape = self.composition.shapes[i]
+            box = shape.rect
+            cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+            start, end = shape.start, shape.end
+            if axis == "x":
+                start = fitz.Point(2 * cx - start.x, start.y)
+                end = fitz.Point(2 * cx - end.x, end.y)
+            else:
+                start = fitz.Point(start.x, 2 * cy - start.y)
+                end = fitz.Point(end.x, 2 * cy - end.y)
+            self.composition.shapes[i] = dataclasses.replace(
+                shape, start=start, end=end)
+            flipped += 1
+        if not flipped:
+            if self._sel_figs:
+                self._status("图是嵌入的 PDF 片段，镜像会破坏矢量，故不���持。")
+            else:
+                self._status("先选中要翻转的图形。")
+            return
+        self._redraw()
+        self._status("已水平翻转。" if axis == "x" else "已垂直翻转。")
 
     @staticmethod
     def _shape_opacity(value: str) -> float:
@@ -1973,8 +2326,24 @@ class ComposeWindow(tk.Toplevel):
         cell_h = max((p.rect.height for p in items), default=100.0)
         total_w = cols * cell_w + (cols - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
+        # A figure that was made bigger than the sheet must not push the
+        # layout off it: the cells shrink until the whole arrangement fits.
+        # Room is kept under the bottom row for the labels, which sit below
+        # their figures by default.
+        label_room = 0.0
+        for p in items:
+            if p.label and p.label_mode == comp.LABEL_BELOW:
+                label_room = max(label_room, p.label_size * 1.6)
+        scale = min(1.0,
+                    self.sheet_w / total_w if total_w else 1.0,
+                    (self.sheet_h - label_room) / total_h if total_h else 1.0)
+        cell_w *= scale
+        cell_h *= scale
+        gap *= scale
+        total_w = cols * cell_w + (cols - 1) * gap
+        total_h = rows * cell_h + (rows - 1) * gap
         x0 = (self.sheet_w - total_w) / 2
-        y0 = (self.sheet_h - total_h) / 2
+        y0 = (self.sheet_h - label_room - total_h) / 2
         for i, p in enumerate(items):
             r, c = divmod(i, cols)
             # Rows are laid out from the top of the sheet downwards.

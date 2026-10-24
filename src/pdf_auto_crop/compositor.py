@@ -142,12 +142,37 @@ LABEL_GAP_PT = 4.0
 
 #: The graphic elements that can be drawn on top of the figures.
 SHAPE_ARROW = "arrow"
-SHAPE_RECT = "rect"
-SHAPE_ELLIPSE = "ellipse"
 SHAPE_LINE = "line"
+SHAPE_RECT = "rect"
+SHAPE_ROUNDRECT = "roundrect"
+SHAPE_ELLIPSE = "ellipse"
+SHAPE_TRIANGLE = "triangle"
+SHAPE_DIAMOND = "diamond"
+SHAPE_PARALLELOGRAM = "parallelogram"
+SHAPE_RIGHT_ARROW = "rightarrow"
+SHAPE_LEFT_ARROW = "leftarrow"
+SHAPE_UP_ARROW = "uparrow"
+SHAPE_DOWN_ARROW = "downarrow"
 
-SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ELLIPSE,
-                                 SHAPE_LINE)
+SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ROUNDRECT,
+                                 SHAPE_ELLIPSE, SHAPE_TRIANGLE, SHAPE_DIAMOND,
+                                 SHAPE_PARALLELOGRAM, SHAPE_LINE,
+                                 SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
+                                 SHAPE_UP_ARROW, SHAPE_DOWN_ARROW)
+
+#: The shapes whose two points span a box they are inscribed in.
+SHAPE_BOX_KINDS: Tuple[str, ...] = (
+    SHAPE_RECT, SHAPE_ROUNDRECT, SHAPE_ELLIPSE, SHAPE_TRIANGLE,
+    SHAPE_DIAMOND, SHAPE_PARALLELOGRAM, SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
+    SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
+)
+
+#: The shapes that can carry a caption, like a PowerPoint shape can.
+SHAPE_TEXT_KINDS: Tuple[str, ...] = (
+    SHAPE_RECT, SHAPE_ROUNDRECT, SHAPE_ELLIPSE, SHAPE_TRIANGLE,
+    SHAPE_DIAMOND, SHAPE_PARALLELOGRAM, SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
+    SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
+)
 
 #: The colour a new shape is drawn in.
 SHAPE_COLOR_DEFAULT: Tuple[float, float, float] = (0.85, 0.1, 0.1)
@@ -363,12 +388,16 @@ class Placement:
     #: figure's bottom-left corner, in points.  Keeping the offset rather
     #: than an absolute position means the label travels with the figure.
     label_offset: Tuple[float, float] = (0.0, 0.0)
+    #: How far the figure is turned about the middle of its box, in
+    #: degrees, clockwise.
+    rotation: float = 0.0
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
         self.label_color = tuple(float(c) for c in self.label_color)[:3]
         self.label_offset = (float(self.label_offset[0]),
                              float(self.label_offset[1]))
+        self.rotation = float(self.rotation) % 360.0
 
     @property
     def aspect(self) -> float:
@@ -413,6 +442,7 @@ class Placement:
             "label_italic": self.label_italic,
             "label_formula": self.label_formula,
             "label_offset": list(self.label_offset),
+            "rotation": self.rotation,
         }
 
     @classmethod
@@ -432,6 +462,7 @@ class Placement:
             label_italic=bool(data.get("label_italic", False)),
             label_formula=bool(data.get("label_formula", False)),
             label_offset=(float(offset[0]), float(offset[1])),
+            rotation=float(data.get("rotation", 0.0)),
         )
 
 
@@ -465,6 +496,14 @@ class Shape:
     stroke_opacity: float = 1.0
     #: The border's line style: "solid", "dashed" or "dotted".
     dash: str = DASH_SOLID
+    #: How far the shape is turned about its centre, in degrees, clockwise.
+    rotation: float = 0.0
+    #: A caption inside the shape, as in PowerPoint.
+    text: str = ""
+    #: The caption's size, in points.
+    text_size: float = 9.0
+    #: The caption's colour; the border colour when empty.
+    text_color: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self) -> None:
         self.start = fitz.Point(self.start)
@@ -472,9 +511,12 @@ class Shape:
         self.color = tuple(float(c) for c in self.color)[:3]
         if self.fill_color is not None:
             self.fill_color = tuple(float(c) for c in self.fill_color)[:3]
+        if self.text_color is not None:
+            self.text_color = tuple(float(c) for c in self.text_color)[:3]
         self.width = max(0.1, float(self.width))
         self.fill_opacity = min(1.0, max(0.0, float(self.fill_opacity)))
         self.stroke_opacity = min(1.0, max(0.0, float(self.stroke_opacity)))
+        self.rotation = float(self.rotation) % 360.0
         if self.dash not in DASH_STYLES:
             self.dash = DASH_SOLID
 
@@ -483,6 +525,13 @@ class Shape:
         """The fill colour, falling back to the border colour."""
         if self.fill_color is not None:
             return self.fill_color
+        return self.color
+
+    @property
+    def caption_rgb(self) -> Tuple[float, float, float]:
+        """The caption's colour, falling back to the border colour."""
+        if self.text_color is not None:
+            return self.text_color
         return self.color
 
     @property
@@ -506,11 +555,17 @@ class Shape:
             "fill_opacity": self.fill_opacity,
             "stroke_opacity": self.stroke_opacity,
             "dash": self.dash,
+            "rotation": self.rotation,
+            "text": self.text,
+            "text_size": self.text_size,
+            "text_color": (list(self.text_color)
+                           if self.text_color is not None else None),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Shape":
         fill_color = data.get("fill_color")
+        text_color = data.get("text_color")
         return cls(
             kind=data["kind"],
             start=fitz.Point(*data["start"]),
@@ -523,6 +578,10 @@ class Shape:
                 data.get("fill_opacity", SHAPE_FILL_OPACITY_DEFAULT)),
             stroke_opacity=float(data.get("stroke_opacity", 1.0)),
             dash=str(data.get("dash", DASH_SOLID)),
+            rotation=float(data.get("rotation", 0.0)),
+            text=str(data.get("text", "")),
+            text_size=float(data.get("text_size", 9.0)),
+            text_color=(tuple(text_color) if text_color is not None else None),
         )
 
 
@@ -640,7 +699,8 @@ class Composition:
 
     def content_bounds(self) -> Optional[fitz.Rect]:
         """Bounding box of everything placed, labels included."""
-        boxes = [fitz.Rect(p.rect) for p in self.placements]
+        boxes = [rotated_bbox(fitz.Rect(p.rect), p.rotation)
+                 for p in self.placements]
         for p in self.placements:
             if p.label and p.label_mode == LABEL_BELOW:
                 boxes.append(label_rect(p))
@@ -1144,6 +1204,83 @@ def _draw_arrow_head(page: fitz.Page, tip: fitz.Point, tail: fitz.Point,
                        stroke_opacity=opacity)
 
 
+def rotate_point(point: fitz.Point, centre: fitz.Point, degrees: float
+                 ) -> fitz.Point:
+    """A point turned about a centre.
+
+    The angle is positive **clockwise** on the sheet, which is the way a
+    user thinks of a dial: turning a shape to the right.
+    """
+    if abs(degrees) < 1e-9:
+        return fitz.Point(point)
+    rad = math.radians(degrees)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    dx = point.x - centre.x
+    dy = point.y - centre.y
+    return fitz.Point(
+        centre.x + dx * cos_a - dy * sin_a,
+        centre.y + dx * sin_a + dy * cos_a,
+    )
+
+
+def rotated_bbox(rect: fitz.Rect, degrees: float) -> fitz.Rect:
+    """The box a rectangle takes up once it is turned about its centre."""
+    if abs(degrees) < 1e-9:
+        return fitz.Rect(rect)
+    centre = fitz.Point((rect.x0 + rect.x1) / 2, (rect.y0 + rect.y1) / 2)
+    points = [
+        rotate_point(fitz.Point(x, y), centre, degrees)
+        for x, y in ((rect.x0, rect.y0), (rect.x1, rect.y0),
+                     (rect.x1, rect.y1), (rect.x0, rect.y1))
+    ]
+    xs = [p.x for p in points]
+    ys = [p.y for p in points]
+    return fitz.Rect(min(xs), min(ys), max(xs), max(ys))
+
+
+#: The outline of a block arrow, in unit coordinates (0..1) of its box.
+_ARROW_OUTLINE: Tuple[Tuple[float, float], ...] = (
+    (0.0, 0.30), (0.60, 0.30), (0.60, 0.0), (1.0, 0.5),
+    (0.60, 1.0), (0.60, 0.70), (0.0, 0.70),
+)
+
+
+def shape_outline(kind: str, rect: fitz.Rect) -> List[fitz.Point]:
+    """The outline of a polygon-shaped graphic element.
+
+    The two points of the shape span a box, and the outline is inscribed in
+    it -- the same way a PowerPoint shape is drawn in the box it occupies.
+    """
+    x0, y0 = rect.x0, rect.y0
+    w, h = rect.width, rect.height
+
+    def place(u: float, v: float) -> fitz.Point:
+        return fitz.Point(x0 + u * w, y0 + v * h)
+
+    if kind == SHAPE_TRIANGLE:
+        # The box is in the page's frame, where v = 0 is the top.
+        return [place(0.5, 0.0), place(1.0, 1.0), place(0.0, 1.0)]
+    if kind == SHAPE_DIAMOND:
+        return [place(0.5, 0.0), place(1.0, 0.5), place(0.5, 1.0), place(0.0, 0.5)]
+    if kind == SHAPE_PARALLELOGRAM:
+        # Leaning to the right, the way a PowerPoint parallelogram does.
+        skew = 0.2
+        return [place(skew, 0.0), place(1.0, 0.0), place(1.0 - skew, 1.0),
+                place(0.0, 1.0)]
+    if kind in (SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW, SHAPE_UP_ARROW,
+                SHAPE_DOWN_ARROW):
+        points = list(_ARROW_OUTLINE)
+        if kind == SHAPE_LEFT_ARROW:
+            points = [(1.0 - u, v) for u, v in points]
+        elif kind == SHAPE_UP_ARROW:
+            # The right arrow turned a quarter turn anticlockwise.
+            points = [(v, 1.0 - u) for u, v in points]
+        elif kind == SHAPE_DOWN_ARROW:
+            points = [(1.0 - v, u) for u, v in points]
+        return [place(u, v) for u, v in points]
+    return []
+
+
 def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
     """Draw one graphic element on a page.
 
@@ -1161,21 +1298,55 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
     fill = shape.fill_rgb if shape.fill else None
     fill_opacity = shape.fill_opacity if shape.fill else 0.0
 
+    # A turned shape is turned about the middle of its own box.
+    centre = fitz.Point((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+    p0 = rotate_point(p0, centre, shape.rotation)
+    p1 = rotate_point(p1, centre, shape.rotation)
+    box = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
+                    max(p0.x, p1.x), max(p0.y, p1.y))
+
     if shape.kind == SHAPE_LINE:
         page.draw_line(p0, p1, color=color, width=width, dashes=dashes,
                        lineCap=line_cap, stroke_opacity=stroke_opacity)
-    elif shape.kind in (SHAPE_RECT, SHAPE_ELLIPSE):
-        r = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
-                      max(p0.x, p1.x), max(p0.y, p1.y))
-        draw = page.draw_rect if shape.kind == SHAPE_RECT else page.draw_oval
-        draw(r, color=color, fill=fill, width=width, dashes=dashes,
-             lineCap=line_cap, stroke_opacity=stroke_opacity,
-             fill_opacity=fill_opacity)
-    else:  # arrow
+    elif shape.kind in (SHAPE_RECT, SHAPE_ROUNDRECT):
+        page.draw_rect(box, color=color, fill=fill, width=width, dashes=dashes,
+                       lineCap=line_cap, stroke_opacity=stroke_opacity,
+                       fill_opacity=fill_opacity,
+                       radius=0.15 if shape.kind == SHAPE_ROUNDRECT else None)
+    elif shape.kind == SHAPE_ELLIPSE:
+        page.draw_oval(box, color=color, fill=fill, width=width, dashes=dashes,
+                       lineCap=line_cap, stroke_opacity=stroke_opacity,
+                       fill_opacity=fill_opacity)
+    elif shape.kind == SHAPE_ARROW:
         page.draw_line(p0, p1, color=color, width=width, dashes=dashes,
                        lineCap=line_cap, stroke_opacity=stroke_opacity)
         _draw_arrow_head(page, p1, p0, color, width, dashes, line_cap,
                          stroke_opacity)
+    else:
+        # A polygon shape: its outline is inscribed in the box it spans.
+        points = shape_outline(shape.kind, box)
+        if points:
+            page.draw_polyline(points + [points[0]], color=color, fill=fill,
+                               width=width, dashes=dashes, lineCap=line_cap,
+                               stroke_opacity=stroke_opacity,
+                               fill_opacity=fill_opacity)
+
+    if shape.text:
+        _draw_shape_caption(page, shape, box, page_height)
+
+
+def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
+                        page_height: float) -> None:
+    """Write a caption in the middle of a shape, as PowerPoint does."""
+    fontname, fontfile = resolve_label_font(shape.text, "", "")
+    width = text_width(shape.text, fontname, shape.text_size, fontfile)
+    baseline = fitz.Point(
+        (box.x0 + box.x1) / 2 - width / 2,
+        (box.y0 + box.y1) / 2 + shape.text_size * 0.35,
+    )
+    page.insert_text(baseline, shape.text, fontsize=shape.text_size,
+                     fontname=fontname, fontfile=fontfile or None,
+                     color=shape.caption_rgb)
 
 
 def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
@@ -1301,7 +1472,12 @@ def export_composition(
             try:
                 # The figure's rect is in user space; MuPDF wants top-down.
                 target = to_mupdf_rect(rect, h)
-                page.show_pdf_page(target, baked, 0, rotate=0)
+                if abs(placement.rotation) > 1e-6:
+                    # A turned figure keeps its size and takes up the box its
+                    # corners sweep, so the target has to grow with it.
+                    target = rotated_bbox(target, placement.rotation)
+                page.show_pdf_page(target, baked, 0,
+                                   rotate=placement.rotation)
             finally:
                 baked.close()
 

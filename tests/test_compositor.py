@@ -874,6 +874,163 @@ def test_a_bold_label_reaches_the_pdf(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Turning, and the PowerPoint-like shapes
+# ---------------------------------------------------------------------------
+
+
+def test_a_point_is_turned_about_a_centre() -> None:
+    centre = fitz.Point(100, 100)
+    turned = comp.rotate_point(fitz.Point(110, 100), centre, 90)
+    # A quarter turn in the page's frame (which counts downwards) puts the
+    # point below the centre.
+    assert turned.x == pytest.approx(100, abs=1e-6)
+    assert turned.y == pytest.approx(110, abs=1e-6)
+
+
+def test_a_turned_rectangle_takes_up_a_taller_box() -> None:
+    rect = fitz.Rect(0, 0, 100, 50)
+    turned = comp.rotated_bbox(rect, 90)
+    assert turned.width == pytest.approx(50, abs=1e-6)
+    assert turned.height == pytest.approx(100, abs=1e-6)
+    # The middle does not move.
+    assert turned.x0 + turned.width / 2 == pytest.approx(50, abs=1e-6)
+    assert turned.y0 + turned.height / 2 == pytest.approx(25, abs=1e-6)
+    # No turn means no change.
+    same = comp.rotated_bbox(rect, 0)
+    assert same.x0 == 0 and same.y0 == 0
+
+
+def test_a_turned_shape_is_drawn_turned(tmp_path) -> None:
+    """The triangle's apex has to move to the right."""
+    c = comp.Composition(width=200, height=200)
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_TRIANGLE, fitz.Point(50, 150), fitz.Point(100, 180),
+        color=(0.0, 0.0, 1.0), width=1, rotation=90))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(200, 200))
+    doc = fitz.open(str(out))
+    try:
+        pix = doc[0].get_pixmap(dpi=72)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    finally:
+        doc.close()
+    blue = (arr[:, :, 2] > 100) & (arr[:, :, 0] < 100)
+    ys, xs = np.where(blue)
+    assert len(xs)
+    # The apex is now on the right, so the ink is taller than it is wide.
+    assert xs.max() - xs.min() < ys.max() - ys.min()
+
+
+def test_the_polygon_shapes_are_inscribed_in_their_box() -> None:
+    box = fitz.Rect(0, 0, 100, 50)
+    triangle = comp.shape_outline(comp.SHAPE_TRIANGLE, box)
+    assert len(triangle) == 3
+    assert min(p.y for p in triangle) == box.y0
+    assert max(p.y for p in triangle) == box.y1
+    diamond = comp.shape_outline(comp.SHAPE_DIAMOND, box)
+    assert len(diamond) == 4
+    assert min(p.x for p in diamond) == box.x0
+    assert max(p.x for p in diamond) == box.x1
+    # The right arrow points to the right.
+    arrow = comp.shape_outline(comp.SHAPE_RIGHT_ARROW, box)
+    assert max(p.x for p in arrow) == box.x1
+    left = comp.shape_outline(comp.SHAPE_LEFT_ARROW, box)
+    assert min(p.x for p in left) == box.x0
+    up = comp.shape_outline(comp.SHAPE_UP_ARROW, box)
+    assert min(p.y for p in up) == box.y0
+    down = comp.shape_outline(comp.SHAPE_DOWN_ARROW, box)
+    assert max(p.y for p in down) == box.y1
+
+
+def test_every_shape_kind_is_drawn(tmp_path) -> None:
+    """No shape may silently draw nothing."""
+    for kind in comp.SHAPE_KINDS:
+        c = comp.Composition(width=200, height=200)
+        c.shapes.append(comp.Shape(
+            kind, fitz.Point(40, 120), fitz.Point(160, 180),
+            color=(0.0, 0.0, 1.0), width=2))
+        out = comp.export_composition(
+            c, tmp_path / f"{kind}.pdf", fit_to_content=False,
+            page_size=(200, 200))
+        doc = fitz.open(str(out))
+        try:
+            assert doc[0].get_drawings(), f"{kind} drew nothing"
+        finally:
+            doc.close()
+
+
+def test_a_shape_can_carry_a_caption(tmp_path) -> None:
+    c = comp.Composition(width=200, height=200)
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(40, 120), fitz.Point(160, 180),
+        color=(0.0, 0.0, 1.0), width=2, text="Note"))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(200, 200))
+    doc = fitz.open(str(out))
+    try:
+        assert "Note" in doc[0].get_text()
+    finally:
+        doc.close()
+
+
+def test_a_turned_figure_keeps_its_size(tmp_path) -> None:
+    """A quarter turn swaps the figure's width and height."""
+    src, region = _build_source(tmp_path, red=fitz.Rect(50, 60, 250, 160))
+    assert region.width == pytest.approx(200)
+    assert region.height == pytest.approx(100)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(50, 150, 250, 250), label="", rotation=90))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        pix = doc[0].get_pixmap(dpi=72)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    finally:
+        doc.close()
+    ink = arr.sum(axis=2) < 720
+    ys, xs = np.where(ink)
+    assert len(xs)
+    # The figure was 200 wide and 100 tall; turned, it is the other way.
+    assert xs.max() - xs.min() == pytest.approx(100, abs=3)
+    assert ys.max() - ys.min() == pytest.approx(200, abs=3)
+
+
+def test_the_rotation_survives_a_json_round_trip(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(20, 20, 220, 220), label="(a)", rotation=45))
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_TRIANGLE, fitz.Point(10, 10), fitz.Point(50, 40),
+        rotation=30, text="x", text_size=11.0))
+    back = comp.Composition.from_dict(c.to_dict())
+    assert back.placements[0].rotation == pytest.approx(45.0)
+    assert back.shapes[0].rotation == pytest.approx(30.0)
+    assert back.shapes[0].text == "x"
+    assert back.shapes[0].text_size == pytest.approx(11.0)
+
+
+def test_a_turned_shape_keeps_its_caption(tmp_path) -> None:
+    c = comp.Composition(width=200, height=200)
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(40, 120), fitz.Point(160, 180),
+        color=(0.0, 0.0, 1.0), width=2, text="Note", rotation=45))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(200, 200))
+    doc = fitz.open(str(out))
+    try:
+        assert "Note" in doc[0].get_text()
+    finally:
+        doc.close()
+
+
+# ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------
 

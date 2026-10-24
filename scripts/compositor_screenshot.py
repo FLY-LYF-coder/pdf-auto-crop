@@ -108,7 +108,7 @@ def _physical_rect(win) -> Optional[Tuple[int, int, int, int]]:
         return None
 
 
-def _shot(win, name: str) -> Path:
+def _shot(win, name: str) -> Optional[Path]:
     win.update()
     # The screen grab takes whatever is on top, and the user's own window
     # may well be -- so the compositor comes forward for the picture.
@@ -123,9 +123,16 @@ def _shot(win, name: str) -> Path:
         w, h = win.winfo_width(), win.winfo_height()
         bbox = (x, y, x + w, y + h)
     path = SHOTS / name
-    ImageGrab.grab(bbox=bbox).save(str(path))
-    if not was_topmost:
-        win.attributes("-topmost", False)
+    try:
+        ImageGrab.grab(bbox=bbox).save(str(path))
+    except OSError as exc:
+        # A locked or switched-away desktop cannot be grabbed; the checks
+        # themselves do not need the picture.
+        print(f"  (no screenshot for {name}: {exc})")
+        path = None
+    finally:
+        if not was_topmost:
+            win.attributes("-topmost", False)
     return path
 
 
@@ -302,7 +309,7 @@ def main() -> int:
 
     # -- drawing a graphic element ---------------------------------------
     n_shapes = len(win.composition.shapes)
-    win.var_tool.set("arrow")
+    win.var_tool.set("箭头")
     win._on_tool_changed()
     check("the arrow tool is active", win.tool == "arrow", win.tool)
     _drag(win, 700, 200, 780, 260)
@@ -317,14 +324,15 @@ def main() -> int:
               f"{arrow.start} -> {arrow.end}")
         check("the new arrow is selected", win._selected_shape is not None)
 
-    # A box and a circle, to show the other two tools work too.
-    for tool, x0, y0, x1, y1 in (("rect", 700, 320, 800, 400),
-                                 ("ellipse", 700, 420, 800, 500)):
+    # A box, a circle and a triangle, to show the other tools work too.
+    for tool, x0, y0, x1, y1 in (("方框", 700, 320, 800, 400),
+                                 ("圆圈", 700, 420, 800, 500),
+                                 ("三角形", 640, 540, 720, 610)):
         win.var_tool.set(tool)
         win._on_tool_changed()
         _drag(win, x0, y0, x1, y1)
-    check("all three graphic tools drew something",
-          len(win.composition.shapes) == n_shapes + 3,
+    check("all the graphic tools drew something",
+          len(win.composition.shapes) == n_shapes + 4,
           f"{len(win.composition.shapes)} shapes")
     drawn = win.composition.shapes[-1]
     check("a new element takes the style of the panel",
@@ -335,7 +343,7 @@ def main() -> int:
     _shot(win, "07_shapes.png")
 
     # -- moving a graphic element ----------------------------------------
-    win.var_tool.set("select")
+    win.var_tool.set("选择/移动")
     win._on_tool_changed()
     arrow = win.composition.shapes[-3]
     before = fitz.Point(arrow.start.x, arrow.start.y)
@@ -385,7 +393,7 @@ def main() -> int:
     _shot(win, "08_style.png")
 
     # -- selecting several figures and lining them up ---------------------
-    win.var_tool.set("select")
+    win.var_tool.set("选择/移动")
     win._on_tool_changed()
     win._selected = 0
     win._sel_figs = [0]
@@ -461,7 +469,7 @@ def main() -> int:
     # -- dropping a piece of text ------------------------------------------
     # The texts go to the far right of the sheet, where no figure is: a
     # colour test on the panels would otherwise find them.
-    win.var_tool.set("text")
+    win.var_tool.set("文本")
     win._on_tool_changed()
     tx, ty = win._to_canvas(750, 520)
     _click(win, int(tx), int(ty))
@@ -484,7 +492,7 @@ def main() -> int:
           str(item.color))
 
     # A LaTeX formula, drawn as vector mathematics.
-    win.var_tool.set("textbox")
+    win.var_tool.set("文本框")
     win._on_tool_changed()
     fx, fy = win._to_canvas(750, 460)
     _click(win, int(fx), int(fy))
@@ -498,6 +506,86 @@ def main() -> int:
     check("the formula is a text box",
           win.composition.texts[1].box is True)
     _shot(win, "11_text.png")
+
+    # -- turning an element ------------------------------------------------
+    win.var_tool.set("选择/移动")
+    win._on_tool_changed()
+    win._selected_shape = 0
+    win._sync_properties()
+    win.var_shape_rotation.set("45")
+    win._on_shape_changed()
+    win.update()
+    check("a graphic element can be turned",
+          win.composition.shapes[0].rotation == pytest.approx(45.0),
+          str(win.composition.shapes[0].rotation))
+    win.var_shape_rotation.set("0")
+    win._on_shape_changed()
+
+    win._selected = 0
+    win._sync_properties()
+    win.var_fig_rotation.set("90")
+    win._on_figure_changed()
+    win.update()
+    check("a figure can be turned",
+          win.composition.placements[0].rotation == pytest.approx(90.0),
+          str(win.composition.placements[0].rotation))
+    win.var_fig_rotation.set("0")
+    win._on_figure_changed()
+    win.update()
+
+    # -- a caption inside a shape ------------------------------------------
+    win._selected_shape = 0
+    win._sync_properties()
+    win.var_shape_text.set("Note")
+    win._on_shape_changed()
+    win.update()
+    check("a shape can carry a caption",
+          win.composition.shapes[0].text == "Note",
+          win.composition.shapes[0].text)
+
+    # -- copying and flipping ----------------------------------------------
+    n_shapes = len(win.composition.shapes)
+    win._selected_shape = 0
+    win._duplicate_selected()
+    win.update()
+    check("the selection can be copied",
+          len(win.composition.shapes) == n_shapes + 1,
+          f"{len(win.composition.shapes)} shapes")
+    win._selected_shape = 0
+    left_before = win.composition.shapes[0].start.x
+    win._flip_selected("x")
+    win.update()
+    check("an element can be flipped",
+          abs(win.composition.shapes[0].start.x - left_before) > 1,
+          f"{left_before} -> {win.composition.shapes[0].start.x}")
+
+    # -- the wheel zooms the view -------------------------------------------
+    zoom_before = win._zoom_factor
+    win.canvas.event_generate("<MouseWheel>", delta=120, x=400, y=300)
+    win.update()
+    check("the wheel zooms the view in",
+          win._zoom_factor > zoom_before,
+          f"{zoom_before} -> {win._zoom_factor}")
+    win.canvas.event_generate("<MouseWheel>", delta=-120, x=400, y=300)
+    win.update()
+    check("the wheel zooms the view out",
+          win._zoom_factor == pytest.approx(zoom_before, abs=0.01),
+          f"{win._zoom_factor}")
+    win._zoom_fit()
+
+    # -- a page of one's own size -------------------------------------------
+    win.var_sheet.set("自定义")
+    win.var_sheet_w.set("200")
+    win.var_sheet_h.set("150")
+    win._on_sheet_changed()
+    win.update()
+    check("the page can be given a size of its own",
+          abs(win.sheet_w - 200 * 72 / 25.4) < 0.5
+          and abs(win.sheet_h - 150 * 72 / 25.4) < 0.5,
+          f"{win.sheet_w:.1f}x{win.sheet_h:.1f}")
+    win.var_sheet.set("A4 横向")
+    win._on_sheet_changed()
+    win.update()
 
     # -- export -----------------------------------------------------------
     out = WORK / "composed.pdf"
