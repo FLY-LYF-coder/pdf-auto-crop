@@ -1030,6 +1030,52 @@ def test_a_turned_shape_keeps_its_caption(tmp_path) -> None:
         doc.close()
 
 
+def test_a_turned_text_stays_real_text(tmp_path) -> None:
+    """Turning a text must not turn it into a picture."""
+    c = comp.Composition(width=300, height=200)
+    c.texts.append(comp.TextItem(
+        text="Turned", position=fitz.Point(100, 100), size=12.0,
+        rotation=30))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(300, 200))
+    doc = fitz.open(str(out))
+    try:
+        assert "Turned" in doc[0].get_text()
+        assert doc[0].get_images() == [], "the text was rasterised"
+    finally:
+        doc.close()
+
+
+def test_a_turned_text_stays_where_it_was(tmp_path) -> None:
+    """Turning a caption must not make it jump away."""
+    c = comp.Composition(width=300, height=200)
+    c.texts.append(comp.TextItem(
+        text="Here", position=fitz.Point(100, 100), size=12.0,
+        rotation=90))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(300, 200))
+    doc = fitz.open(str(out))
+    try:
+        pix = doc[0].get_pixmap(dpi=72)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    finally:
+        doc.close()
+    ink = arr.sum(axis=2) < 720
+    ys, xs = np.where(ink)
+    assert len(xs)
+    # The text starts at (100, 100) in user space, which is (100, 100) in
+    # page space here; the ink has to be around there.
+    assert 60 < xs.min() < 140, (xs.min(), xs.max())
+    assert 60 < ys.min() < 140, (ys.min(), ys.max())
+
+
+def test_the_text_rotation_survives_a_json_round_trip() -> None:
+    item = comp.TextItem(text="x", position=fitz.Point(1, 2), rotation=45)
+    back = comp.TextItem.from_dict(item.to_dict())
+    assert back.rotation == pytest.approx(45.0)
+
+
 # ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------

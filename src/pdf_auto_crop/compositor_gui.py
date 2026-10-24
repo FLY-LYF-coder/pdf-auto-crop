@@ -303,6 +303,9 @@ class ComposeWindow(tk.Toplevel):
 
     def __init__(self, master: tk.Misc, cfg: Optional[CropConfig] = None) -> None:
         super().__init__(master)
+        # Tk does not notice a high-DPI display by itself; tell it the real
+        # resolution of the monitor this window is on.
+        dpi.apply_tk_scaling(self)
         self.title("组合 — 把多张 PDF 的子图拼成一张大图")
         # The window is sized in physical pixels, so on a high-DPI display
         # the geometry has to be scaled to come out the same size on screen.
@@ -724,6 +727,17 @@ class ComposeWindow(tk.Toplevel):
             style_box, text="文本框", variable=self.var_text_box,
             command=self._on_text_changed)
         self.chk_text_box.pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(tab, text="角度").grid(row=5, column=0, sticky="w", pady=3)
+        self.var_text_rotation = tk.StringVar(value="0")
+        self.spin_text_rotation = ttk.Spinbox(
+            tab, from_=-180, to=180, increment=1,
+            textvariable=self.var_text_rotation, width=6)
+        self.spin_text_rotation.grid(row=5, column=1, sticky="w", pady=3)
+        self.var_text_rotation.trace_add(
+            "write", lambda *_a: self._on_text_changed())
+        ttk.Label(tab, text="度", style="Hint.TLabel").grid(
+            row=5, column=2, sticky="w", padx=(4, 0))
 
     # -- the graphic element tab --------------------------------------------
 
@@ -1242,6 +1256,11 @@ class ComposeWindow(tk.Toplevel):
                 x, y - h, x + w, y, outline="#999999",
                 dash=(2, 2), tags=("text", str(idx)))
             return
+        if abs(item.rotation) > 1e-6:
+            # Tk cannot turn a text, so the very PDF the export writes is
+            # rendered and shown instead.
+            self._draw_turned_text(idx, item)
+            return
         r, g, b = item.color
         family = item.font or comp.LABEL_FONT_DEFAULT
         style = "normal"
@@ -1269,6 +1288,50 @@ class ComposeWindow(tk.Toplevel):
                     fill="#ff7f0e", outline="white", width=1,
                     tags=("text", str(idx)),
                 )
+
+    def _draw_turned_text(self, idx: int, item: comp.TextItem) -> None:
+        """Show a turned text the way it will be printed."""
+        rendered = None
+        if item.formula:
+            from .tex import render_math
+            rendered = render_math(item.text, item.size)
+        else:
+            rendered = comp.render_text_pdf(item)
+        if rendered is None:
+            return
+        doc = fitz.open(str(rendered))
+        try:
+            page = doc[0]
+            spans = [s for b in page.get_text("dict")["blocks"]
+                     for line in b.get("lines", []) for s in line["spans"]]
+            if not spans:
+                return
+            box = spans[0]["bbox"]
+            origin = spans[0]["origin"]
+            # The raster has to match the zoom, so the text is the same
+            # size on the canvas as it is on the sheet.
+            render_dpi = int(round(max(36.0, 72.0 * self._zoom)))
+            pix = page.get_pixmap(dpi=render_dpi)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            scale = render_dpi / 72.0
+            # The ink, cropped out of the rendered page.
+            ink = img.crop((int(box[0] * scale), int(box[1] * scale),
+                            int(box[2] * scale) + 1,
+                            int(box[3] * scale) + 1))
+            if abs(item.rotation) > 1e-6:
+                # Pillow turns anticlockwise; the sheet turns clockwise.
+                ink = ink.rotate(-item.rotation, expand=True,
+                                 resample=Image.BICUBIC)
+            photo = ImageTk.PhotoImage(ink)
+            self._photo_cache[f"text{idx}"] = photo
+            # The middle of the ink, in the composition's user space.
+            cx = item.position.x + ((box[0] + box[2]) / 2 - origin[0])
+            cy = item.position.y - ((box[1] + box[3]) / 2 - origin[1])
+            px, py = self._to_canvas(cx, cy)
+            self.canvas.create_image(px, py, image=photo, anchor=tk.CENTER,
+                                     tags=("text", str(idx)))
+        finally:
+            doc.close()
 
     def _draw_shape(self, idx: int, shape: comp.Shape) -> None:
         """Draw a graphic element on the canvas."""
@@ -1816,6 +1879,7 @@ class ComposeWindow(tk.Toplevel):
             self.var_text_italic.set(bool(item.italic))
             self.var_text_formula.set(bool(item.formula))
             self.var_text_box.set(bool(item.box))
+            self.var_text_rotation.set(f"{item.rotation:g}")
             self._set_swatch(self.btn_text_color, item.color)
             self.nb.select(self.tab_text)
 
@@ -2145,6 +2209,10 @@ class ComposeWindow(tk.Toplevel):
         italic = bool(self.var_text_italic.get())
         formula = bool(self.var_text_formula.get())
         box = bool(self.var_text_box.get())
+        try:
+            rotation = float(self.var_text_rotation.get()) % 360.0
+        except ValueError:
+            rotation = 0.0
         for i in self._sel_texts:
             if not 0 <= i < len(self.composition.texts):
                 continue
@@ -2158,6 +2226,7 @@ class ComposeWindow(tk.Toplevel):
             item.italic = italic
             item.formula = formula
             item.box = box
+            item.rotation = rotation
         self._set_swatch(self.btn_text_color, color)
         self._redraw()
 

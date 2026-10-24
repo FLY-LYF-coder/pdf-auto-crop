@@ -222,6 +222,9 @@ class App(tk.Tk):
 
     def __init__(self) -> None:
         super().__init__()
+        # Tk does not notice a high-DPI display by itself; tell it the real
+        # resolution of the monitor this window is on.
+        dpi.apply_tk_scaling(self)
         self.title("PDF Auto Crop  —  科研论文图片智能裁剪")
         # Tall enough that the right-hand column (parameters, feedback, export
         # button) plus the status footer all fit without the canvas stealing

@@ -351,8 +351,10 @@ relative to the figure, not to the page.
 
 The 文本 and 文本框 tools drop a piece of text on the sheet: a note of your
 own, a caption, a formula.  The text is written as real, selectable text, in
-any of the faces above, with 字号, 颜色, 加粗, 斜体 and an optional frame
-around it.
+any of the faces above, with 字号, 颜色, 加粗, 斜体, an optional frame around
+it and an 角度 to turn it by.  A turned text is written on a page of its own
+and then placed with an angle, so it stays real text rather than a picture —
+and it does not jump away when you turn it.
 
 Ticking **LaTeX 公式** typesets the text as mathematics instead: `\frac{1}{2}`,
 `\sum_{i=1}^{n} x_i`, `\alpha`, `\sqrt{2}` and the rest of the usual

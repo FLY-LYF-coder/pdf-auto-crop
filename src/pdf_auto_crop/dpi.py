@@ -60,6 +60,45 @@ def enable_dpi_awareness() -> bool:
         return False
 
 
+def window_dpi(window=None) -> float:
+    """The resolution of the display the window is on, in dots per inch.
+
+    Tk 8.6 reads the screen's resolution once, at start-up, and never
+    notices that the display is a high-DPI one -- so it keeps drawing in
+    96 dpi metrics.  The window itself knows better: Windows tells it
+    exactly how many dots its monitor has.
+    """
+    if window is None or sys.platform != "win32":
+        return 96.0
+    try:
+        import ctypes
+
+        hwnd = ctypes.windll.user32.GetAncestor(window.winfo_id(), 2)  # GA_ROOT
+        value = ctypes.windll.user32.GetDpiForWindow(hwnd)
+        if value:
+            return float(value)
+    except Exception:  # noqa: BLE001 -- a cosmetic problem, never fatal
+        pass
+    return 96.0
+
+
+def apply_tk_scaling(window) -> float:
+    """Teach Tk the real resolution of the display, and return it.
+
+    Tk measures points and screen units against the resolution it read at
+    start-up.  Left alone, a window on a 200 % display is drawn with
+    96 dpi metrics: the text is small and the themed widgets are laid out
+    for one resolution and drawn at another.  Setting the scaling puts
+    both back in step.
+    """
+    value = window_dpi(window)
+    try:
+        window.tk.call("tk", "scaling", value / 72.0)
+    except Exception:  # noqa: BLE001
+        pass
+    return value
+
+
 def scale_factor(root=None) -> float:
     """How many physical pixels a logical pixel is worth on this display.
 
@@ -87,7 +126,8 @@ def scale_factor(root=None) -> float:
 def pixels_per_point(root=None) -> float:
     """How many physical pixels a point of paper is worth here.
 
-    A point is 1/72 inch, so this is the display's DPI divided by 72.
+    A point is 1/72 inch, so this is the display's resolution divided by
+    72.
     """
     try:
         import tkinter as tk
@@ -103,4 +143,5 @@ def pixels_per_point(root=None) -> float:
         return 1.0
 
 
-__all__ = ["enable_dpi_awareness", "pixels_per_point", "scale_factor"]
+__all__ = ["apply_tk_scaling", "enable_dpi_awareness", "pixels_per_point",
+           "scale_factor", "window_dpi"]

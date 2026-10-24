@@ -510,6 +510,18 @@ def main() -> int:
     # -- turning an element ------------------------------------------------
     win.var_tool.set("选择/移动")
     win._on_tool_changed()
+    win._selected_text = 0
+    win._sync_properties()
+    win.var_text_rotation.set("45")
+    win._on_text_changed()
+    win.update()
+    check("a piece of text can be turned",
+          win.composition.texts[0].rotation == pytest.approx(45.0),
+          str(win.composition.texts[0].rotation))
+    win.var_text_rotation.set("0")
+    win._on_text_changed()
+    win.update()
+
     win._selected_shape = 0
     win._sync_properties()
     win.var_shape_rotation.set("45")

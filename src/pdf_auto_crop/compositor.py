@@ -613,6 +613,8 @@ class TextItem:
     #: left empty.
     box_color: Optional[Tuple[float, float, float]] = None
     box_width: float = 0.8
+    #: How far the text is turned about its own start, in degrees, clockwise.
+    rotation: float = 0.0
 
     def __post_init__(self) -> None:
         self.position = fitz.Point(self.position)
@@ -621,6 +623,7 @@ class TextItem:
             self.box_color = tuple(float(c) for c in self.box_color)[:3]
         self.size = max(1.0, float(self.size))
         self.box_width = max(0.1, float(self.box_width))
+        self.rotation = float(self.rotation) % 360.0
 
     def font_info(self) -> Tuple[str, str]:
         """The ``(fontname, fontfile)`` the text is written with."""
@@ -663,6 +666,7 @@ class TextItem:
             "box_color": (list(self.box_color)
                           if self.box_color is not None else None),
             "box_width": self.box_width,
+            "rotation": self.rotation,
         }
 
     @classmethod
@@ -681,6 +685,7 @@ class TextItem:
             box=bool(data.get("box", False)),
             box_color=(tuple(box_color) if box_color is not None else None),
             box_width=float(data.get("box_width", 0.8)),
+            rotation=float(data.get("rotation", 0.0)),
         )
 
 
@@ -1349,18 +1354,20 @@ def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
                      color=shape.caption_rgb)
 
 
-def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
-                 page_height: float) -> None:
-    """Draw a rendered formula so that its baseline starts at ``anchor``.
+def place_rendered(page: fitz.Page, rendered: Path, anchor: fitz.Point,
+                   page_height: float, angle: float = 0.0) -> None:
+    """Put a rendered page on the page so that its text starts at ``anchor``.
 
-    The formula's own page carries the baseline a little above its bottom
-    edge, so the page is placed to put that baseline where the user asked
-    for it.
+    ``anchor`` is in the composition's user space.  ``angle`` turns the
+    content clockwise about its own middle, and the anchor travels with the
+    text -- so turning a caption does not make it jump away.
     """
-    doc = fitz.open(str(formula_pdf))
+    doc = fitz.open(str(rendered))
     try:
         src = doc[0]
-        origin = fitz.Point(0.0, src.rect.height * 0.8)
+        w, h = src.rect.width, src.rect.height
+        # Where the baseline starts inside the rendered page.
+        origin = fitz.Point(0.0, h * 0.8)
         for block in src.get_text("dict")["blocks"]:
             for line in block.get("lines", []):
                 for span in line.get("spans", []):
@@ -1368,13 +1375,66 @@ def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
                     break
                 break
             break
-        x0 = anchor.x - origin.x
-        y0 = (page_height - anchor.y) - origin.y
-        target = fitz.Rect(x0, y0, x0 + src.rect.width,
-                           y0 + src.rect.height)
-        page.show_pdf_page(target, doc, 0, rotate=0)
+        centre = fitz.Point(w / 2, h / 2)
+        d = fitz.Point(origin.x - centre.x, origin.y - centre.y)
+        rad = math.radians(angle)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        # The page's frame counts downwards, so a positive angle turns the
+        # content clockwise on the sheet.
+        dx = d.x * cos_a - d.y * sin_a
+        dy = d.x * sin_a + d.y * cos_a
+        anchor_mupdf = fitz.Point(anchor.x, page_height - anchor.y)
+        target_centre = fitz.Point(anchor_mupdf.x - dx, anchor_mupdf.y - dy)
+        size = rotated_bbox(fitz.Rect(0, 0, w, h), angle)
+        target = fitz.Rect(target_centre.x - size.width / 2,
+                           target_centre.y - size.height / 2,
+                           target_centre.x + size.width / 2,
+                           target_centre.y + size.height / 2)
+        page.show_pdf_page(target, doc, 0, rotate=angle)
     finally:
         doc.close()
+
+
+def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
+                 page_height: float, angle: float = 0.0) -> None:
+    """Draw a rendered formula so that its baseline starts at ``anchor``."""
+    place_rendered(page, formula_pdf, anchor, page_height, angle)
+
+
+def render_text_pdf(item: "TextItem") -> Optional[Path]:
+    """Write a piece of text to a one-page PDF, as real text.
+
+    A turned text cannot be inserted straight onto the page -- MuPDF writes
+    text along the baseline only -- so it is written here first and then
+    placed with an angle, which keeps it real, selectable text.
+    """
+    if not item.text:
+        return None
+    fontname, fontfile = item.font_info()
+    width = text_width(item.text, fontname, item.size, fontfile)
+    height = item.size * 1.6
+    pad = max(1.0, item.size * 0.3)
+    key = hashlib.sha256(
+        f"{item.text}\x00{item.size:.3f}\x00{fontname}\x00{fontfile}\x00"
+        f"{item.color}\x00{item.bold}\x00{item.italic}".encode("utf-8")
+    ).hexdigest()[:24]
+    cache = Path(tempfile.gettempdir()) / "pdf_auto_crop_text"
+    cache.mkdir(parents=True, exist_ok=True)
+    out_path = cache / f"text_{key}.pdf"
+    if out_path.exists():
+        return out_path
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=width + 2 * pad, height=height + 2 * pad)
+        page.insert_text(
+            fitz.Point(pad, pad + item.size * 0.95), item.text,
+            fontsize=item.size, fontname=fontname,
+            fontfile=fontfile or None, color=item.color,
+        )
+        doc.save(str(out_path), garbage=4, deflate=True)
+    finally:
+        doc.close()
+    return out_path if out_path.exists() else None
 
 
 def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
@@ -1391,15 +1451,18 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
         from .tex import render_math
         rendered = render_math(item.text, item.size)
         if rendered is not None:
-            draw_formula(page, rendered, anchor, page_height)
-            if item.box:
-                width, height = item.text_size()
-                page.draw_rect(
-                    fitz.Rect(item.position.x, anchor.y,
-                               item.position.x + width,
-                               anchor.y + height),
-                    color=item.box_rgb, width=item.box_width,
-                )
+            draw_formula(page, rendered, anchor, page_height, item.rotation)
+            _draw_text_frame(page, item, anchor, page_height)
+            return
+
+    if abs(item.rotation) > 1e-6:
+        # A turned text is written on its own page and then placed with an
+        # angle, so it stays real text rather than a picture.
+        rendered = render_text_pdf(item)
+        if rendered is not None:
+            place_rendered(page, rendered, item.position, page_height,
+                           item.rotation)
+            _draw_text_frame(page, item, anchor, page_height)
             return
 
     fontname, fontfile = item.font_info()
@@ -1415,6 +1478,24 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
                        item.position.x + width, anchor.y + height),
             color=item.box_rgb, width=item.box_width,
         )
+
+
+def _draw_text_frame(page: fitz.Page, item: TextItem, anchor: fitz.Point,
+                     page_height: float) -> None:
+    """Draw the frame around a turned text, turned with it."""
+    if not item.box:
+        return
+    width, height = item.text_size()
+    corners = [
+        fitz.Point(item.position.x, anchor.y),
+        fitz.Point(item.position.x + width, anchor.y),
+        fitz.Point(item.position.x + width, anchor.y + height),
+        fitz.Point(item.position.x, anchor.y + height),
+    ]
+    centre = fitz.Point(item.position.x + width / 2, anchor.y + height / 2)
+    turned = [rotate_point(p, centre, item.rotation) for p in corners]
+    page.draw_polyline(turned + [turned[0]], color=item.box_rgb,
+                       width=item.box_width)
 
 
 def export_composition(
