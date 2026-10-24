@@ -649,6 +649,154 @@ def test_the_canvas_font_follows_the_chosen_face() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Alignment
+# ---------------------------------------------------------------------------
+
+
+def test_alignment_lines_a_group_up_against_each_other() -> None:
+    left = fitz.Rect(10, 10, 60, 40)
+    right = fitz.Rect(100, 80, 150, 110)
+    rects = [left, right]
+
+    # The reference is the group's own bounding box.
+    target = comp.align_target(rects, comp.ALIGN_LEFT)
+    assert target == 10
+    assert comp.aligned_rect(left, comp.ALIGN_LEFT, target).x0 == 10
+    assert comp.aligned_rect(right, comp.ALIGN_LEFT, target).x0 == 10
+    # The right edges meet on the rightmost one.
+    target = comp.align_target(rects, comp.ALIGN_RIGHT)
+    assert target == 150
+    assert comp.aligned_rect(left, comp.ALIGN_RIGHT, target).x1 == 150
+    # The centres meet in the middle of the group.
+    target = comp.align_target(rects, comp.ALIGN_HCENTER)
+    assert target == 80
+    assert comp.aligned_rect(left, comp.ALIGN_HCENTER, target).x0 == 55
+    # Vertically, "top" is the larger y -- the sheet counts upwards.
+    target = comp.align_target(rects, comp.ALIGN_TOP)
+    assert target == 110
+    assert comp.aligned_rect(left, comp.ALIGN_TOP, target).y1 == 110
+    target = comp.align_target(rects, comp.ALIGN_BOTTOM)
+    assert target == 10
+    target = comp.align_target(rects, comp.ALIGN_VCENTER)
+    assert target == 60
+
+
+def test_alignment_keeps_the_size_of_the_rectangle() -> None:
+    r = fitz.Rect(10, 20, 60, 70)
+    moved = comp.aligned_rect(r, comp.ALIGN_LEFT, 0)
+    assert moved.width == r.width
+    assert moved.height == r.height
+    assert moved.x0 == 0
+    assert moved.y0 == 20
+
+
+def test_a_lone_figure_is_aligned_against_the_sheet() -> None:
+    """With one object there is nobody to line up with, so the sheet is it."""
+    sheet = fitz.Rect(0, 0, 842, 595)
+    r = fitz.Rect(300, 200, 400, 260)
+    assert comp.align_target([r], comp.ALIGN_LEFT, sheet) == 0
+    assert comp.align_target([r], comp.ALIGN_RIGHT, sheet) == 842
+    assert comp.align_target([r], comp.ALIGN_TOP, sheet) == 595
+    assert comp.align_target([r], comp.ALIGN_BOTTOM, sheet) == 0
+    assert comp.align_target([r], comp.ALIGN_HCENTER, sheet) == 421
+
+
+def test_an_unknown_alignment_mode_is_refused() -> None:
+    with pytest.raises(ValueError):
+        comp.align_target([fitz.Rect(0, 0, 1, 1)], "sideways")
+    with pytest.raises(ValueError):
+        comp.aligned_rect(fitz.Rect(0, 0, 1, 1), "sideways", 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Graphic element styling
+# ---------------------------------------------------------------------------
+
+
+def test_a_shape_survives_a_json_round_trip_with_its_style(tmp_path) -> None:
+    shape = comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(10, 10), fitz.Point(50, 40),
+        color=(0.1, 0.2, 0.3), width=2.5, fill=True,
+        fill_color=(1.0, 0.9, 0.2), fill_opacity=0.4,
+        stroke_opacity=0.6, dash=comp.DASH_DASHED)
+    back = comp.Shape.from_dict(shape.to_dict())
+    assert back.kind == comp.SHAPE_RECT
+    assert back.color == pytest.approx((0.1, 0.2, 0.3))
+    assert back.width == pytest.approx(2.5)
+    assert back.fill is True
+    assert back.fill_color == pytest.approx((1.0, 0.9, 0.2))
+    assert back.fill_opacity == pytest.approx(0.4)
+    assert back.stroke_opacity == pytest.approx(0.6)
+    assert back.dash == comp.DASH_DASHED
+
+
+def test_a_shape_falls_back_to_the_border_colour_for_its_fill() -> None:
+    shape = comp.Shape(comp.SHAPE_RECT, fitz.Point(0, 0), fitz.Point(1, 1),
+                       color=(0.2, 0.4, 0.6))
+    assert shape.fill_rgb == pytest.approx((0.2, 0.4, 0.6))
+    shape.fill_color = (1.0, 0.0, 0.0)
+    assert shape.fill_rgb == pytest.approx((1.0, 0.0, 0.0))
+
+
+def test_a_shape_clamps_its_own_style() -> None:
+    shape = comp.Shape(comp.SHAPE_RECT, fitz.Point(0, 0), fitz.Point(1, 1),
+                       width=-3, fill_opacity=5.0, stroke_opacity=-1.0,
+                       dash="squiggle")
+    assert shape.width == pytest.approx(0.1)
+    assert shape.fill_opacity == pytest.approx(1.0)
+    assert shape.stroke_opacity == pytest.approx(0.0)
+    assert shape.dash == comp.DASH_SOLID
+
+
+def test_the_border_style_reaches_the_pdf(tmp_path) -> None:
+    """The dash pattern and the opacities are written into the page."""
+    c = comp.Composition(width=200, height=200)
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(20, 20), fitz.Point(180, 180),
+        color=(1.0, 0.0, 0.0), width=3.0, fill=True,
+        fill_color=(0.0, 0.0, 1.0), fill_opacity=0.5,
+        stroke_opacity=0.8, dash=comp.DASH_DASHED))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(200, 200))
+    doc = fitz.open(str(out))
+    try:
+        drawings = doc[0].get_drawings()
+        assert drawings, "nothing was drawn"
+        d = drawings[0]
+        assert d["dashes"] and d["dashes"] != "[] 0", d.get("dashes")
+        assert d["color"] == (1.0, 0.0, 0.0)
+        assert d["fill"] == (0.0, 0.0, 1.0)
+        assert d["fill_opacity"] == pytest.approx(0.5, abs=0.02)
+        assert d["stroke_opacity"] == pytest.approx(0.8, abs=0.02)
+        assert d["width"] == pytest.approx(3.0, abs=0.1)
+    finally:
+        doc.close()
+
+
+def test_the_fill_opacity_reaches_the_pixels(tmp_path) -> None:
+    """A half-transparent fill really is half-transparent on the page."""
+    c = comp.Composition(width=100, height=100)
+    c.shapes.append(comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(10, 10), fitz.Point(90, 90),
+        color=(0.0, 0.0, 0.0), width=1.0, fill=True,
+        fill_color=(1.0, 0.0, 0.0), fill_opacity=0.5))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(100, 100))
+    doc = fitz.open(str(out))
+    try:
+        pix = doc[0].get_pixmap(dpi=72)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+            pix.height, pix.width, pix.n)[:, :, :3].astype(int)
+    finally:
+        doc.close()
+    # The middle of the box is the fill over white: red at half strength.
+    r, g, b = arr[50, 50]
+    assert 250 <= r <= 255, (r, g, b)
+    assert 120 <= g <= 135, (r, g, b)
+    assert 120 <= b <= 135, (r, g, b)
+
+
+# ---------------------------------------------------------------------------
 # Canvas geometry
 # ---------------------------------------------------------------------------
 
@@ -718,14 +866,34 @@ def test_a_press_on_a_graphic_element_starts_a_drag() -> None:
     element sit still while the cursor drags it.
     """
     # The element is on top of the figure: the element wins.
-    assert compositor_gui.resolve_pick(2, 1, "body") == (None, 2, "shape-body")
+    assert compositor_gui.resolve_pick(2, 1, "body") == (None, 2, None)
     # The element on its own.
-    assert compositor_gui.resolve_pick(0, None, None) == (None, 0, "shape-body")
-    # No element: the figure is picked, and the drag mode is the figure's.
+    assert compositor_gui.resolve_pick(0, None, None) == (None, 0, None)
+    # No element: the figure is picked, and the handle is kept.
     assert compositor_gui.resolve_pick(None, 1, "body") == (1, None, "body")
     assert compositor_gui.resolve_pick(None, 1, "handle2") == (1, None, "handle2")
     # Nothing at all.
     assert compositor_gui.resolve_pick(None, None, None) == (None, None, None)
+
+
+@needs_tk
+def test_the_selection_grows_and_shrinks_with_ctrl() -> None:
+    """Ctrl+click adds to the selection, so a group can be lined up."""
+    u = compositor_gui.update_selection
+    # A plain click replaces the selection.
+    assert u([], [], "figure", 1, False) == ([1], [], "body")
+    # Ctrl+click adds.
+    assert u([1], [], "figure", 3, True) == ([1, 3], [], "body")
+    # Ctrl+click again takes it back out.
+    assert u([1, 3], [], "figure", 3, True) == ([1], [], None)
+    # An element under the cursor wins over a figure underneath it.
+    assert u([1], [], "shape", 0, False) == ([], [0], "shape-body")
+    # The two kinds are never selected together.
+    assert u([1], [], "shape", 0, True) == ([], [0], "shape-body")
+    assert u([], [2], "figure", 1, True) == ([1], [], "body")
+    # Clicking the empty sheet clears the selection -- unless Ctrl is held.
+    assert u([1], [], None, None, False) == ([], [], None)
+    assert u([1], [], None, None, True) == ([1], [], None)
 
 
 # ---------------------------------------------------------------------------

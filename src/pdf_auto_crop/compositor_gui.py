@@ -21,6 +21,7 @@ convention the cropping window uses -- see :mod:`pdf_auto_crop.gui_edit`.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import sys
 import tkinter as tk
@@ -165,22 +166,74 @@ def tk_font(label_font: str, size: int) -> Tuple[str, int, str]:
 def resolve_pick(shape_hit: Optional[int], figure_hit: Optional[int],
                  part: Optional[str]) -> Tuple[Optional[int], Optional[int],
                                               Optional[str]]:
-    """What a press on the canvas selects, and what it starts dragging.
+    """Which object a press picks.
 
     The graphic elements are painted *on top of* the figures, so a hit on an
     element wins over a hit on a figure underneath it: a box drawn across a
     figure must still be grabbable.
 
-    The drag mode has to come from the hit *kind* as well.  Picking an
-    element and then leaving the mode empty leaves the element sitting still
-    while the cursor drags it -- which looks exactly like a broken feature.
-
     Returns:
-        ``(selected_figure, selected_shape, drag_mode)``.
+        ``(figure, shape, part)`` -- ``part`` is the figure's handle, and is
+        empty when an element was picked instead.
     """
     if shape_hit is not None:
-        return None, shape_hit, "shape-body"
+        return None, shape_hit, None
     return figure_hit, None, part
+
+def update_selection(sel_figs: List[int], sel_shapes: List[int],
+                     kind: Optional[str], index: Optional[int],
+                     additive: bool
+                     ) -> Tuple[List[int], List[int], Optional[str]]:
+    """The selection after a click, and the drag mode it starts.
+
+    A plain click replaces the selection with the object under the cursor;
+    holding ``Ctrl`` (or ``Shift``) toggles that object in the selection, so
+    a group of panels can be lined up against each other.
+
+    A graphic element wins over a figure underneath it -- it is the thing
+    drawn on top -- and the two kinds are never selected together, because
+    the property panel edits one kind at a time.
+    """
+    figs = list(sel_figs)
+    shapes = list(sel_shapes)
+
+    if kind is None:
+        # The empty sheet.  A plain click clears the selection; a modified
+        # one leaves it alone, so a stray Ctrl-click does not lose it.
+        if not additive:
+            return [], [], None
+        return figs, shapes, None
+
+    # Clicking an object of the other kind starts again with this one.
+    if additive and kind == "figure" and shapes:
+        figs, shapes, additive = [], [], False
+    elif additive and kind == "shape" and figs:
+        figs, shapes, additive = [], [], False
+
+    if additive:
+        if kind == "figure":
+            if index in figs:
+                figs.remove(index)
+            else:
+                figs.append(index)
+        else:
+            if index in shapes:
+                shapes.remove(index)
+            else:
+                shapes.append(index)
+    else:
+        figs, shapes = [], []
+        if kind == "figure":
+            figs = [index]
+        else:
+            shapes = [index]
+
+    mode: Optional[str] = None
+    if kind == "figure" and index in figs:
+        mode = "body"
+    elif kind == "shape" and index in shapes:
+        mode = "shape-body"
+    return figs, shapes, mode
 
 
 class ComposeWindow(tk.Toplevel):
@@ -201,12 +254,16 @@ class ComposeWindow(tk.Toplevel):
         self._thumb_cache: Dict[str, Image.Image] = {}
         self._photo_cache: Dict[str, ImageTk.PhotoImage] = {}
 
-        self._selected: Optional[int] = None
-        self._selected_shape: Optional[int] = None
+        self._sel_figs: List[int] = []
+        self._sel_shapes: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         self._drag_rect: Optional[fitz.Rect] = None
         self._drag_shape: Optional[comp.Shape] = None
+        #: Where every selected object was when the drag started, so a group
+        #: moves by one offset instead of by one offset per motion event.
+        self._drag_rects: Dict[int, fitz.Rect] = {}
+        self._drag_shapes: Dict[int, comp.Shape] = {}
         self._zoom = 1.0
         self._origin = (0.0, 0.0)
 
@@ -222,6 +279,32 @@ class ComposeWindow(tk.Toplevel):
         self._build_body()
         self._build_footer()
         self._redraw()
+
+    # -- selection ---------------------------------------------------------
+
+    @property
+    def _selected(self) -> Optional[int]:
+        """The figure the property panel edits: the last one picked."""
+        return self._sel_figs[-1] if self._sel_figs else None
+
+    @_selected.setter
+    def _selected(self, value: Optional[int]) -> None:
+        self._sel_figs = [] if value is None else [value]
+        if value is not None:
+            # Only one kind of object is selected at a time: the property
+            # panel edits one kind, and a selection of both is ambiguous.
+            self._sel_shapes = []
+
+    @property
+    def _selected_shape(self) -> Optional[int]:
+        """The graphic element the property panel edits."""
+        return self._sel_shapes[-1] if self._sel_shapes else None
+
+    @_selected_shape.setter
+    def _selected_shape(self, value: Optional[int]) -> None:
+        self._sel_shapes = [] if value is None else [value]
+        if value is not None:
+            self._sel_figs = []
 
     # -- styling ----------------------------------------------------------
 
@@ -289,7 +372,7 @@ class ComposeWindow(tk.Toplevel):
         ttk.Separator(tools, orient=tk.VERTICAL).pack(side=tk.LEFT,
                                                        fill=tk.Y, padx=10)
         ttk.Label(
-            tools, text="选中图形后可在右侧改颜色和线宽",
+            tools, text="选中后可在右侧改边框与填充；Ctrl+点击 可多选并对齐",
             style="Hint.TLabel",
         ).pack(side=tk.LEFT)
 
@@ -318,8 +401,15 @@ class ComposeWindow(tk.Toplevel):
         self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda _e: self._redraw())
         self.canvas.bind("<Button-1>", self._on_press)
+        # A Ctrl-click is a *different* event in Tk -- the plain <Button-1>
+        # binding does not see it -- so the modified clicks are bound too.
+        self.canvas.bind("<Control-Button-1>", self._on_press)
+        self.canvas.bind("<Shift-Button-1>", self._on_press)
         self.canvas.bind("<B1-Motion>", self._on_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        # The same for the release: a modified drag has to end too.
+        self.canvas.bind("<Control-ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<Shift-ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Delete>", self._on_key)
         self.canvas.bind("<BackSpace>", self._on_key)
         self.canvas.bind("<Escape>", self._on_key)
@@ -382,24 +472,26 @@ class ComposeWindow(tk.Toplevel):
         ttk.Separator(right, orient=tk.HORIZONTAL).grid(
             row=5, column=0, columnspan=3, sticky="ew", pady=8)
 
-        ttk.Label(right, text="线宽").grid(row=6, column=0, sticky="w", pady=3)
-        self.var_shape_width = tk.StringVar(value="1.5")
-        self.spin_shape_width = ttk.Spinbox(
-            right, from_=0.2, to=12, increment=0.5,
-            textvariable=self.var_shape_width, width=6,
-        )
-        self.spin_shape_width.grid(row=6, column=1, sticky="w", pady=3)
-        self.var_shape_width.trace_add("write", lambda *_a: self._on_shape_changed())
+        # -- alignment
+        ttk.Label(right, text="对齐").grid(row=6, column=0, sticky="w", pady=3)
+        align = ttk.Frame(right)
+        align.grid(row=6, column=1, columnspan=2, sticky="w", pady=3)
+        for i, (text, mode) in enumerate((
+                ("左", comp.ALIGN_LEFT),
+                ("中", comp.ALIGN_HCENTER),
+                ("右", comp.ALIGN_RIGHT),
+                ("顶", comp.ALIGN_TOP),
+                ("中", comp.ALIGN_VCENTER),
+                ("底", comp.ALIGN_BOTTOM))):
+            ttk.Button(align, text=text, width=3,
+                       command=lambda m=mode: self._align(m)).grid(
+                row=i // 3, column=i % 3, padx=1, pady=1)
 
-        ttk.Label(right, text="填充").grid(row=7, column=0, sticky="w", pady=3)
-        self.var_shape_fill = tk.BooleanVar(value=False)
-        self.chk_shape_fill = ttk.Checkbutton(
-            right, text="半透明填充", variable=self.var_shape_fill,
-            command=self._on_shape_changed,
-        )
-        self.chk_shape_fill.grid(row=7, column=1, columnspan=2, sticky="w", pady=3)
+        ttk.Separator(right, orient=tk.HORIZONTAL).grid(
+            row=7, column=0, columnspan=3, sticky="ew", pady=8)
 
-        ttk.Label(right, text="线色").grid(row=8, column=0, sticky="w", pady=3)
+        # -- the graphic element's border
+        ttk.Label(right, text="边框色").grid(row=8, column=0, sticky="w", pady=3)
         self.var_shape_color = tk.StringVar(value="#d91a1a")
         self.btn_shape_color = tk.Button(
             right, width=6, background="#d91a1a", relief=tk.RAISED,
@@ -407,25 +499,78 @@ class ComposeWindow(tk.Toplevel):
         )
         self.btn_shape_color.grid(row=8, column=1, sticky="w", pady=3)
 
+        ttk.Label(right, text="边框宽").grid(row=9, column=0, sticky="w", pady=3)
+        self.var_shape_width = tk.StringVar(value="1.5")
+        self.spin_shape_width = ttk.Spinbox(
+            right, from_=0.2, to=12, increment=0.5,
+            textvariable=self.var_shape_width, width=6,
+        )
+        self.spin_shape_width.grid(row=9, column=1, sticky="w", pady=3)
+        self.var_shape_width.trace_add("write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(right, text="边框线型").grid(row=10, column=0, sticky="w", pady=3)
+        self.var_shape_dash = tk.StringVar(value=comp.DASH_SOLID)
+        self.cmb_shape_dash = ttk.Combobox(
+            right, textvariable=self.var_shape_dash, state="readonly", width=8,
+            values=[comp.DASH_SOLID, comp.DASH_DASHED, comp.DASH_DOTTED],
+        )
+        self.cmb_shape_dash.grid(row=10, column=1, sticky="w", pady=3)
+        self.cmb_shape_dash.bind("<<ComboboxSelected>>", self._on_shape_changed)
+
+        ttk.Label(right, text="边框透明").grid(row=11, column=0, sticky="w", pady=3)
+        self.var_shape_opacity = tk.StringVar(value="100")
+        self.spin_shape_opacity = ttk.Spinbox(
+            right, from_=0, to=100, increment=5,
+            textvariable=self.var_shape_opacity, width=6,
+        )
+        self.spin_shape_opacity.grid(row=11, column=1, sticky="w", pady=3)
+        self.var_shape_opacity.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(right, text="填充色").grid(row=12, column=0, sticky="w", pady=3)
+        self.var_shape_fill_color = tk.StringVar(value="#ffe08a")
+        self.btn_shape_fill_color = tk.Button(
+            right, width=6, background="#ffe08a", relief=tk.RAISED,
+            borderwidth=2, command=self._choose_shape_fill_color,
+        )
+        self.btn_shape_fill_color.grid(row=12, column=1, sticky="w", pady=3)
+
+        ttk.Label(right, text="填充").grid(row=13, column=0, sticky="w", pady=3)
+        self.var_shape_fill = tk.BooleanVar(value=False)
+        self.chk_shape_fill = ttk.Checkbutton(
+            right, text="填充内部", variable=self.var_shape_fill,
+            command=self._on_shape_changed,
+        )
+        self.chk_shape_fill.grid(row=13, column=1, columnspan=2, sticky="w", pady=3)
+
+        ttk.Label(right, text="填充透明").grid(row=14, column=0, sticky="w", pady=3)
+        self.var_shape_fill_opacity = tk.StringVar(value="25")
+        self.spin_shape_fill_opacity = ttk.Spinbox(
+            right, from_=0, to=100, increment=5,
+            textvariable=self.var_shape_fill_opacity, width=6,
+        )
+        self.spin_shape_fill_opacity.grid(row=14, column=1, sticky="w", pady=3)
+        self.var_shape_fill_opacity.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
         ttk.Separator(right, orient=tk.HORIZONTAL).grid(
-            row=9, column=0, columnspan=3, sticky="ew", pady=8)
+            row=15, column=0, columnspan=3, sticky="ew", pady=8)
 
         ttk.Button(right, text="置于顶层", command=lambda: self._restack(+1)).grid(
-            row=10, column=0, columnspan=2, sticky="ew", pady=2)
+            row=16, column=0, columnspan=2, sticky="ew", pady=2)
         ttk.Button(right, text="置于底层", command=lambda: self._restack(-1)).grid(
-            row=11, column=0, columnspan=2, sticky="ew", pady=2)
+            row=17, column=0, columnspan=2, sticky="ew", pady=2)
         ttk.Button(right, text="删除选中", command=self._delete_selected).grid(
-            row=12, column=0, columnspan=2, sticky="ew", pady=(8, 2))
+            row=18, column=0, columnspan=2, sticky="ew", pady=(8, 2))
         ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
-            row=13, column=0, columnspan=2, sticky="ew", pady=2)
+            row=19, column=0, columnspan=2, sticky="ew", pady=2)
 
         ttk.Label(
             right,
-            text="拖动图体移动\n拖动橙色角点缩放（保持比例）\n"
-                 "方向键微调，Shift 加大步长\nDelete 删除\n"
-                 "选好工具后在画布上拖动即可画箭头/方框/圆圈",
+            text="拖动图体移动，橙点缩放\nCtrl+点击 多选（可一起对齐）\n"
+                 "方向键微调 · Delete 删除",
             style="Hint.TLabel", wraplength=170, justify=tk.LEFT,
-        ).grid(row=14, column=0, columnspan=3, sticky="w", pady=(12, 0))
+        ).grid(row=20, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
     def _build_footer(self) -> None:
         foot = ttk.Frame(self, padding=(10, 4, 10, 8))
@@ -627,7 +772,10 @@ class ComposeWindow(tk.Toplevel):
 
     def _draw_placement(self, idx: int, placement: comp.Placement) -> None:
         left, top, right, bottom = self._canvas_rect(placement.rect)
-        selected = idx == self._selected and self._selected_shape is None
+        # Every selected figure is outlined; the handles belong to the one
+        # the property panel is editing.
+        selected = idx in self._sel_figs
+        primary = idx == self._selected and not self._sel_shapes
 
         img = self._figure_image(placement.figure)
         if img is not None and right > left and bottom > top:
@@ -651,7 +799,7 @@ class ComposeWindow(tk.Toplevel):
             width=3 if selected else 2, tags=("fig", str(idx)),
         )
 
-        if selected:
+        if primary:
             for hx, hy in HANDLE_POSITIONS(left, top, right, bottom):
                 self.canvas.create_rectangle(
                     hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
@@ -687,8 +835,21 @@ class ComposeWindow(tk.Toplevel):
         r, g, b = shape.color
         colour = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
         width = max(1, int(round(shape.width * self._zoom)))
-        selected = idx >= 0 and idx == self._selected_shape
+        selected = idx >= 0 and idx in self._sel_shapes
+        primary = idx >= 0 and idx == self._selected_shape
         tag = str(idx) if idx >= 0 else "preview"
+        dash = comp.DASH_PATTERNS_TK.get(shape.dash, ())
+        # Tk has no transparency for a shape, so a translucent fill is
+        # approximated by mixing it into the white of the sheet.
+        fill_colour = ""
+        if shape.fill:
+            fr, fg, fb = shape.fill_rgb
+            a = min(1.0, max(0.0, shape.fill_opacity))
+            fill_colour = "#%02x%02x%02x" % (
+                int((fr * a + (1 - a)) * 255),
+                int((fg * a + (1 - a)) * 255),
+                int((fb * a + (1 - a)) * 255),
+            )
 
         if shape.kind in (comp.SHAPE_RECT, comp.SHAPE_ELLIPSE):
             left, top = min(x0, x1), min(y0, y1)
@@ -696,22 +857,23 @@ class ComposeWindow(tk.Toplevel):
             if shape.kind == comp.SHAPE_RECT:
                 item = self.canvas.create_rectangle(
                     left, top, right, bottom, outline=colour, width=width,
-                    fill=colour if shape.fill else "",
+                    fill=fill_colour, dash=dash,
                 )
             else:
                 item = self.canvas.create_oval(
                     left, top, right, bottom, outline=colour, width=width,
-                    fill=colour if shape.fill else "",
+                    fill=fill_colour, dash=dash,
                 )
         else:
             item = self.canvas.create_line(
                 x0, y0, x1, y1, fill=colour, width=width, arrow=tk.LAST,
+                dash=dash,
                 arrowshape=(8, 10, 4) if shape.kind == comp.SHAPE_ARROW else (),
             )
         self.canvas.addtag_withtag("shape", item)
         self.canvas.itemconfigure(item, tags=("shape", tag))
 
-        if selected:
+        if primary:
             for hx, hy in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
                 self.canvas.create_rectangle(
                     hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
@@ -770,12 +932,19 @@ class ComposeWindow(tk.Toplevel):
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
         if self.tool != "select":
-            # Start drawing a graphic element.
+            # Start drawing a graphic element, in the style the panel shows.
             ux, uy = self._to_user(event.x, event.y)
             self._shape_preview = comp.Shape(
                 self.tool, fitz.Point(ux, uy), fitz.Point(ux, uy),
                 color=hex_to_rgb(self.var_shape_color.get()),
                 width=self._shape_width(),
+                fill=bool(self.var_shape_fill.get()),
+                fill_color=hex_to_rgb(self.var_shape_fill_color.get()),
+                fill_opacity=self._shape_opacity(
+                    self.var_shape_fill_opacity.get()),
+                stroke_opacity=self._shape_opacity(
+                    self.var_shape_opacity.get()),
+                dash=self.var_shape_dash.get(),
             )
             self._drag_mode = "shape"
             self._drag_start = (event.x, event.y)
@@ -784,16 +953,40 @@ class ComposeWindow(tk.Toplevel):
 
         shape_idx = self._hit_shape(event.x, event.y)
         idx, part = self._hit(event.x, event.y)
-        self._selected, self._selected_shape, self._drag_mode = resolve_pick(
-            shape_idx, idx, part)
+        fig_hit, shape_hit, part = resolve_pick(shape_idx, idx, part)
+        if shape_hit is not None:
+            kind: Optional[str] = "shape"
+            index: Optional[int] = shape_hit
+        elif fig_hit is not None:
+            kind, index = "figure", fig_hit
+        else:
+            kind, index = None, None
+
+        # Ctrl (or Shift) adds to the selection instead of replacing it.
+        additive = bool(event.state & (0x0004 | 0x0001))
+        if part and part.startswith("handle"):
+            # A resize handle belongs to one figure alone.
+            self._sel_figs = [fig_hit] if fig_hit is not None else []
+            self._sel_shapes = []
+            mode: Optional[str] = part
+        else:
+            self._sel_figs, self._sel_shapes, mode = update_selection(
+                self._sel_figs, self._sel_shapes, kind, index, additive)
+
+        self._drag_mode = mode
         self._drag_start = (event.x, event.y)
         self._drag_rect = None
         self._drag_shape = None
-        if self._selected is not None:
-            self._drag_rect = fitz.Rect(self.composition.placements[self._selected].rect)
-        elif self._selected_shape is not None:
-            self._drag_shape = comp.Shape(
-                **vars(self.composition.shapes[self._selected_shape]))
+        # Remember where every selected object was, so the whole group moves
+        # by one offset rather than by one offset per motion event.
+        self._drag_rects = {
+            i: fitz.Rect(self.composition.placements[i].rect)
+            for i in self._sel_figs
+        }
+        self._drag_shapes = {
+            i: dataclasses.replace(self.composition.shapes[i])
+            for i in self._sel_shapes
+        }
         self._sync_properties()
         self._redraw()
 
@@ -804,9 +997,7 @@ class ComposeWindow(tk.Toplevel):
             return comp.SHAPE_WIDTH_DEFAULT
 
     def _on_drag(self, event: tk.Event) -> None:
-        if self._drag_mode is None or (self._selected is None
-                                       and self._selected_shape is None
-                                       and self._drag_mode != "shape"):
+        if self._drag_mode is None:
             return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
@@ -814,22 +1005,20 @@ class ComposeWindow(tk.Toplevel):
                 self._shape_preview.end = fitz.Point(ux, uy)
                 self._redraw()
             return
-        if self._drag_mode == "shape-body" and self._selected_shape is not None:
+        if self._drag_mode == "shape-body":
             ux, uy = self._to_user(event.x, event.y)
             sx, sy = self._to_user(*self._drag_start)
             dx, dy = ux - sx, uy - sy
-            base = self._drag_shape
-            self.composition.shapes[self._selected_shape] = comp.Shape(
-                base.kind,
-                fitz.Point(base.start.x + dx, base.start.y + dy),
-                fitz.Point(base.end.x + dx, base.end.y + dy),
-                base.color, base.width, base.fill,
-            )
+            for i, base in self._drag_shapes.items():
+                self.composition.shapes[i] = dataclasses.replace(
+                    base,
+                    start=fitz.Point(base.start.x + dx, base.start.y + dy),
+                    end=fitz.Point(base.end.x + dx, base.end.y + dy),
+                )
             self._redraw()
             return
-        if self._selected is None:
+        if not self._drag_rects:
             return
-        p = self.composition.placements[self._selected]
         if self._drag_mode == "body":
             ux, uy = self._to_user(event.x, event.y)
             sx, sy = self._to_user(*self._drag_start)
@@ -837,15 +1026,17 @@ class ComposeWindow(tk.Toplevel):
             # The figure moves by the *total* offset from where the press
             # happened -- adding the offset to the current rectangle would
             # make every motion event add to the last one.
-            base = fitz.Rect(self._drag_rect)
-            new = fitz.Rect(
-                base.x0 + dx, base.y0 + dy, base.x1 + dx, base.y1 + dy
-            )
-            new = self._clamp_to_sheet(new)
-            p.rect = new
+            for i, base in self._drag_rects.items():
+                new = fitz.Rect(
+                    base.x0 + dx, base.y0 + dy, base.x1 + dx, base.y1 + dy
+                )
+                self.composition.placements[i].rect = self._clamp_to_sheet(new)
         elif self._drag_mode.startswith("handle"):
             ux, uy = self._to_user(event.x, event.y)
-            r = fitz.Rect(self._drag_rect)
+            i = self._selected
+            if i is None:
+                return
+            r = fitz.Rect(self._drag_rects[i])
             h = int(self._drag_mode[-1])
             # The corner opposite the handle stays put.
             corner = USER_CORNER(r, (h + 2) % 4)
@@ -859,7 +1050,7 @@ class ComposeWindow(tk.Toplevel):
             else:
                 new.y0 = uy
             new = self._aspect_locked(new, corner)
-            p.rect = self._clamp_to_sheet(new)
+            self.composition.placements[i].rect = self._clamp_to_sheet(new)
         self._redraw()
 
     def _aspect_locked(self, rect: fitz.Rect, anchor: Tuple[float, float]
@@ -910,10 +1101,10 @@ class ComposeWindow(tk.Toplevel):
             if preview is not None and (
                     abs(ux - preview.start.x) > 1.0
                     or abs(uy - preview.start.y) > 1.0):
-                self.composition.shapes.append(comp.Shape(
-                    preview.kind, preview.start, fitz.Point(ux, uy),
-                    color=preview.color, width=preview.width,
-                ))
+                # Keep the whole style of the preview -- the fill, the
+                # opacities and the line style included.
+                self.composition.shapes.append(dataclasses.replace(
+                    preview, end=fitz.Point(ux, uy)))
                 self._selected = None
                 self._selected_shape = len(self.composition.shapes) - 1
                 self._sync_properties()
@@ -923,6 +1114,8 @@ class ComposeWindow(tk.Toplevel):
         self._drag_start = None
         self._drag_rect = None
         self._drag_shape = None
+        self._drag_rects = {}
+        self._drag_shapes = {}
         self._update_count()
 
     def _on_key(self, event: tk.Event) -> None:
@@ -936,37 +1129,34 @@ class ComposeWindow(tk.Toplevel):
             self._sync_properties()
             self._redraw()
             return
-        step = 10.0 if event.state & 0x0001 else 1.0
-        if self._selected_shape is not None:
-            if key not in ("Left", "Right", "Up", "Down"):
-                return
-            arrows = {"Left": (-1, 0), "Right": (1, 0), "Up": (0, 1),
-                      "Down": (0, -1)}
-            dx, dy = arrows[key]
-            shape = self.composition.shapes[self._selected_shape]
-            self.composition.shapes[self._selected_shape] = comp.Shape(
-                shape.kind,
-                fitz.Point(shape.start.x + dx * step, shape.start.y + dy * step),
-                fitz.Point(shape.end.x + dx * step, shape.end.y + dy * step),
-                shape.color, shape.width, shape.fill,
-            )
-            self._redraw()
-            return
-        if self._selected is None:
-            return
         if key not in ("Left", "Right", "Up", "Down"):
             return
+        step = 10.0 if event.state & 0x0001 else 1.0
         # The sheet is drawn with the user's y pointing up, so "up" on the
         # canvas is a *larger* user y -- the same direction the mouse drag
         # moves things.
         arrows = {"Left": (-1, 0), "Right": (1, 0), "Up": (0, 1), "Down": (0, -1)}
         dx, dy = arrows[key]
-        p = self.composition.placements[self._selected]
-        p.rect = self._clamp_to_sheet(fitz.Rect(
-            p.rect.x0 + dx * step, p.rect.y0 + dy * step,
-            p.rect.x1 + dx * step, p.rect.y1 + dy * step,
-        ))
-        self._redraw()
+        moved = False
+        for i in self._sel_shapes:
+            shape = self.composition.shapes[i]
+            self.composition.shapes[i] = dataclasses.replace(
+                shape,
+                start=fitz.Point(shape.start.x + dx * step,
+                                 shape.start.y + dy * step),
+                end=fitz.Point(shape.end.x + dx * step,
+                               shape.end.y + dy * step),
+            )
+            moved = True
+        for i in self._sel_figs:
+            p = self.composition.placements[i]
+            p.rect = self._clamp_to_sheet(fitz.Rect(
+                p.rect.x0 + dx * step, p.rect.y0 + dy * step,
+                p.rect.x1 + dx * step, p.rect.y1 + dy * step,
+            ))
+            moved = True
+        if moved:
+            self._redraw()
 
     # -- properties ---------------------------------------------------------
 
@@ -1002,12 +1192,26 @@ class ComposeWindow(tk.Toplevel):
             state="normal" if has_shape else "disabled")
         self.btn_shape_color.configure(
             state="normal" if has_shape else "disabled")
+        self.btn_shape_fill_color.configure(
+            state="normal" if has_shape else "disabled")
+        self.cmb_shape_dash.configure(
+            state="readonly" if has_shape else "disabled")
+        self.spin_shape_opacity.configure(
+            state="normal" if has_shape else "disabled")
+        self.spin_shape_fill_opacity.configure(
+            state="normal" if has_shape else "disabled")
         if has_shape:
             shape = self.composition.shapes[self._selected_shape]
             self.var_shape_width.set(f"{shape.width:g}")
             self.var_shape_fill.set(bool(shape.fill))
             self.var_shape_color.set(rgb_to_hex(shape.color))
+            self.var_shape_fill_color.set(rgb_to_hex(shape.fill_rgb))
+            self.var_shape_dash.set(shape.dash)
+            self.var_shape_opacity.set(f"{round(shape.stroke_opacity * 100):g}")
+            self.var_shape_fill_opacity.set(
+                f"{round(shape.fill_opacity * 100):g}")
             self._set_swatch(self.btn_shape_color, shape.color)
+            self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
 
     def _set_swatch(self, button: tk.Button, color) -> None:
         r, g, b = tuple(color)[:3]
@@ -1044,21 +1248,94 @@ class ComposeWindow(tk.Toplevel):
 
     def _choose_shape_color(self) -> None:
         rgb, hexv = colorchooser.askcolor(
-            color=self.var_shape_color.get(), title="线条颜色")
+            color=self.var_shape_color.get(), title="边框颜色")
         if not hexv:
             return
         self.var_shape_color.set(hexv)
         self._on_shape_changed()
 
-    def _on_shape_changed(self) -> None:
-        if self._selected_shape is None:
+    def _choose_shape_fill_color(self) -> None:
+        rgb, hexv = colorchooser.askcolor(
+            color=self.var_shape_fill_color.get(), title="填充颜色")
+        if not hexv:
             return
-        shape = self.composition.shapes[self._selected_shape]
-        shape.width = self._shape_width()
-        shape.fill = bool(self.var_shape_fill.get())
-        shape.color = hex_to_rgb(self.var_shape_color.get())
-        self._set_swatch(self.btn_shape_color, shape.color)
+        self.var_shape_fill_color.set(hexv)
+        self._on_shape_changed()
+
+    def _on_shape_changed(self) -> None:
+        """Apply the style panel to every selected graphic element."""
+        if not self._sel_shapes:
+            return
+        color = hex_to_rgb(self.var_shape_color.get())
+        fill_color = hex_to_rgb(self.var_shape_fill_color.get())
+        width = self._shape_width()
+        fill = bool(self.var_shape_fill.get())
+        dash = self.var_shape_dash.get()
+        opacity = self._shape_opacity(self.var_shape_opacity.get())
+        fill_opacity = self._shape_opacity(self.var_shape_fill_opacity.get())
+        for i in self._sel_shapes:
+            if not 0 <= i < len(self.composition.shapes):
+                continue
+            shape = self.composition.shapes[i]
+            shape.width = width
+            shape.fill = fill
+            shape.color = color
+            shape.fill_color = fill_color
+            shape.dash = dash
+            shape.stroke_opacity = opacity
+            shape.fill_opacity = fill_opacity
+        self._set_swatch(self.btn_shape_color, color)
+        self._set_swatch(self.btn_shape_fill_color, fill_color)
         self._redraw()
+
+    @staticmethod
+    def _shape_opacity(value: str) -> float:
+        """A percentage from the spinbox as a number in 0..1."""
+        try:
+            return min(1.0, max(0.0, float(value) / 100.0))
+        except ValueError:
+            return 1.0
+
+    # -- alignment ---------------------------------------------------------
+
+    def _align(self, mode: str) -> None:
+        """Line the selection up.
+
+        With several objects selected they are lined up against each other;
+        with a single one it is pushed against the edge of the sheet.
+        """
+        items: List[Tuple[str, int, fitz.Rect]] = []
+        for i in self._sel_figs:
+            if 0 <= i < len(self.composition.placements):
+                items.append(("figure", i,
+                              fitz.Rect(self.composition.placements[i].rect)))
+        for i in self._sel_shapes:
+            if 0 <= i < len(self.composition.shapes):
+                items.append(("shape", i,
+                              fitz.Rect(self.composition.shapes[i].rect)))
+        if not items:
+            self._status("先选中要对齐的元素（Ctrl+点击 可多选）。")
+            return
+        bounds = fitz.Rect(0.0, 0.0, self.sheet_w, self.sheet_h)
+        target = comp.align_target([r for _, _, r in items], mode, bounds)
+        for kind, index, rect in items:
+            new = comp.aligned_rect(rect, mode, target)
+            if kind == "figure":
+                self.composition.placements[index].rect = \
+                    self._clamp_to_sheet(new)
+            else:
+                shape = self.composition.shapes[index]
+                dx = new.x0 - rect.x0
+                dy = new.y0 - rect.y0
+                self.composition.shapes[index] = dataclasses.replace(
+                    shape,
+                    start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+                    end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                )
+        self._redraw()
+        names = {"left": "左对齐", "hcenter": "水平居中", "right": "右对齐",
+                 "top": "顶对齐", "vcenter": "垂直居中", "bottom": "底对齐"}
+        self._status(f"已{ names.get(mode, mode) } {len(items)} 个元素。")
 
     def _on_label_changed(self) -> None:
         if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
@@ -1091,22 +1368,29 @@ class ComposeWindow(tk.Toplevel):
             return
         items = self.composition.placements
         items[i], items[j] = items[j], items[i]
-        self._selected = j
+        # The selection follows the figure it was on.
+        self._sel_figs = [j if k == i else (i if k == j else k)
+                          for k in self._sel_figs]
         self._redraw()
 
     def _delete_selected(self) -> None:
-        if self._selected_shape is not None and (
-                0 <= self._selected_shape < len(self.composition.shapes)):
-            del self.composition.shapes[self._selected_shape]
-            self._selected_shape = None
+        """Remove everything that is selected."""
+        if self._sel_shapes:
+            # Back to front, so the indices stay valid while deleting.
+            for i in sorted(self._sel_shapes, reverse=True):
+                if 0 <= i < len(self.composition.shapes):
+                    del self.composition.shapes[i]
+            self._sel_shapes = []
             self._sync_properties()
             self._redraw()
             self._update_count()
             return
-        if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
+        if not self._sel_figs:
             return
-        del self.composition.placements[self._selected]
-        self._selected = None
+        for i in sorted(self._sel_figs, reverse=True):
+            if 0 <= i < len(self.composition.placements):
+                del self.composition.placements[i]
+        self._sel_figs = []
         self._sync_properties()
         self._redraw()
         self._update_count()

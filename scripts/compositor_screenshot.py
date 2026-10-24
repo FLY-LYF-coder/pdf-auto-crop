@@ -87,6 +87,18 @@ def _shot(win, name: str) -> Path:
     return path
 
 
+def _click(win, x: int, y: int, ctrl: bool = False) -> None:
+    """A press and a release, with or without Ctrl held down."""
+    canvas = win.canvas
+    # Tk gives a Ctrl-click its own event name; the plain <Button-1>
+    # binding never sees it.
+    name = "<Control-Button-1>" if ctrl else "<Button-1>"
+    canvas.event_generate(name, x=x, y=y)
+    win.update()
+    canvas.event_generate("<ButtonRelease-1>", x=x, y=y)
+    win.update()
+
+
 def _drag(win, x0: int, y0: int, x1: int, y1: int) -> None:
     """Press, move, release -- the three events a real drag produces."""
     canvas = win.canvas
@@ -272,6 +284,12 @@ def main() -> int:
     check("all three graphic tools drew something",
           len(win.composition.shapes) == n_shapes + 3,
           f"{len(win.composition.shapes)} shapes")
+    drawn = win.composition.shapes[-1]
+    check("a new element takes the style of the panel",
+          drawn.fill_color == pytest.approx((1.0, 0.878, 0.541), abs=0.02)
+          and drawn.dash == comp.DASH_SOLID
+          and drawn.stroke_opacity == pytest.approx(1.0),
+          f"{drawn.fill_color} {drawn.dash} {drawn.stroke_opacity}")
     _shot(win, "07_shapes.png")
 
     # -- moving a graphic element ----------------------------------------
@@ -294,6 +312,70 @@ def main() -> int:
     check("a graphic element can be deleted",
           len(win.composition.shapes) == n_shapes - 1,
           f"{len(win.composition.shapes)} shapes")
+
+    # -- styling a graphic element ----------------------------------------
+    win._selected_shape = 0
+    win._sync_properties()
+    win.var_shape_color.set("#0070c0")
+    win.var_shape_width.set("3")
+    win.var_shape_dash.set(comp.DASH_DASHED)
+    win.var_shape_opacity.set("60")
+    win.var_shape_fill.set(True)
+    win.var_shape_fill_color.set("#ffe08a")
+    win.var_shape_fill_opacity.set("40")
+    win._on_shape_changed()
+    win.update()
+    styled = win.composition.shapes[0]
+    check("the border colour can be changed",
+          styled.color == pytest.approx((0.0, 0.44, 0.75), abs=0.02),
+          str(styled.color))
+    check("the border width can be changed",
+          styled.width == pytest.approx(3.0), str(styled.width))
+    check("the border style can be changed",
+          styled.dash == comp.DASH_DASHED, styled.dash)
+    check("the border opacity can be changed",
+          styled.stroke_opacity == pytest.approx(0.6), str(styled.stroke_opacity))
+    check("the fill colour can be changed",
+          styled.fill_color == pytest.approx((1.0, 0.878, 0.541), abs=0.02),
+          str(styled.fill_color))
+    check("the fill opacity can be changed",
+          styled.fill_opacity == pytest.approx(0.4), str(styled.fill_opacity))
+    _shot(win, "08_style.png")
+
+    # -- selecting several figures and lining them up ---------------------
+    win.var_tool.set("select")
+    win._on_tool_changed()
+    win._selected = 0
+    win._sel_figs = [0]
+    win._redraw()
+    widths_before = [win.composition.placements[i].rect.width
+                     for i in (0, 1)]
+    second = win.composition.placements[1]
+    cx, cy = win._to_canvas((second.rect.x0 + second.rect.x1) / 2,
+                            (second.rect.y0 + second.rect.y1) / 2)
+    _click(win, int(cx), int(cy), ctrl=True)
+    check("ctrl+click adds to the selection",
+          set(win._sel_figs) == {0, 1}, str(win._sel_figs))
+    win._align(comp.ALIGN_LEFT)
+    win.update()
+    lefts = [win.composition.placements[i].rect.x0 for i in (0, 1)]
+    check("aligning left lines the two figures up",
+          abs(lefts[0] - lefts[1]) < 0.01, f"{lefts}")
+    win._align(comp.ALIGN_TOP)
+    tops = [win.composition.placements[i].rect.y1 for i in (0, 1)]
+    check("aligning top lines the two figures up",
+          abs(tops[0] - tops[1]) < 0.01, f"{tops}")
+    widths_after = [win.composition.placements[i].rect.width for i in (0, 1)]
+    check("aligning keeps the figures their size",
+          all(abs(a - b) < 0.01
+              for a, b in zip(widths_before, widths_after)),
+          f"{widths_before} -> {widths_after}")
+    _shot(win, "09_aligned.png")
+
+    # The two figures now sit on top of each other, which is what aligning
+    # them means -- put the layout back before the export checks.
+    win._arrange("grid")
+    win.update()
 
     # -- export -----------------------------------------------------------
     out = WORK / "composed.pdf"
@@ -326,6 +408,17 @@ def main() -> int:
         check("the exported label uses the chosen colour",
               a_span and a_span[0]["color"] == 0xCC0000,
               hex(a_span[0]["color"]) if a_span else "no span")
+        # The styled element has to arrive with its style.
+        styled_drawings = [d for d in page.get_drawings()
+                           if d.get("dashes") and d["dashes"] != "[] 0"]
+        check("the exported PDF carries the border style",
+              bool(styled_drawings),
+              str([d.get("dashes") for d in page.get_drawings()]))
+        check("the exported PDF carries the fill opacity",
+              any(abs((d.get("fill_opacity") or 1.0) - 0.4) < 0.02
+                  for d in page.get_drawings()),
+              str([round(d.get("fill_opacity") or 1.0, 2)
+                   for d in page.get_drawings()]))
     finally:
         doc.close()
 

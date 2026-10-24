@@ -279,8 +279,9 @@ Open it with the **组合…** button in the main window's toolbar.
 | ------- | ------ |
 | Drag a figure | Move it |
 | Drag an orange corner handle | Resize, keeping the figure's aspect ratio |
+| `Ctrl`+click | Add to (or take out of) the selection |
 | Arrow keys | Nudge 1 pt; hold `Shift` for 10 pt |
-| `Delete` | Remove the selected figure or graphic element |
+| `Delete` | Remove everything that is selected |
 | 置于顶层 / 置于底层 | Change the stacking order |
 
 A scientific figure must not be stretched, so resizing keeps the aspect
@@ -293,6 +294,24 @@ stretched.
 
 Labels are **图下** (centred under the figure — the journal convention) by
 default; **角上** puts them in the corner of the figure instead.
+
+### Aligning
+
+Select several figures with `Ctrl`+click (or `Shift`+click) and the **对齐**
+buttons line them up:
+
+| Button | Effect |
+| ------ | ------ |
+| 左 / 中 / 右 | The left edges, the centres or the right edges meet |
+| 顶 / 中 / 底 | The top edges, the centres or the bottom edges meet |
+
+With more than one object selected they are lined up against *each other* —
+"align left" puts every left edge on the leftmost one.  With a single object
+there is nobody to line up with, so it is pushed against the edge of the
+sheet instead.
+
+Aligning moves objects; it never resizes them, so a figure keeps the size
+and the aspect ratio it was given.
 
 ### Labels: font, size and colour
 
@@ -321,17 +340,32 @@ The toolbar's second row selects a drawing tool: **选择/移动**, **箭头**
 (arrow), **方框** (box), **圆圈** (circle), **直线** (line).  With a drawing
 tool active, drag on the sheet to create the element.
 
-Once an element is selected, the properties panel gives it a **线色** (line
-colour), a **线宽** (line width, 0.2 – 12 pt) and a **半透明填充** (translucent
-fill, for boxes and circles).  Elements can be dragged, nudged with the arrow
-keys and deleted with `Delete`.
+Once an element is selected, the properties panel styles it:
+
+| Control | What it does |
+| ------- | ------------ |
+| 边框色 | The border colour |
+| 边框宽 | The border width, 0.2 – 12 pt |
+| 边框线型 | 实线 (solid), 虚线 (dashed) or 点线 (dotted) |
+| 边框透明 | How opaque the border is, 0 – 100 % |
+| 填充色 | The colour inside a box or a circle |
+| 填充 | Fill the inside at all |
+| 填充透明 | How opaque the fill is, 0 – 100 % |
+
+The border and the fill are styled separately, so a box may have a red
+border and a pale yellow wash inside it, with the border dashed and the fill
+half transparent.  The styles apply to every selected element at once.
+
+Elements can be dragged, nudged with the arrow keys and deleted with
+`Delete`.
 
 Only the *stroke* of an element is grabbable, so a translucent box drawn over
 a figure does not stop you from selecting the figure underneath it.  When the
 cursor is on both, the element wins — it is the thing drawn on top.
 
 Everything stays vector: an arrow is a line plus two short strokes for the
-head, a box is a rectangle, a circle is an ellipse.  No bitmap is introduced
+head, a box is a rectangle, a circle is an ellipse.  The dash pattern and
+the opacities are written into the PDF as such.  No bitmap is introduced
 anywhere in the composition.
 
 ### What the output is
@@ -629,6 +663,11 @@ sheet.shapes.append(comp.Shape(
     kind=comp.SHAPE_ARROW,
     start=fitz.Point(120, 240), end=fitz.Point(120, 320),
     color=(0.85, 0.1, 0.1), width=1.5,
+    fill=True,                       # only a box or a circle can be filled
+    fill_color=(1.0, 0.88, 0.54),
+    fill_opacity=0.4,                # 0..1
+    stroke_opacity=1.0,              # 0..1
+    dash=comp.DASH_DASHED,           # "solid", "dashed" or "dotted"
 ))
 
 comp.export_composition(sheet, Path("composed.pdf"), fit_to_content=False)
@@ -644,6 +683,23 @@ else here: an arrow runs from `start` to `end` and puts its head at `end`, and
 a box or an ellipse is the rectangle spanned by the two points.  The drawing
 order is figures, then graphic elements, then labels — a label under an arrow
 is unreadable.
+
+### Aligning objects
+
+```python
+from pdf_auto_crop import compositor as comp
+
+# Put the panels on the same top edge.
+rects = [p.rect for p in sheet.placements]
+target = comp.align_target(rects, comp.ALIGN_TOP)      # the y they share
+for p in sheet.placements:
+    p.rect = comp.aligned_rect(p.rect, comp.ALIGN_TOP, target)
+```
+
+`align_target` works out the coordinate a group shares — the group's own
+bounding box when there is more than one object, or the sheet when there is
+only one — and `aligned_rect` moves a rectangle onto it.  Aligning moves
+objects; it never resizes them.
 
 ---
 

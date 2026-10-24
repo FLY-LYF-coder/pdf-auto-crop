@@ -67,6 +67,7 @@ page with a centred figure:
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import math
 import re
@@ -133,6 +134,34 @@ SHAPE_COLOR_DEFAULT: Tuple[float, float, float] = (0.85, 0.1, 0.1)
 
 #: The line width a new shape is drawn with, in points.
 SHAPE_WIDTH_DEFAULT = 1.5
+
+#: How opaque the fill of a new shape is.
+SHAPE_FILL_OPACITY_DEFAULT = 0.25
+
+#: The stroke line styles.  Each is ``(the PDF dash pattern, the line cap)``:
+#: MuPDF draws the dashes itself, and a round cap turns a zero-length dash
+#: into a dot.
+DASH_SOLID = "solid"
+DASH_DASHED = "dashed"
+DASH_DOTTED = "dotted"
+
+DASH_STYLES: Dict[str, Tuple[Optional[str], int]] = {
+    DASH_SOLID: (None, 0),
+    DASH_DASHED: ("[3 2] 0", 0),
+    DASH_DOTTED: ("[0.1 2] 0", 1),
+}
+
+#: The same styles as Tk wants them, in pixels: ``(on, off)``.
+DASH_PATTERNS_TK: Dict[str, Tuple[int, ...]] = {
+    DASH_SOLID: (),
+    DASH_DASHED: (6, 4),
+    DASH_DOTTED: (1, 3),
+}
+
+
+def dash_pattern(dash: str) -> Tuple[Optional[str], int]:
+    """The PDF dash pattern and line cap for a line style."""
+    return DASH_STYLES.get(dash, DASH_STYLES[DASH_SOLID])
 
 
 def _font_has_text(fontname: str, text: str) -> bool:
@@ -334,22 +363,48 @@ class Shape:
     The two points are in the composition's user space, like everything else
     here.  An arrow runs from ``start`` to ``end`` and puts its head at
     ``end``; a box or an ellipse is the rectangle spanned by the two points.
+
+    The border and the fill are styled separately: a box may have a red
+    border and a pale yellow wash inside it, with the border dashed and the
+    fill half transparent.
     """
 
     kind: str
     start: fitz.Point
     end: fitz.Point
-    #: The stroke (and fill) colour, as (r, g, b) in 0..1.
+    #: The border colour, as (r, g, b) in 0..1.
     color: Tuple[float, float, float] = SHAPE_COLOR_DEFAULT
-    #: The stroke width, in points.
+    #: The border width, in points.
     width: float = SHAPE_WIDTH_DEFAULT
-    #: Whether a box or an ellipse is filled (translucently).
+    #: Whether a box or an ellipse is filled.
     fill: bool = False
+    #: The fill colour; the border colour when empty.
+    fill_color: Optional[Tuple[float, float, float]] = None
+    #: How opaque the fill is, 0..1.
+    fill_opacity: float = SHAPE_FILL_OPACITY_DEFAULT
+    #: How opaque the border is, 0..1.
+    stroke_opacity: float = 1.0
+    #: The border's line style: "solid", "dashed" or "dotted".
+    dash: str = DASH_SOLID
 
     def __post_init__(self) -> None:
         self.start = fitz.Point(self.start)
         self.end = fitz.Point(self.end)
         self.color = tuple(float(c) for c in self.color)[:3]
+        if self.fill_color is not None:
+            self.fill_color = tuple(float(c) for c in self.fill_color)[:3]
+        self.width = max(0.1, float(self.width))
+        self.fill_opacity = min(1.0, max(0.0, float(self.fill_opacity)))
+        self.stroke_opacity = min(1.0, max(0.0, float(self.stroke_opacity)))
+        if self.dash not in DASH_STYLES:
+            self.dash = DASH_SOLID
+
+    @property
+    def fill_rgb(self) -> Tuple[float, float, float]:
+        """The fill colour, falling back to the border colour."""
+        if self.fill_color is not None:
+            return self.fill_color
+        return self.color
 
     @property
     def rect(self) -> fitz.Rect:
@@ -367,10 +422,16 @@ class Shape:
             "color": list(self.color),
             "width": self.width,
             "fill": self.fill,
+            "fill_color": (list(self.fill_color)
+                           if self.fill_color is not None else None),
+            "fill_opacity": self.fill_opacity,
+            "stroke_opacity": self.stroke_opacity,
+            "dash": self.dash,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Shape":
+        fill_color = data.get("fill_color")
         return cls(
             kind=data["kind"],
             start=fitz.Point(*data["start"]),
@@ -378,6 +439,11 @@ class Shape:
             color=tuple(data.get("color", SHAPE_COLOR_DEFAULT)),
             width=float(data.get("width", SHAPE_WIDTH_DEFAULT)),
             fill=bool(data.get("fill", False)),
+            fill_color=(tuple(fill_color) if fill_color is not None else None),
+            fill_opacity=float(
+                data.get("fill_opacity", SHAPE_FILL_OPACITY_DEFAULT)),
+            stroke_opacity=float(data.get("stroke_opacity", 1.0)),
+            dash=str(data.get("dash", DASH_SOLID)),
         )
 
 
@@ -683,12 +749,99 @@ def auto_label(index: int, style: str = "letter") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Alignment
+# ---------------------------------------------------------------------------
+
+#: The ways a selection can be lined up.  "top" and "bottom" are named after
+#: the sheet, whose y points up -- the top edge is the *larger* y.
+ALIGN_LEFT = "left"
+ALIGN_HCENTER = "hcenter"
+ALIGN_RIGHT = "right"
+ALIGN_TOP = "top"
+ALIGN_VCENTER = "vcenter"
+ALIGN_BOTTOM = "bottom"
+
+ALIGN_MODES: Tuple[str, ...] = (ALIGN_LEFT, ALIGN_HCENTER, ALIGN_RIGHT,
+                                 ALIGN_TOP, ALIGN_VCENTER, ALIGN_BOTTOM)
+
+
+def align_target(rects: Sequence[fitz.Rect], mode: str,
+                 bounds: Optional[fitz.Rect] = None) -> float:
+    """The coordinate a selection is lined up on.
+
+    With more than one rectangle they are lined up against each other: the
+    reference is their combined bounding box, so "align left" puts every
+    left edge on the leftmost one.  With a single rectangle the reference is
+    ``bounds`` -- the sheet -- so a lone figure can be pushed against the
+    page.
+    """
+    if not rects:
+        return 0.0
+    if len(rects) > 1 or bounds is None:
+        ref = fitz.Rect(rects[0])
+        for r in rects[1:]:
+            ref |= r
+    else:
+        ref = fitz.Rect(bounds)
+    if mode == ALIGN_LEFT:
+        return ref.x0
+    if mode == ALIGN_RIGHT:
+        return ref.x1
+    if mode == ALIGN_HCENTER:
+        return (ref.x0 + ref.x1) / 2
+    if mode == ALIGN_TOP:
+        return ref.y1
+    if mode == ALIGN_BOTTOM:
+        return ref.y0
+    if mode == ALIGN_VCENTER:
+        return (ref.y0 + ref.y1) / 2
+    raise ValueError(f"unknown alignment mode: {mode!r}")
+
+
+def aligned_rect(rect: fitz.Rect, mode: str, target: float) -> fitz.Rect:
+    """The rectangle moved so that the given edge or centre sits on target.
+
+    The rectangle keeps its size: aligning moves it, it does not resize it.
+    """
+    out = fitz.Rect(rect)
+    if mode == ALIGN_LEFT:
+        shift = target - out.x0
+        out.x0 += shift
+        out.x1 += shift
+    elif mode == ALIGN_RIGHT:
+        shift = target - out.x1
+        out.x0 += shift
+        out.x1 += shift
+    elif mode == ALIGN_HCENTER:
+        shift = target - (out.x0 + out.x1) / 2
+        out.x0 += shift
+        out.x1 += shift
+    elif mode == ALIGN_TOP:
+        shift = target - out.y1
+        out.y0 += shift
+        out.y1 += shift
+    elif mode == ALIGN_BOTTOM:
+        shift = target - out.y0
+        out.y0 += shift
+        out.y1 += shift
+    elif mode == ALIGN_VCENTER:
+        shift = target - (out.y0 + out.y1) / 2
+        out.y0 += shift
+        out.y1 += shift
+    else:
+        raise ValueError(f"unknown alignment mode: {mode!r}")
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
 
 
 def _draw_arrow_head(page: fitz.Page, tip: fitz.Point, tail: fitz.Point,
-                     color: Tuple[float, float, float], width: float) -> None:
+                     color: Tuple[float, float, float], width: float,
+                     dashes: Optional[str] = None, line_cap: int = 0,
+                     opacity: float = 1.0) -> None:
     """Two short strokes at the tip, so the arrow points somewhere."""
     dx = tip.x - tail.x
     dy = tip.y - tail.y
@@ -704,7 +857,9 @@ def _draw_arrow_head(page: fitz.Page, tip: fitz.Point, tail: fitz.Point,
         cos_a, sin_a = math.cos(angle), math.sin(angle)
         px = bx + (ux * cos_a - uy * sin_a) * head
         py = by + (ux * sin_a + uy * cos_a) * head
-        page.draw_line(tip, fitz.Point(px, py), color=color, width=width)
+        page.draw_line(tip, fitz.Point(px, py), color=color, width=width,
+                       dashes=dashes, lineCap=line_cap,
+                       stroke_opacity=opacity)
 
 
 def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
@@ -717,22 +872,28 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
     p1 = fitz.Point(shape.end.x, page_height - shape.end.y)
     color = shape.color
     width = shape.width
-    fill_opacity = 0.25 if shape.fill else 0
+    dashes, line_cap = dash_pattern(shape.dash)
+    stroke_opacity = shape.stroke_opacity
+    # MuPDF treats a fill opacity of 0 as "no fill at all", so the fill is
+    # only asked for when it is actually wanted.
+    fill = shape.fill_rgb if shape.fill else None
+    fill_opacity = shape.fill_opacity if shape.fill else 0.0
 
     if shape.kind == SHAPE_LINE:
-        page.draw_line(p0, p1, color=color, width=width)
+        page.draw_line(p0, p1, color=color, width=width, dashes=dashes,
+                       lineCap=line_cap, stroke_opacity=stroke_opacity)
     elif shape.kind in (SHAPE_RECT, SHAPE_ELLIPSE):
         r = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
                       max(p0.x, p1.x), max(p0.y, p1.y))
-        if shape.kind == SHAPE_RECT:
-            page.draw_rect(r, color=color, width=width, fill=shape.fill,
-                           fill_opacity=fill_opacity)
-        else:
-            page.draw_oval(r, color=color, width=width, fill=shape.fill,
-                           fill_opacity=fill_opacity)
+        draw = page.draw_rect if shape.kind == SHAPE_RECT else page.draw_oval
+        draw(r, color=color, fill=fill, width=width, dashes=dashes,
+             lineCap=line_cap, stroke_opacity=stroke_opacity,
+             fill_opacity=fill_opacity)
     else:  # arrow
-        page.draw_line(p0, p1, color=color, width=width)
-        _draw_arrow_head(page, p1, p0, color, width)
+        page.draw_line(p0, p1, color=color, width=width, dashes=dashes,
+                       lineCap=line_cap, stroke_opacity=stroke_opacity)
+        _draw_arrow_head(page, p1, p0, color, width, dashes, line_cap,
+                         stroke_opacity)
 
 
 def export_composition(
@@ -796,11 +957,13 @@ def export_composition(
 
         # 2. the graphic elements, on top of the figures
         for shape in comp.shapes:
-            moved = Shape(
-                kind=shape.kind,
+            # The whole style travels with the shape -- rebuilding it from
+            # the old fields would quietly drop the fill colour, the
+            # opacities and the line style.
+            moved = dataclasses.replace(
+                shape,
                 start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
                 end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
-                color=shape.color, width=shape.width, fill=shape.fill,
             )
             draw_shape(page, moved, h)
 
