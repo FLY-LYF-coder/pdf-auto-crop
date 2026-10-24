@@ -303,7 +303,7 @@ class App(tk.Tk):
             row=0, column=2, padx=6, sticky="w"
         )
         ttk.Button(bar, text="组合…", command=self._open_compositor).grid(
-            row=0, column=2, padx=(6, 0), sticky="w"
+            row=0, column=6, padx=(14, 0), sticky="w"
         )
         ttk.Label(bar, text="输入:").grid(row=0, column=3, padx=(10, 4), sticky="e")
         # An explicit width caps each entry's *natural* size.  Without it a
@@ -579,7 +579,10 @@ class App(tk.Tk):
             self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
             return
         try:
-            open_compositor(self, self._last_config or CropConfig())
+            # ``_last_config`` only exists once something has been analysed,
+            # and the compositor must open on a fresh start too.
+            cfg = getattr(self, "_last_config", None) or CropConfig()
+            open_compositor(self, cfg)
         except Exception as exc:  # noqa: BLE001 -- reported in the status bar
             self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
 

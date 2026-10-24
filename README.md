@@ -728,6 +728,7 @@ pdf-auto-crop/
 │   ├── make_test_pdfs.py       # Generates the 7 fixtures
 │   ├── compare_algorithms.py   # legacy vs smart across all fixtures
 │   ├── compositor_screenshot.py # Drives the compose window with real events
+│   ├── gui_compositor_button.py # Checks the 组合… button opens the window
 │   ├── gui_screenshot.py       # Headless GUI smoke test + screenshot
 │   ├── gui_edit_screenshot.py  # Drives the manual editor with real events
 │   ├── probe_bake_fix2.py      # Measures the compositor's bake geometry
