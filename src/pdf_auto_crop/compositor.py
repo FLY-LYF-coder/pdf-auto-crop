@@ -85,6 +85,10 @@ from .geometry import mm_to_pt
 #: Label placement modes.
 LABEL_BELOW = "below"      # centred under the figure -- the journal convention
 LABEL_OVERLAY = "overlay"  # bottom-left corner, on top of the figure
+LABEL_FREE = "free"        # wherever the user dropped it
+
+#: The label modes that place the label by itself rather than by a rule.
+LABEL_MODES: Tuple[str, ...] = (LABEL_BELOW, LABEL_OVERLAY, LABEL_FREE)
 
 #: Base-14 fonts that need no embedding.  ``tiro`` is Times-Roman, which
 #: matches the body font of most papers.
@@ -109,6 +113,22 @@ LABEL_FONTS: Dict[str, str] = {
     "Symbol": "symb",
     "ZapfDingbats": "zadb",
     "宋体 (中文)": FONT_CJK,
+}
+
+#: The bold, italic and bold-italic variant of each base-14 face, so that
+#: a single "bold" switch works with every font in the list.
+FONT_VARIANTS: Dict[str, Dict[str, str]] = {
+    "tiro": {"bold": "tibo", "italic": "tiit", "bolditalic": "tibiz"},
+    "tibo": {"bold": "tibo", "italic": "tibiz", "bolditalic": "tibiz"},
+    "tiit": {"bold": "tibiz", "italic": "tiit", "bolditalic": "tibiz"},
+    "tibiz": {"bold": "tibiz", "italic": "tibiz", "bolditalic": "tibiz"},
+    "helv": {"bold": "hebo", "italic": "hebi", "bolditalic": "hebo"},
+    "hebo": {"bold": "hebo", "italic": "hebi", "bolditalic": "hebo"},
+    "hebi": {"bold": "hebo", "italic": "hebi", "bolditalic": "hebo"},
+    "cour": {"bold": "cobo", "italic": "coit", "bolditalic": "cobi"},
+    "cobo": {"bold": "cobo", "italic": "cobi", "bolditalic": "cobi"},
+    "symb": {"bold": "symb", "italic": "symb", "bolditalic": "symb"},
+    "zadb": {"bold": "zadb", "italic": "zadb", "bolditalic": "zadb"},
 }
 
 #: The default label font.
@@ -184,7 +204,27 @@ def _safe_font_name(name: str) -> str:
     return cleaned or "font"
 
 
-def resolve_label_font(text: str, font: str = "", fontfile: str = ""
+def apply_style(fontname: str, bold: bool = False, italic: bool = False
+                ) -> str:
+    """The variant of a base-14 face with bold and italic applied.
+
+    A face that has no bold-italic variant falls back to the bold one: a
+    slightly heavier letter is better than a silently dropped switch.
+    """
+    variants = FONT_VARIANTS.get(fontname)
+    if variants is None:
+        return fontname
+    if bold and italic:
+        return variants.get("bolditalic", variants.get("bold", fontname))
+    if bold:
+        return variants.get("bold", fontname)
+    if italic:
+        return variants.get("italic", fontname)
+    return fontname
+
+
+def resolve_label_font(text: str, font: str = "", fontfile: str = "",
+                       bold: bool = False, italic: bool = False
                        ) -> Tuple[str, str]:
     """Which font to write a label with.
 
@@ -199,6 +239,7 @@ def resolve_label_font(text: str, font: str = "", fontfile: str = ""
         if path.is_file():
             return _safe_font_name(path.stem), str(path)
     name = LABEL_FONTS.get(font) or LABEL_FONTS[LABEL_FONT_DEFAULT]
+    name = apply_style(name, bold, italic)
     if _font_has_text(name, text):
         return name, ""
     if _font_has_text(FONT_CJK, text):
@@ -313,10 +354,21 @@ class Placement:
     label_fontfile: str = ""
     #: The label's colour, as (r, g, b) in 0..1.
     label_color: Tuple[float, float, float] = LABEL_COLOR_DEFAULT
+    #: Whether the label is bold / italic, on top of the face itself.
+    label_bold: bool = False
+    label_italic: bool = False
+    #: Whether the label is LaTeX mathematics rather than plain text.
+    label_formula: bool = False
+    #: In :data:`LABEL_FREE` mode, where the label sits: an offset from the
+    #: figure's bottom-left corner, in points.  Keeping the offset rather
+    #: than an absolute position means the label travels with the figure.
+    label_offset: Tuple[float, float] = (0.0, 0.0)
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
         self.label_color = tuple(float(c) for c in self.label_color)[:3]
+        self.label_offset = (float(self.label_offset[0]),
+                             float(self.label_offset[1]))
 
     @property
     def aspect(self) -> float:
@@ -327,7 +379,25 @@ class Placement:
     def label_font_info(self) -> Tuple[str, str]:
         """The ``(fontname, fontfile)`` the label is written with."""
         return resolve_label_font(
-            self.label, self.label_font, self.label_fontfile)
+            self.label, self.label_font, self.label_fontfile,
+            self.label_bold, self.label_italic)
+
+    def label_anchor(self) -> fitz.Point:
+        """Where the label's baseline starts, in composition user space."""
+        size = self.label_size
+        if self.label_mode == LABEL_OVERLAY:
+            # In the corner of the figure itself, sitting on the baseline
+            # that keeps it inside the frame.
+            return fitz.Point(self.rect.x0 + 3,
+                               self.rect.y0 + 3 + size * 0.85)
+        if self.label_mode == LABEL_FREE:
+            return fitz.Point(self.rect.x0 + self.label_offset[0],
+                               self.rect.y0 + self.label_offset[1])
+        # Below the figure, centred: the journal convention.
+        fontname, fontfile = self.label_font_info()
+        width = text_width(self.label, fontname, size, fontfile)
+        return fitz.Point((self.rect.x0 + self.rect.x1) / 2 - width / 2,
+                          self.rect.y0 - LABEL_GAP_PT - size * 0.2)
 
     def to_dict(self) -> dict:
         return {
@@ -339,10 +409,15 @@ class Placement:
             "label_font": self.label_font,
             "label_fontfile": self.label_fontfile,
             "label_color": list(self.label_color),
+            "label_bold": self.label_bold,
+            "label_italic": self.label_italic,
+            "label_formula": self.label_formula,
+            "label_offset": list(self.label_offset),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "Placement":
+        offset = data.get("label_offset", (0.0, 0.0))
         return cls(
             figure=Figure.from_dict(data["figure"]),
             rect=fitz.Rect(*data["rect"]),
@@ -353,6 +428,10 @@ class Placement:
             label_fontfile=data.get("label_fontfile", ""),
             label_color=tuple(
                 data.get("label_color", LABEL_COLOR_DEFAULT)),
+            label_bold=bool(data.get("label_bold", False)),
+            label_italic=bool(data.get("label_italic", False)),
+            label_formula=bool(data.get("label_formula", False)),
+            label_offset=(float(offset[0]), float(offset[1])),
         )
 
 
@@ -448,6 +527,105 @@ class Shape:
 
 
 @dataclass
+class TextItem:
+    """A piece of text standing on the sheet.
+
+    This is the annotation the user drops on the composition: a caption of
+    their own, a note, a formula.  It may be plain text or LaTeX
+    mathematics, it may be bold and italic, and it may sit inside a frame.
+    """
+
+    text: str
+    #: The baseline's start, in the composition's user space.
+    position: fitz.Point
+    size: float = 10.0
+    #: The typeface: a key of :data:`LABEL_FONTS`, or empty for the default.
+    font: str = ""
+    #: An optional font file to embed instead of a built-in face.
+    fontfile: str = ""
+    color: Tuple[float, float, float] = LABEL_COLOR_DEFAULT
+    bold: bool = False
+    italic: bool = False
+    #: Whether the text is LaTeX mathematics rather than plain text.
+    formula: bool = False
+    #: Whether a frame is drawn around the text.
+    box: bool = False
+    #: The frame's colour and width; the text's colour when the frame's is
+    #: left empty.
+    box_color: Optional[Tuple[float, float, float]] = None
+    box_width: float = 0.8
+
+    def __post_init__(self) -> None:
+        self.position = fitz.Point(self.position)
+        self.color = tuple(float(c) for c in self.color)[:3]
+        if self.box_color is not None:
+            self.box_color = tuple(float(c) for c in self.box_color)[:3]
+        self.size = max(1.0, float(self.size))
+        self.box_width = max(0.1, float(self.box_width))
+
+    def font_info(self) -> Tuple[str, str]:
+        """The ``(fontname, fontfile)`` the text is written with."""
+        return resolve_label_font(
+            self.text, self.font, self.fontfile, self.bold, self.italic)
+
+    @property
+    def box_rgb(self) -> Tuple[float, float, float]:
+        """The frame's colour, falling back to the text's."""
+        if self.box_color is not None:
+            return self.box_color
+        return self.color
+
+    def text_size(self) -> Tuple[float, float]:
+        """How wide and how tall the text is, in points."""
+        fontname, fontfile = self.font_info()
+        width = text_width(self.text, fontname, self.size, fontfile)
+        # A text line is a little taller than its point size: ascenders and
+        # descenders have to fit.
+        return width, self.size * 1.25
+
+    def rect(self) -> fitz.Rect:
+        """The box the text occupies, in composition user space."""
+        width, height = self.text_size()
+        return fitz.Rect(self.position.x, self.position.y,
+                          self.position.x + width, self.position.y + height)
+
+    def to_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "position": [self.position.x, self.position.y],
+            "size": self.size,
+            "font": self.font,
+            "fontfile": self.fontfile,
+            "color": list(self.color),
+            "bold": self.bold,
+            "italic": self.italic,
+            "formula": self.formula,
+            "box": self.box,
+            "box_color": (list(self.box_color)
+                          if self.box_color is not None else None),
+            "box_width": self.box_width,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TextItem":
+        box_color = data.get("box_color")
+        return cls(
+            text=data.get("text", ""),
+            position=fitz.Point(*data.get("position", (0.0, 0.0))),
+            size=float(data.get("size", 10.0)),
+            font=data.get("font", ""),
+            fontfile=data.get("fontfile", ""),
+            color=tuple(data.get("color", LABEL_COLOR_DEFAULT)),
+            bold=bool(data.get("bold", False)),
+            italic=bool(data.get("italic", False)),
+            formula=bool(data.get("formula", False)),
+            box=bool(data.get("box", False)),
+            box_color=(tuple(box_color) if box_color is not None else None),
+            box_width=float(data.get("box_width", 0.8)),
+        )
+
+
+@dataclass
 class Composition:
     """A page being assembled."""
 
@@ -456,6 +634,8 @@ class Composition:
     placements: List[Placement] = field(default_factory=list)
     #: Graphic elements drawn on top of the figures.
     shapes: List[Shape] = field(default_factory=list)
+    #: Free-standing text: annotations, notes, formulas.
+    texts: List[TextItem] = field(default_factory=list)
     margin_pt: float = 0.0
 
     def content_bounds(self) -> Optional[fitz.Rect]:
@@ -464,8 +644,12 @@ class Composition:
         for p in self.placements:
             if p.label and p.label_mode == LABEL_BELOW:
                 boxes.append(label_rect(p))
+            elif p.label and p.label_mode == LABEL_FREE:
+                boxes.append(free_label_rect(p))
         for s in self.shapes:
             boxes.append(s.rect)
+        for t in self.texts:
+            boxes.append(t.rect())
         if not boxes:
             return None
         out = boxes[0]
@@ -488,6 +672,7 @@ class Composition:
             "margin_pt": self.margin_pt,
             "placements": [p.to_dict() for p in self.placements],
             "shapes": [s.to_dict() for s in self.shapes],
+            "texts": [t.to_dict() for t in self.texts],
         }
 
     @classmethod
@@ -498,6 +683,7 @@ class Composition:
             margin_pt=float(data.get("margin_pt", 0.0)),
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
             shapes=[Shape.from_dict(s) for s in data.get("shapes", [])],
+            texts=[TextItem.from_dict(t) for t in data.get("texts", [])],
         )
 
 
@@ -661,7 +847,14 @@ def detect_figures(
 
     Reuses the same detector the cropping pipeline uses, so "compose" and
     "crop" agree about what a figure is.
+
+    The detector finds the *ink* of a plot, so the axis ticks, the axis
+    titles and the figure's own title -- all a millimetre or two outside the
+    frame -- are not part of the box it returns.  They are folded back in
+    from the page's text, otherwise a curve plot would arrive without its
+    axes.
     """
+    from .figure_text import expand_regions_with_text, text_blocks
     from .pdf_processor import render_page_to_array
     from .pipeline import get_detector
 
@@ -672,7 +865,22 @@ def detect_figures(
     try:
         for pno in range(len(doc)):
             rgb, size_pt = render_page_to_array(doc, pno, cfg.dpi)
-            for i, rect in enumerate(detect(rgb, size_pt, cfg), start=1):
+            regions = detect(rgb, size_pt, cfg)
+            page_h = size_pt[1]
+            if regions:
+                # The detector speaks bottom-up user space; the page's text
+                # is reported top-down.  Both conversions are the same flip.
+                top_down = [
+                    fitz.Rect(r.x0, page_h - r.y1, r.x1, page_h - r.y0)
+                    for r in regions
+                ]
+                grown = expand_regions_with_text(
+                    top_down, text_blocks(doc[pno]))
+                regions = [
+                    fitz.Rect(r.x0, page_h - r.y1, r.x1, page_h - r.y0)
+                    for r in grown
+                ]
+            for i, rect in enumerate(regions, start=1):
                 out.append(
                     Figure(
                         path=Path(pdf_path),
@@ -714,21 +922,35 @@ def fit_rect(aspect: float, target: fitz.Rect) -> fitz.Rect:
 
 def label_rect(placement: Placement) -> fitz.Rect:
     """The box a label occupies, in composition user space."""
+    size = placement.label_size
     if placement.label_mode == LABEL_OVERLAY:
-        size = placement.label_size
         return fitz.Rect(
             placement.rect.x0 + 2,
             placement.rect.y0 + 2,
             placement.rect.x0 + 2 + size * 3,
             placement.rect.y0 + 2 + size * 1.2,
         )
-    size = placement.label_size
+    if placement.label_mode == LABEL_FREE:
+        return free_label_rect(placement)
     return fitz.Rect(
         placement.rect.x0,
         placement.rect.y0 - LABEL_GAP_PT - size * 1.2,
         placement.rect.x1,
         placement.rect.y0 - LABEL_GAP_PT,
     )
+
+
+def free_label_rect(placement: Placement) -> fitz.Rect:
+    """The box a freely placed label occupies.
+
+    The label is written at its baseline, so the box starts there and runs
+    up by the height of a line.
+    """
+    anchor = placement.label_anchor()
+    fontname, fontfile = placement.label_font_info()
+    width = text_width(placement.label, fontname, placement.label_size, fontfile)
+    height = placement.label_size * 1.25
+    return fitz.Rect(anchor.x, anchor.y, anchor.x + width, anchor.y + height)
 
 
 def auto_label(index: int, style: str = "letter") -> str:
@@ -833,6 +1055,66 @@ def aligned_rect(rect: fitz.Rect, mode: str, target: float) -> fitz.Rect:
     return out
 
 
+#: The two directions a group can be spread out in.
+DISTRIBUTE_HORIZONTAL = "horizontal"
+DISTRIBUTE_VERTICAL = "vertical"
+
+
+def distribute_rects(rects: Sequence[fitz.Rect], axis: str
+                     ) -> List[fitz.Rect]:
+    """Spread a group of rectangles out evenly.
+
+    The two outermost objects stay where they are and the ones in between
+    are moved so that the gaps between them are equal.  Nothing is resized.
+
+    Args:
+        rects: The rectangles to spread, in the order they were selected.
+        axis: :data:`DISTRIBUTE_HORIZONTAL` or :data:`DISTRIBUTE_VERTICAL`.
+
+    Returns:
+        One rectangle per input rectangle, in the same order.  With fewer
+        than three rectangles there is nothing to spread, so the input is
+        returned unchanged.
+    """
+    out = [fitz.Rect(r) for r in rects]
+    if axis not in (DISTRIBUTE_HORIZONTAL, DISTRIBUTE_VERTICAL):
+        raise ValueError(f"unknown distribution axis: {axis!r}")
+    if len(out) < 3:
+        return out
+
+    if axis == DISTRIBUTE_HORIZONTAL:
+        order = sorted(range(len(out)), key=lambda i: out[i].x0)
+        first, last = order[0], order[-1]
+        # The free space between the outermost objects, minus what the
+        # objects in between already occupy: what is left is shared out
+        # equally between the gaps.
+        span = out[last].x0 - out[first].x1
+        used = sum(out[i].width for i in order[1:-1])
+        gap = (span - used) / (len(order) - 1)
+        cursor = out[first].x1
+        for i in order[1:-1]:
+            shift = cursor + gap - out[i].x0
+            out[i].x0 += shift
+            out[i].x1 += shift
+            cursor = out[i].x1
+        return out
+
+    if axis == DISTRIBUTE_VERTICAL:
+        # The sheet counts upwards, so "first" is the *lowest* one.
+        order = sorted(range(len(out)), key=lambda i: out[i].y0)
+        first, last = order[0], order[-1]
+        span = out[last].y0 - out[first].y1
+        used = sum(out[i].height for i in order[1:-1])
+        gap = (span - used) / (len(order) - 1)
+        cursor = out[first].y1
+        for i in order[1:-1]:
+            shift = cursor + gap - out[i].y0
+            out[i].y0 += shift
+            out[i].y1 += shift
+            cursor = out[i].y1
+        return out
+
+
 # ---------------------------------------------------------------------------
 # Export
 # ---------------------------------------------------------------------------
@@ -894,6 +1176,74 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
                        lineCap=line_cap, stroke_opacity=stroke_opacity)
         _draw_arrow_head(page, p1, p0, color, width, dashes, line_cap,
                          stroke_opacity)
+
+
+def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
+                 page_height: float) -> None:
+    """Draw a rendered formula so that its baseline starts at ``anchor``.
+
+    The formula's own page carries the baseline a little above its bottom
+    edge, so the page is placed to put that baseline where the user asked
+    for it.
+    """
+    doc = fitz.open(str(formula_pdf))
+    try:
+        src = doc[0]
+        origin = fitz.Point(0.0, src.rect.height * 0.8)
+        for block in src.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    origin = fitz.Point(*span["origin"])
+                    break
+                break
+            break
+        x0 = anchor.x - origin.x
+        y0 = (page_height - anchor.y) - origin.y
+        target = fitz.Rect(x0, y0, x0 + src.rect.width,
+                           y0 + src.rect.height)
+        page.show_pdf_page(target, doc, 0, rotate=0)
+    finally:
+        doc.close()
+
+
+def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
+    """Draw one piece of free-standing text on a page.
+
+    A formula is drawn from its rendered PDF, so it keeps its mathematics;
+    plain text is inserted as real, selectable text.
+    """
+    if not item.text:
+        return
+    anchor = fitz.Point(item.position.x, page_height - item.position.y)
+
+    if item.formula:
+        from .tex import render_math
+        rendered = render_math(item.text, item.size)
+        if rendered is not None:
+            draw_formula(page, rendered, anchor, page_height)
+            if item.box:
+                width, height = item.text_size()
+                page.draw_rect(
+                    fitz.Rect(item.position.x, anchor.y,
+                               item.position.x + width,
+                               anchor.y + height),
+                    color=item.box_rgb, width=item.box_width,
+                )
+            return
+
+    fontname, fontfile = item.font_info()
+    page.insert_text(
+        anchor, item.text, fontsize=item.size,
+        fontname=fontname, fontfile=fontfile or None,
+        color=item.color,
+    )
+    if item.box:
+        width, height = item.text_size()
+        page.draw_rect(
+            fitz.Rect(item.position.x, anchor.y,
+                       item.position.x + width, anchor.y + height),
+            color=item.box_rgb, width=item.box_width,
+        )
 
 
 def export_composition(
@@ -967,31 +1317,34 @@ def export_composition(
             )
             draw_shape(page, moved, h)
 
-        # 3. the labels, on top of everything
+        # 3. the free-standing text, on top of the graphic elements
+        for item in comp.texts:
+            moved = dataclasses.replace(
+                item,
+                position=fitz.Point(item.position.x + dx,
+                                    item.position.y + dy),
+            )
+            draw_text_item(page, moved, h)
+
+        # 4. the labels, on top of everything
         for placement in comp.placements:
             if not placement.label:
                 continue
-            rect = fitz.Rect(
-                placement.rect.x0 + dx, placement.rect.y0 + dy,
-                placement.rect.x1 + dx, placement.rect.y1 + dy,
-            )
-            size = placement.label_size
             fontname, fontfile = placement.label_font_info()
-            if placement.label_mode == LABEL_OVERLAY:
-                baseline = fitz.Point(
-                    rect.x0 + 3,
-                    h - (rect.y0 + 3) - size * 0.85,
-                )
-            else:
-                # insert_text has no alignment parameter, so the centred
-                # position is computed from the measured text width.
-                width = text_width(placement.label, fontname, size, fontfile)
-                baseline = fitz.Point(
-                    (rect.x0 + rect.x1) / 2 - width / 2,
-                    h - (rect.y0 - LABEL_GAP_PT) + size * 0.2,
-                )
+            # The label travels with the figure, so it moves with the page
+            # when the page is resized to the content.
+            anchor = placement.label_anchor()
+            anchor = fitz.Point(anchor.x + dx, anchor.y + dy)
+            if placement.label_formula:
+                from .tex import render_math
+                rendered = render_math(placement.label, placement.label_size)
+                if rendered is not None:
+                    draw_formula(page, rendered, anchor, h)
+                    continue
+            # The anchor is in user space; MuPDF wants top-down.
+            baseline = fitz.Point(anchor.x, h - anchor.y)
             page.insert_text(
-                baseline, placement.label, fontsize=size,
+                baseline, placement.label, fontsize=placement.label_size,
                 fontname=fontname, fontfile=fontfile or None,
                 color=placement.label_color,
             )

@@ -33,6 +33,7 @@ import pymupdf as fitz
 from PIL import Image, ImageTk
 
 from . import compositor as comp
+from . import dpi
 from .config import CropConfig
 from .geometry import mm_to_pt
 
@@ -79,6 +80,14 @@ def sheet_to_canvas_box(rect: fitz.Rect, origin: Tuple[float, float],
 
 #: How close the cursor has to be to grab a graphic element, in pixels.
 SHAPE_HIT_PX = 6.0
+
+#: The tools that drop a piece of text on the sheet.
+TOOL_TEXT = "text"
+TOOL_TEXTBOX = "textbox"
+
+#: The tools that draw a graphic element.
+SHAPE_TOOLS = (comp.SHAPE_ARROW, comp.SHAPE_RECT, comp.SHAPE_ELLIPSE,
+               comp.SHAPE_LINE)
 
 
 def distance_to_segment(px: float, py: float, x0: float, y0: float,
@@ -143,23 +152,22 @@ TK_FONTS: Dict[str, str] = {
 }
 
 
-def tk_font(label_font: str, size: int) -> Tuple[str, int, str]:
+def tk_font(label_font: str, size: int, style: str = "normal"
+            ) -> Tuple[str, int, str]:
     """The Tk font tuple for a label font.
 
     ``label_font`` is a key of :data:`pdf_auto_crop.compositor.LABEL_FONTS`,
     or the name of a font file the user picked.
     """
     family = TK_FONTS.get(label_font, label_font or "Times New Roman")
-    bold = "Bold" in label_font
-    italic = "Italic" in label_font or "Oblique" in label_font
-    if bold and italic:
-        style = "bold italic"
-    elif bold:
-        style = "bold"
-    elif italic:
-        style = "italic"
-    else:
-        style = "normal"
+    if style == "normal":
+        # The face itself may already be the bold or the italic one.
+        if "Bold" in label_font:
+            style = ("bold italic"
+                     if ("Italic" in label_font or "Oblique" in label_font)
+                     else "bold")
+        elif "Italic" in label_font or "Oblique" in label_font:
+            style = "italic"
     return (family, max(8, size), style)
 
 
@@ -181,34 +189,51 @@ def resolve_pick(shape_hit: Optional[int], figure_hit: Optional[int],
     return figure_hit, None, part
 
 def update_selection(sel_figs: List[int], sel_shapes: List[int],
+                     sel_texts: List[int],
                      kind: Optional[str], index: Optional[int],
                      additive: bool
-                     ) -> Tuple[List[int], List[int], Optional[str]]:
+                     ) -> Tuple[List[int], List[int], List[int], Optional[str]]:
     """The selection after a click, and the drag mode it starts.
 
     A plain click replaces the selection with the object under the cursor;
     holding ``Ctrl`` (or ``Shift``) toggles that object in the selection, so
     a group of panels can be lined up against each other.
 
-    A graphic element wins over a figure underneath it -- it is the thing
-    drawn on top -- and the two kinds are never selected together, because
-    the property panel edits one kind at a time.
+    The graphic elements and the free text are drawn *on top of* the
+    figures, so they win the pick over a figure underneath them.  Only one
+    kind of object is selected at a time, because the property panel edits
+    one kind.
+
+    Args:
+        sel_figs: The selected figures.
+        sel_shapes: The selected graphic elements.
+        sel_texts: The selected free texts.
+        kind: ``"figure"``, ``"shape"``, ``"text"`` or ``None``.
+        index: The index of the object under the cursor.
+        additive: Whether Ctrl or Shift was held.
+
+    Returns:
+        ``(figures, shapes, texts, drag_mode)``.
     """
     figs = list(sel_figs)
     shapes = list(sel_shapes)
+    texts = list(sel_texts)
 
     if kind is None:
         # The empty sheet.  A plain click clears the selection; a modified
         # one leaves it alone, so a stray Ctrl-click does not lose it.
         if not additive:
-            return [], [], None
-        return figs, shapes, None
+            return [], [], [], None
+        return figs, shapes, texts, None
 
-    # Clicking an object of the other kind starts again with this one.
-    if additive and kind == "figure" and shapes:
-        figs, shapes, additive = [], [], False
-    elif additive and kind == "shape" and figs:
-        figs, shapes, additive = [], [], False
+    # Clicking an object of another kind starts again with this one.
+    if additive:
+        if kind == "figure" and (shapes or texts):
+            figs, shapes, texts, additive = [], [], [], False
+        elif kind == "shape" and (figs or texts):
+            figs, shapes, texts, additive = [], [], [], False
+        elif kind == "text" and (figs or shapes):
+            figs, shapes, texts, additive = [], [], [], False
 
     if additive:
         if kind == "figure":
@@ -216,24 +241,33 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
                 figs.remove(index)
             else:
                 figs.append(index)
-        else:
+        elif kind == "shape":
             if index in shapes:
                 shapes.remove(index)
             else:
                 shapes.append(index)
+        else:
+            if index in texts:
+                texts.remove(index)
+            else:
+                texts.append(index)
     else:
-        figs, shapes = [], []
+        figs, shapes, texts = [], [], []
         if kind == "figure":
             figs = [index]
-        else:
+        elif kind == "shape":
             shapes = [index]
+        else:
+            texts = [index]
 
     mode: Optional[str] = None
     if kind == "figure" and index in figs:
         mode = "body"
     elif kind == "shape" and index in shapes:
         mode = "shape-body"
-    return figs, shapes, mode
+    elif kind == "text" and index in texts:
+        mode = "text-body"
+    return figs, shapes, texts, mode
 
 
 class ComposeWindow(tk.Toplevel):
@@ -242,8 +276,11 @@ class ComposeWindow(tk.Toplevel):
     def __init__(self, master: tk.Misc, cfg: Optional[CropConfig] = None) -> None:
         super().__init__(master)
         self.title("组合 — 把多张 PDF 的子图拼成一张大图")
-        self.geometry("1240x820")
-        self.minsize(1000, 680)
+        # The window is sized in physical pixels, so on a high-DPI display
+        # the geometry has to be scaled to come out the same size on screen.
+        scale = dpi.scale_factor(self)
+        self.geometry(f"{int(1240 * scale)}x{int(820 * scale)}")
+        self.minsize(int(1000 * scale), int(680 * scale))
 
         self.cfg = cfg or CropConfig()
         self.sheet_w, self.sheet_h = SHEET_LANDSCAPE
@@ -256,6 +293,7 @@ class ComposeWindow(tk.Toplevel):
 
         self._sel_figs: List[int] = []
         self._sel_shapes: List[int] = []
+        self._sel_texts: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         self._drag_rect: Optional[fitz.Rect] = None
@@ -264,6 +302,9 @@ class ComposeWindow(tk.Toplevel):
         #: moves by one offset instead of by one offset per motion event.
         self._drag_rects: Dict[int, fitz.Rect] = {}
         self._drag_shapes: Dict[int, comp.Shape] = {}
+        self._drag_texts: Dict[int, comp.TextItem] = {}
+        #: Where on the label the cursor grabbed it, so it does not jump.
+        self._drag_label_grab: Tuple[float, float] = (0.0, 0.0)
         self._zoom = 1.0
         self._origin = (0.0, 0.0)
 
@@ -273,6 +314,10 @@ class ComposeWindow(tk.Toplevel):
         self._shape_preview: Optional[comp.Shape] = None
         #: A font file the user picked, embedded in the output.
         self._font_file: str = ""
+        #: The same, for the free text.
+        self._text_font_file: str = ""
+        #: Set while the property panel is being filled in from the model.
+        self._syncing = False
 
         self._build_style()
         self._build_toolbar()
@@ -294,6 +339,7 @@ class ComposeWindow(tk.Toplevel):
             # Only one kind of object is selected at a time: the property
             # panel edits one kind, and a selection of both is ambiguous.
             self._sel_shapes = []
+            self._sel_texts = []
 
     @property
     def _selected_shape(self) -> Optional[int]:
@@ -305,6 +351,19 @@ class ComposeWindow(tk.Toplevel):
         self._sel_shapes = [] if value is None else [value]
         if value is not None:
             self._sel_figs = []
+            self._sel_texts = []
+
+    @property
+    def _selected_text(self) -> Optional[int]:
+        """The free text the property panel edits."""
+        return self._sel_texts[-1] if self._sel_texts else None
+
+    @_selected_text.setter
+    def _selected_text(self, value: Optional[int]) -> None:
+        self._sel_texts = [] if value is None else [value]
+        if value is not None:
+            self._sel_figs = []
+            self._sel_shapes = []
 
     # -- styling ----------------------------------------------------------
 
@@ -364,7 +423,8 @@ class ComposeWindow(tk.Toplevel):
         self.var_tool = tk.StringVar(value="select")
         for text, value in (("选择/移动", "select"), ("箭头", comp.SHAPE_ARROW),
                             ("方框", comp.SHAPE_RECT), ("圆圈", comp.SHAPE_ELLIPSE),
-                            ("直线", comp.SHAPE_LINE)):
+                            ("直线", comp.SHAPE_LINE),
+                            ("文本", TOOL_TEXT), ("文本框", TOOL_TEXTBOX)):
             ttk.Radiobutton(
                 tools, text=text, value=value, variable=self.var_tool,
                 command=self._on_tool_changed,
@@ -421,17 +481,58 @@ class ComposeWindow(tk.Toplevel):
         right = ttk.Labelframe(body, text="属性", style="Section.TLabelframe",
                                padding=8)
         right.pack(side=tk.RIGHT, fill=tk.Y)
-        right.columnconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
 
-        ttk.Label(right, text="标签").grid(row=0, column=0, sticky="w", pady=3)
+        # The panel has grown a lot -- a label, a free text, a graphic
+        # element and the alignment tools -- so it is split over tabs, one
+        # per kind of object.  Selecting an object switches to its tab.
+        self.nb = ttk.Notebook(right)
+        self.nb.grid(row=0, column=0, sticky="nsew")
+        self.tab_label = ttk.Frame(self.nb, padding=6)
+        self.tab_text = ttk.Frame(self.nb, padding=6)
+        self.tab_shape = ttk.Frame(self.nb, padding=6)
+        self.tab_align = ttk.Frame(self.nb, padding=6)
+        self.nb.add(self.tab_label, text="标签")
+        self.nb.add(self.tab_text, text="文本")
+        self.nb.add(self.tab_shape, text="图形")
+        self.nb.add(self.tab_align, text="对齐")
+
+        self._build_label_tab(self.tab_label)
+        self._build_text_tab(self.tab_text)
+        self._build_shape_tab(self.tab_shape)
+        self._build_align_tab(self.tab_align)
+
+        ttk.Button(right, text="置于顶层", command=lambda: self._restack(+1)).grid(
+            row=1, column=0, sticky="ew", pady=(10, 2))
+        ttk.Button(right, text="置于底层", command=lambda: self._restack(-1)).grid(
+            row=2, column=0, sticky="ew", pady=2)
+        ttk.Button(right, text="删除选中", command=self._delete_selected).grid(
+            row=3, column=0, sticky="ew", pady=(8, 2))
+        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
+            row=4, column=0, sticky="ew", pady=2)
+
+        ttk.Label(
+            right,
+            text="拖动图体移动，橙点缩放\n编号可直接拖到任意位置\n"
+                 "Ctrl+点击 多选（可一起对齐/分布）\n"
+                 "方向键微调 · Delete 删除",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=5, column=0, sticky="w", pady=(10, 0))
+
+    # -- the label tab ------------------------------------------------------
+
+    def _build_label_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(1, weight=1)
+
+        ttk.Label(tab, text="标签").grid(row=0, column=0, sticky="w", pady=3)
         self.var_label = tk.StringVar(value="")
-        self.ent_label = ttk.Entry(right, textvariable=self.var_label)
+        self.ent_label = ttk.Entry(tab, textvariable=self.var_label)
         self.ent_label.grid(row=0, column=1, sticky="ew", pady=3)
         self.var_label.trace_add("write", lambda *_a: self._on_label_changed())
 
-        ttk.Label(right, text="位置").grid(row=1, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="位置").grid(row=1, column=0, sticky="w", pady=3)
         self.var_label_mode = tk.StringVar(value=comp.LABEL_BELOW)
-        box = ttk.Frame(right)
+        box = ttk.Frame(tab)
         box.grid(row=1, column=1, sticky="w", pady=3)
         ttk.Radiobutton(box, text="图下", value=comp.LABEL_BELOW,
                         variable=self.var_label_mode,
@@ -439,43 +540,195 @@ class ComposeWindow(tk.Toplevel):
         ttk.Radiobutton(box, text="角上", value=comp.LABEL_OVERLAY,
                         variable=self.var_label_mode,
                         command=self._on_label_mode_changed()).pack(side=tk.LEFT, padx=6)
+        ttk.Radiobutton(box, text="自由", value=comp.LABEL_FREE,
+                        variable=self.var_label_mode,
+                        command=self._on_label_mode_changed()).pack(side=tk.LEFT)
 
-        ttk.Label(right, text="字号").grid(row=2, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="字号").grid(row=2, column=0, sticky="w", pady=3)
         self.var_label_size = tk.StringVar(value="9")
         self.spin_label_size = ttk.Spinbox(
-            right, from_=4, to=48, increment=1,
+            tab, from_=4, to=48, increment=1,
             textvariable=self.var_label_size, width=6)
         self.spin_label_size.grid(row=2, column=1, sticky="w", pady=3)
         self.var_label_size.trace_add("write", lambda *_a: self._on_label_changed())
 
-        ttk.Label(right, text="字体").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="字体").grid(row=3, column=0, sticky="w", pady=3)
         self.var_label_font = tk.StringVar(value=comp.LABEL_FONT_DEFAULT)
         self.cmb_label_font = ttk.Combobox(
-            right, textvariable=self.var_label_font, state="readonly", width=14,
+            tab, textvariable=self.var_label_font, state="readonly", width=14,
             values=list(comp.LABEL_FONTS),
         )
         self.cmb_label_font.grid(row=3, column=1, sticky="ew", pady=3)
         self.cmb_label_font.bind("<<ComboboxSelected>>", self._on_label_changed)
-        ttk.Button(right, text="文件…", width=5, command=self._choose_font_file).grid(
+        ttk.Button(tab, text="文件…", width=5,
+                   command=self._choose_font_file).grid(
             row=3, column=2, sticky="w", padx=(4, 0))
 
-        ttk.Label(right, text="颜色").grid(row=4, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="颜色").grid(row=4, column=0, sticky="w", pady=3)
         self.var_label_color = tk.StringVar(value="#000000")
         self.btn_label_color = tk.Button(
-            right, width=6, background="#000000", relief=tk.RAISED,
+            tab, width=6, background="#000000", relief=tk.RAISED,
             borderwidth=2, command=self._choose_label_color,
         )
         self.btn_label_color.grid(row=4, column=1, sticky="w", pady=3)
-        ttk.Label(right, text="", style="Hint.TLabel").grid(
-            row=4, column=2, sticky="w", padx=(4, 0))
 
-        ttk.Separator(right, orient=tk.HORIZONTAL).grid(
-            row=5, column=0, columnspan=3, sticky="ew", pady=8)
+        ttk.Label(tab, text="样式").grid(row=5, column=0, sticky="w", pady=3)
+        style_box = ttk.Frame(tab)
+        style_box.grid(row=5, column=1, columnspan=2, sticky="w", pady=3)
+        self.var_label_bold = tk.BooleanVar(value=False)
+        self.chk_label_bold = ttk.Checkbutton(
+            style_box, text="加粗", variable=self.var_label_bold,
+            command=self._on_label_changed)
+        self.chk_label_bold.pack(side=tk.LEFT)
+        self.var_label_italic = tk.BooleanVar(value=False)
+        self.chk_label_italic = ttk.Checkbutton(
+            style_box, text="斜体", variable=self.var_label_italic,
+            command=self._on_label_changed)
+        self.chk_label_italic.pack(side=tk.LEFT, padx=6)
+        self.var_label_formula = tk.BooleanVar(value=False)
+        self.chk_label_formula = ttk.Checkbutton(
+            style_box, text="LaTeX 公式", variable=self.var_label_formula,
+            command=self._on_label_changed)
+        self.chk_label_formula.pack(side=tk.LEFT)
 
-        # -- alignment
-        ttk.Label(right, text="对齐").grid(row=6, column=0, sticky="w", pady=3)
-        align = ttk.Frame(right)
-        align.grid(row=6, column=1, columnspan=2, sticky="w", pady=3)
+    # -- the free text tab --------------------------------------------------
+
+    def _build_text_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(1, weight=1)
+
+        ttk.Label(tab, text="内容").grid(row=0, column=0, sticky="nw", pady=3)
+        self.txt_text = tk.Text(tab, height=3, width=18, wrap="word")
+        self.txt_text.grid(row=0, column=1, columnspan=2, sticky="ew", pady=3)
+        self.txt_text.bind("<<Modified>>", self._on_text_changed)
+        self._text_modified = False
+
+        ttk.Label(tab, text="字体").grid(row=1, column=0, sticky="w", pady=3)
+        self.var_text_font = tk.StringVar(value=comp.LABEL_FONT_DEFAULT)
+        self.cmb_text_font = ttk.Combobox(
+            tab, textvariable=self.var_text_font, state="readonly", width=14,
+            values=list(comp.LABEL_FONTS),
+        )
+        self.cmb_text_font.grid(row=1, column=1, sticky="ew", pady=3)
+        self.cmb_text_font.bind("<<ComboboxSelected>>", self._on_text_changed)
+        ttk.Button(tab, text="文件…", width=5,
+                   command=self._choose_text_font_file).grid(
+            row=1, column=2, sticky="w", padx=(4, 0))
+
+        ttk.Label(tab, text="字号").grid(row=2, column=0, sticky="w", pady=3)
+        self.var_text_size = tk.StringVar(value="10")
+        self.spin_text_size = ttk.Spinbox(
+            tab, from_=4, to=48, increment=1,
+            textvariable=self.var_text_size, width=6)
+        self.spin_text_size.grid(row=2, column=1, sticky="w", pady=3)
+        self.var_text_size.trace_add("write", lambda *_a: self._on_text_changed())
+
+        ttk.Label(tab, text="颜色").grid(row=3, column=0, sticky="w", pady=3)
+        self.var_text_color = tk.StringVar(value="#000000")
+        self.btn_text_color = tk.Button(
+            tab, width=6, background="#000000", relief=tk.RAISED,
+            borderwidth=2, command=self._choose_text_color,
+        )
+        self.btn_text_color.grid(row=3, column=1, sticky="w", pady=3)
+
+        ttk.Label(tab, text="样式").grid(row=4, column=0, sticky="w", pady=3)
+        style_box = ttk.Frame(tab)
+        style_box.grid(row=4, column=1, columnspan=2, sticky="w", pady=3)
+        self.var_text_bold = tk.BooleanVar(value=False)
+        self.chk_text_bold = ttk.Checkbutton(
+            style_box, text="加粗", variable=self.var_text_bold,
+            command=self._on_text_changed)
+        self.chk_text_bold.pack(side=tk.LEFT)
+        self.var_text_italic = tk.BooleanVar(value=False)
+        self.chk_text_italic = ttk.Checkbutton(
+            style_box, text="斜体", variable=self.var_text_italic,
+            command=self._on_text_changed)
+        self.chk_text_italic.pack(side=tk.LEFT, padx=6)
+        self.var_text_formula = tk.BooleanVar(value=False)
+        self.chk_text_formula = ttk.Checkbutton(
+            style_box, text="LaTeX 公式", variable=self.var_text_formula,
+            command=self._on_text_changed)
+        self.chk_text_formula.pack(side=tk.LEFT)
+        self.var_text_box = tk.BooleanVar(value=False)
+        self.chk_text_box = ttk.Checkbutton(
+            style_box, text="文本框", variable=self.var_text_box,
+            command=self._on_text_changed)
+        self.chk_text_box.pack(side=tk.LEFT, padx=6)
+
+    # -- the graphic element tab --------------------------------------------
+
+    def _build_shape_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(1, weight=1)
+
+        ttk.Label(tab, text="边框色").grid(row=0, column=0, sticky="w", pady=3)
+        self.var_shape_color = tk.StringVar(value="#d91a1a")
+        self.btn_shape_color = tk.Button(
+            tab, width=6, background="#d91a1a", relief=tk.RAISED,
+            borderwidth=2, command=self._choose_shape_color,
+        )
+        self.btn_shape_color.grid(row=0, column=1, sticky="w", pady=3)
+
+        ttk.Label(tab, text="边框宽").grid(row=1, column=0, sticky="w", pady=3)
+        self.var_shape_width = tk.StringVar(value="1.5")
+        self.spin_shape_width = ttk.Spinbox(
+            tab, from_=0.2, to=12, increment=0.5,
+            textvariable=self.var_shape_width, width=6,
+        )
+        self.spin_shape_width.grid(row=1, column=1, sticky="w", pady=3)
+        self.var_shape_width.trace_add("write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(tab, text="边框线型").grid(row=2, column=0, sticky="w", pady=3)
+        self.var_shape_dash = tk.StringVar(value=comp.DASH_SOLID)
+        self.cmb_shape_dash = ttk.Combobox(
+            tab, textvariable=self.var_shape_dash, state="readonly", width=8,
+            values=[comp.DASH_SOLID, comp.DASH_DASHED, comp.DASH_DOTTED],
+        )
+        self.cmb_shape_dash.grid(row=2, column=1, sticky="w", pady=3)
+        self.cmb_shape_dash.bind("<<ComboboxSelected>>", self._on_shape_changed)
+
+        ttk.Label(tab, text="边框透明").grid(row=3, column=0, sticky="w", pady=3)
+        self.var_shape_opacity = tk.StringVar(value="100")
+        self.spin_shape_opacity = ttk.Spinbox(
+            tab, from_=0, to=100, increment=5,
+            textvariable=self.var_shape_opacity, width=6,
+        )
+        self.spin_shape_opacity.grid(row=3, column=1, sticky="w", pady=3)
+        self.var_shape_opacity.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(tab, text="填充色").grid(row=4, column=0, sticky="w", pady=3)
+        self.var_shape_fill_color = tk.StringVar(value="#ffe08a")
+        self.btn_shape_fill_color = tk.Button(
+            tab, width=6, background="#ffe08a", relief=tk.RAISED,
+            borderwidth=2, command=self._choose_shape_fill_color,
+        )
+        self.btn_shape_fill_color.grid(row=4, column=1, sticky="w", pady=3)
+
+        ttk.Label(tab, text="填充").grid(row=5, column=0, sticky="w", pady=3)
+        self.var_shape_fill = tk.BooleanVar(value=False)
+        self.chk_shape_fill = ttk.Checkbutton(
+            tab, text="填充内部", variable=self.var_shape_fill,
+            command=self._on_shape_changed,
+        )
+        self.chk_shape_fill.grid(row=5, column=1, columnspan=2, sticky="w", pady=3)
+
+        ttk.Label(tab, text="填充透明").grid(row=6, column=0, sticky="w", pady=3)
+        self.var_shape_fill_opacity = tk.StringVar(value="25")
+        self.spin_shape_fill_opacity = ttk.Spinbox(
+            tab, from_=0, to=100, increment=5,
+            textvariable=self.var_shape_fill_opacity, width=6,
+        )
+        self.spin_shape_fill_opacity.grid(row=6, column=1, sticky="w", pady=3)
+        self.var_shape_fill_opacity.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+
+    # -- the alignment tab ---------------------------------------------------
+
+    def _build_align_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(0, weight=1)
+
+        ttk.Label(tab, text="对齐").grid(row=0, column=0, sticky="w", pady=3)
+        align = ttk.Frame(tab)
+        align.grid(row=0, column=1, columnspan=2, sticky="w", pady=3)
         for i, (text, mode) in enumerate((
                 ("左", comp.ALIGN_LEFT),
                 ("中", comp.ALIGN_HCENTER),
@@ -487,90 +740,23 @@ class ComposeWindow(tk.Toplevel):
                        command=lambda m=mode: self._align(m)).grid(
                 row=i // 3, column=i % 3, padx=1, pady=1)
 
-        ttk.Separator(right, orient=tk.HORIZONTAL).grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=8)
-
-        # -- the graphic element's border
-        ttk.Label(right, text="边框色").grid(row=8, column=0, sticky="w", pady=3)
-        self.var_shape_color = tk.StringVar(value="#d91a1a")
-        self.btn_shape_color = tk.Button(
-            right, width=6, background="#d91a1a", relief=tk.RAISED,
-            borderwidth=2, command=self._choose_shape_color,
-        )
-        self.btn_shape_color.grid(row=8, column=1, sticky="w", pady=3)
-
-        ttk.Label(right, text="边框宽").grid(row=9, column=0, sticky="w", pady=3)
-        self.var_shape_width = tk.StringVar(value="1.5")
-        self.spin_shape_width = ttk.Spinbox(
-            right, from_=0.2, to=12, increment=0.5,
-            textvariable=self.var_shape_width, width=6,
-        )
-        self.spin_shape_width.grid(row=9, column=1, sticky="w", pady=3)
-        self.var_shape_width.trace_add("write", lambda *_a: self._on_shape_changed())
-
-        ttk.Label(right, text="边框线型").grid(row=10, column=0, sticky="w", pady=3)
-        self.var_shape_dash = tk.StringVar(value=comp.DASH_SOLID)
-        self.cmb_shape_dash = ttk.Combobox(
-            right, textvariable=self.var_shape_dash, state="readonly", width=8,
-            values=[comp.DASH_SOLID, comp.DASH_DASHED, comp.DASH_DOTTED],
-        )
-        self.cmb_shape_dash.grid(row=10, column=1, sticky="w", pady=3)
-        self.cmb_shape_dash.bind("<<ComboboxSelected>>", self._on_shape_changed)
-
-        ttk.Label(right, text="边框透明").grid(row=11, column=0, sticky="w", pady=3)
-        self.var_shape_opacity = tk.StringVar(value="100")
-        self.spin_shape_opacity = ttk.Spinbox(
-            right, from_=0, to=100, increment=5,
-            textvariable=self.var_shape_opacity, width=6,
-        )
-        self.spin_shape_opacity.grid(row=11, column=1, sticky="w", pady=3)
-        self.var_shape_opacity.trace_add(
-            "write", lambda *_a: self._on_shape_changed())
-
-        ttk.Label(right, text="填充色").grid(row=12, column=0, sticky="w", pady=3)
-        self.var_shape_fill_color = tk.StringVar(value="#ffe08a")
-        self.btn_shape_fill_color = tk.Button(
-            right, width=6, background="#ffe08a", relief=tk.RAISED,
-            borderwidth=2, command=self._choose_shape_fill_color,
-        )
-        self.btn_shape_fill_color.grid(row=12, column=1, sticky="w", pady=3)
-
-        ttk.Label(right, text="填充").grid(row=13, column=0, sticky="w", pady=3)
-        self.var_shape_fill = tk.BooleanVar(value=False)
-        self.chk_shape_fill = ttk.Checkbutton(
-            right, text="填充内部", variable=self.var_shape_fill,
-            command=self._on_shape_changed,
-        )
-        self.chk_shape_fill.grid(row=13, column=1, columnspan=2, sticky="w", pady=3)
-
-        ttk.Label(right, text="填充透明").grid(row=14, column=0, sticky="w", pady=3)
-        self.var_shape_fill_opacity = tk.StringVar(value="25")
-        self.spin_shape_fill_opacity = ttk.Spinbox(
-            right, from_=0, to=100, increment=5,
-            textvariable=self.var_shape_fill_opacity, width=6,
-        )
-        self.spin_shape_fill_opacity.grid(row=14, column=1, sticky="w", pady=3)
-        self.var_shape_fill_opacity.trace_add(
-            "write", lambda *_a: self._on_shape_changed())
-
-        ttk.Separator(right, orient=tk.HORIZONTAL).grid(
-            row=15, column=0, columnspan=3, sticky="ew", pady=8)
-
-        ttk.Button(right, text="置于顶层", command=lambda: self._restack(+1)).grid(
-            row=16, column=0, columnspan=2, sticky="ew", pady=2)
-        ttk.Button(right, text="置于底层", command=lambda: self._restack(-1)).grid(
-            row=17, column=0, columnspan=2, sticky="ew", pady=2)
-        ttk.Button(right, text="删除选中", command=self._delete_selected).grid(
-            row=18, column=0, columnspan=2, sticky="ew", pady=(8, 2))
-        ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
-            row=19, column=0, columnspan=2, sticky="ew", pady=2)
+        ttk.Label(tab, text="分布").grid(row=1, column=0, sticky="w", pady=3)
+        spread = ttk.Frame(tab)
+        spread.grid(row=1, column=1, columnspan=2, sticky="w", pady=3)
+        ttk.Button(spread, text="水平等间距", width=10,
+                   command=lambda: self._distribute(
+                       comp.DISTRIBUTE_HORIZONTAL)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(spread, text="垂直等间距", width=10,
+                   command=lambda: self._distribute(
+                       comp.DISTRIBUTE_VERTICAL)).pack(side=tk.LEFT, padx=1)
 
         ttk.Label(
-            right,
-            text="拖动图体移动，橙点缩放\nCtrl+点击 多选（可一起对齐）\n"
-                 "方向键微调 · Delete 删除",
-            style="Hint.TLabel", wraplength=170, justify=tk.LEFT,
-        ).grid(row=20, column=0, columnspan=3, sticky="w", pady=(10, 0))
+            tab,
+            text="多选（Ctrl+点击）后：\n"
+                 "对齐 = 彼此对齐；单个时对齐到纸张\n"
+                 "分布 = 首尾不动，中间等间距",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
     def _build_footer(self) -> None:
         foot = ttk.Frame(self, padding=(10, 4, 10, 8))
@@ -588,9 +774,12 @@ class ComposeWindow(tk.Toplevel):
     def _update_count(self) -> None:
         n = len(self.composition.placements)
         m = len(self.composition.shapes)
+        t = len(self.composition.texts)
         text = f"画布上 {n} 个图"
         if m:
             text += f" · {m} 个图形"
+        if t:
+            text += f" · {t} 个文本"
         if self.palette:
             text += f"  ·  素材 {len(self.palette)} 个"
         self.lbl_count.configure(text=text)
@@ -731,7 +920,9 @@ class ComposeWindow(tk.Toplevel):
     def _redraw(self) -> None:
         cw = max(1, self.canvas.winfo_width())
         ch = max(1, self.canvas.winfo_height())
-        self._zoom = min(cw / self.sheet_w, ch / self.sheet_h, 1.0)
+        # A point of the sheet is this many pixels on this display.
+        pp = dpi.pixels_per_point(self)
+        self._zoom = min(cw / (self.sheet_w * pp), ch / (self.sheet_h * pp), pp)
         pw = max(1, self.sheet_w * self._zoom)
         ph = max(1, self.sheet_h * self._zoom)
         self._origin = (cw / 2 - pw / 2, ch / 2 - ph / 2)
@@ -744,10 +935,13 @@ class ComposeWindow(tk.Toplevel):
         )
         for idx, placement in enumerate(self.composition.placements):
             self._draw_placement(idx, placement)
-        # The graphic elements sit on top of the figures, and the labels on
-        # top of everything -- a label under an arrow is unreadable.
+        # The graphic elements sit on top of the figures, the free text on
+        # top of those, and the labels on top of everything -- a label under
+        # an arrow is unreadable.
         for idx, shape in enumerate(self.composition.shapes):
             self._draw_shape(idx, shape)
+        for idx, item in enumerate(self.composition.texts):
+            self._draw_text(idx, item)
         for idx, placement in enumerate(self.composition.placements):
             self._draw_label(idx, placement)
         if self._shape_preview is not None:
@@ -816,17 +1010,72 @@ class ComposeWindow(tk.Toplevel):
             # In the corner of the figure itself.
             tx, ty = left + 4, bottom - 4
             anchor = tk.SW
+        elif placement.label_mode == comp.LABEL_FREE:
+            # Wherever the user put it: the offset is measured from the
+            # figure's bottom-left corner, so the label travels with it.
+            tx, ty = self._to_canvas(
+                placement.rect.x0 + placement.label_offset[0],
+                placement.rect.y0 + placement.label_offset[1])
+            anchor = tk.SW
         else:
             # Under the figure, which is the journal convention.
             tx, ty = (left + right) / 2, bottom + 4
             anchor = tk.N
         r, g, b = placement.label_color
+        style = "normal"
+        if placement.label_bold and placement.label_italic:
+            style = "bold italic"
+        elif placement.label_bold:
+            style = "bold"
+        elif placement.label_italic:
+            style = "italic"
         self.canvas.create_text(
             tx, ty, text=placement.label, fill="#%02x%02x%02x" % (
                 int(r * 255), int(g * 255), int(b * 255)),
-            font=tk_font(family, int(placement.label_size)),
+            font=tk_font(family, int(placement.label_size), style),
             anchor=anchor, tags=("fig", str(idx)),
         )
+
+    def _draw_text(self, idx: int, item: comp.TextItem) -> None:
+        """Draw a piece of free-standing text on the canvas."""
+        x, y = self._to_canvas(item.position.x, item.position.y)
+        width, height = item.text_size()
+        w = width * self._zoom
+        h = height * self._zoom
+        selected = idx >= 0 and idx in self._sel_texts
+        if not item.text:
+            # An empty text is still an object: show where it is.
+            self.canvas.create_rectangle(
+                x, y - h, x + w, y, outline="#999999",
+                dash=(2, 2), tags=("text", str(idx)))
+            return
+        r, g, b = item.color
+        family = item.font or comp.LABEL_FONT_DEFAULT
+        style = "normal"
+        if item.bold and item.italic:
+            style = "bold italic"
+        elif item.bold:
+            style = "bold"
+        elif item.italic:
+            style = "italic"
+        if item.box:
+            self.canvas.create_rectangle(
+                x, y - h, x + w, y, outline="#%02x%02x%02x" % (
+                    int(r * 255), int(g * 255), int(b * 255)),
+                width=1, tags=("text", str(idx)))
+        self.canvas.create_text(
+            x, y, text=item.text, fill="#%02x%02x%02x" % (
+                int(r * 255), int(g * 255), int(b * 255)),
+            font=tk_font(family, int(item.size), style),
+            anchor=tk.SW, tags=("text", str(idx)))
+        if selected:
+            for hx, hy in ((x, y - h), (x + w, y - h), (x + w, y), (x, y)):
+                self.canvas.create_rectangle(
+                    hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
+                    hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
+                    fill="#ff7f0e", outline="white", width=1,
+                    tags=("text", str(idx)),
+                )
 
     def _draw_shape(self, idx: int, shape: comp.Shape) -> None:
         """Draw a graphic element on the canvas."""
@@ -929,8 +1178,48 @@ class ComposeWindow(tk.Toplevel):
                 return i
         return None
 
+    def _hit_text(self, cx: float, cy: float) -> Optional[int]:
+        """Which piece of free text the cursor is on."""
+        for i in range(len(self.composition.texts) - 1, -1, -1):
+            item = self.composition.texts[i]
+            r = item.rect()
+            left, top, right, bottom = self._canvas_rect(r)
+            if left - 2 <= cx <= right + 2 and top - 2 <= cy <= bottom + 2:
+                return i
+        return None
+
+    def _hit_label(self, cx: float, cy: float) -> Optional[int]:
+        """Which figure's label the cursor is on.
+
+        The label is drawn on top of everything, so it is picked before the
+        figure it belongs to -- which is what makes it draggable.
+        """
+        for i in range(len(self.composition.placements) - 1, -1, -1):
+            placement = self.composition.placements[i]
+            if not placement.label:
+                continue
+            r = comp.free_label_rect(placement)
+            left, top, right, bottom = self._canvas_rect(r)
+            if left - 2 <= cx <= right + 2 and top - 2 <= cy <= bottom + 2:
+                return i
+        return None
+
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
+        if self.tool in (TOOL_TEXT, TOOL_TEXTBOX):
+            # Drop a piece of text where the cursor is.
+            ux, uy = self._to_user(event.x, event.y)
+            self.composition.texts.append(comp.TextItem(
+                text="", position=fitz.Point(ux, uy),
+                size=10.0, box=(self.tool == TOOL_TEXTBOX),
+            ))
+            self._sel_figs = []
+            self._sel_shapes = []
+            self._sel_texts = [len(self.composition.texts) - 1]
+            self._sync_properties()
+            self._redraw()
+            self._update_count()
+            return
         if self.tool != "select":
             # Start drawing a graphic element, in the style the panel shows.
             ux, uy = self._to_user(event.x, event.y)
@@ -951,12 +1240,21 @@ class ComposeWindow(tk.Toplevel):
             self._redraw()
             return
 
+        label_idx = self._hit_label(event.x, event.y)
+        text_idx = self._hit_text(event.x, event.y)
         shape_idx = self._hit_shape(event.x, event.y)
         idx, part = self._hit(event.x, event.y)
         fig_hit, shape_hit, part = resolve_pick(shape_idx, idx, part)
-        if shape_hit is not None:
-            kind: Optional[str] = "shape"
-            index: Optional[int] = shape_hit
+
+        if label_idx is not None:
+            # The label is the thing under the cursor: it can be dragged
+            # off the figure altogether.
+            kind: Optional[str] = "figure"
+            index: Optional[int] = label_idx
+        elif text_idx is not None:
+            kind, index = "text", text_idx
+        elif shape_hit is not None:
+            kind, index = "shape", shape_hit
         elif fig_hit is not None:
             kind, index = "figure", fig_hit
         else:
@@ -968,10 +1266,15 @@ class ComposeWindow(tk.Toplevel):
             # A resize handle belongs to one figure alone.
             self._sel_figs = [fig_hit] if fig_hit is not None else []
             self._sel_shapes = []
+            self._sel_texts = []
             mode: Optional[str] = part
         else:
-            self._sel_figs, self._sel_shapes, mode = update_selection(
-                self._sel_figs, self._sel_shapes, kind, index, additive)
+            self._sel_figs, self._sel_shapes, self._sel_texts, mode = \
+                update_selection(
+                    self._sel_figs, self._sel_shapes, self._sel_texts,
+                    kind, index, additive)
+            if label_idx is not None and label_idx in self._sel_figs:
+                mode = "label"
 
         self._drag_mode = mode
         self._drag_start = (event.x, event.y)
@@ -987,6 +1290,15 @@ class ComposeWindow(tk.Toplevel):
             i: dataclasses.replace(self.composition.shapes[i])
             for i in self._sel_shapes
         }
+        self._drag_texts = {
+            i: dataclasses.replace(self.composition.texts[i])
+            for i in self._sel_texts
+        }
+        if mode == "label" and self._selected is not None:
+            placement = self.composition.placements[self._selected]
+            anchor = placement.label_anchor()
+            ux, uy = self._to_user(event.x, event.y)
+            self._drag_label_grab = (ux - anchor.x, uy - anchor.y)
         self._sync_properties()
         self._redraw()
 
@@ -1015,6 +1327,35 @@ class ComposeWindow(tk.Toplevel):
                     start=fitz.Point(base.start.x + dx, base.start.y + dy),
                     end=fitz.Point(base.end.x + dx, base.end.y + dy),
                 )
+            self._redraw()
+            return
+        if self._drag_mode == "text-body":
+            ux, uy = self._to_user(event.x, event.y)
+            sx, sy = self._to_user(*self._drag_start)
+            dx, dy = ux - sx, uy - sy
+            for i, base in self._drag_texts.items():
+                self.composition.texts[i] = dataclasses.replace(
+                    base,
+                    position=fitz.Point(base.position.x + dx,
+                                        base.position.y + dy),
+                )
+            self._redraw()
+            return
+        if self._drag_mode == "label":
+            # The label is dragged free: it gets an offset from the
+            # figure's corner, so it travels with the figure afterwards.
+            i = self._selected
+            if i is None:
+                return
+            ux, uy = self._to_user(event.x, event.y)
+            anchor = fitz.Point(ux - self._drag_label_grab[0],
+                                uy - self._drag_label_grab[1])
+            placement = self.composition.placements[i]
+            placement.label_mode = comp.LABEL_FREE
+            placement.label_offset = (
+                anchor.x - placement.rect.x0,
+                anchor.y - placement.rect.y0,
+            )
             self._redraw()
             return
         if not self._drag_rects:
@@ -1155,17 +1496,38 @@ class ComposeWindow(tk.Toplevel):
                 p.rect.x1 + dx * step, p.rect.y1 + dy * step,
             ))
             moved = True
+        for i in self._sel_texts:
+            item = self.composition.texts[i]
+            self.composition.texts[i] = dataclasses.replace(
+                item,
+                position=fitz.Point(item.position.x + dx * step,
+                                    item.position.y + dy * step),
+            )
+            moved = True
         if moved:
             self._redraw()
 
     # -- properties ---------------------------------------------------------
 
     def _sync_properties(self) -> None:
+        # While the panel is being filled in from the model, the widgets
+        # fire their change handlers -- which would write the *old* panel
+        # values back over the object being shown.  The flag stops that.
+        self._syncing = True
+        try:
+            self._sync_properties_inner()
+        finally:
+            self._syncing = False
+
+    def _sync_properties_inner(self) -> None:
         has_fig = (self._selected is not None
                    and 0 <= self._selected < len(self.composition.placements))
         has_shape = (self._selected_shape is not None
                      and 0 <= self._selected_shape
                      < len(self.composition.shapes))
+        has_text = (self._selected_text is not None
+                    and 0 <= self._selected_text
+                    < len(self.composition.texts))
 
         # -- the figure's label
         self.ent_label.configure(state="normal" if has_fig else "disabled")
@@ -1175,15 +1537,46 @@ class ComposeWindow(tk.Toplevel):
             state="normal" if has_fig else "disabled")
         self.btn_label_color.configure(
             state="normal" if has_fig else "disabled")
+        for widget in (self.chk_label_bold, self.chk_label_italic,
+                       self.chk_label_formula):
+            widget.configure(state="normal" if has_fig else "disabled")
         if has_fig:
             p = self.composition.placements[self._selected]
             self.var_label.set(p.label)
             self.var_label_mode.set(p.label_mode)
             self.var_label_size.set(f"{p.label_size:g}")
             self.var_label_font.set(p.label_font or comp.LABEL_FONT_DEFAULT)
+            self.var_label_bold.set(bool(p.label_bold))
+            self.var_label_italic.set(bool(p.label_italic))
+            self.var_label_formula.set(bool(p.label_formula))
             self._set_swatch(self.btn_label_color, p.label_color)
+            self.nb.select(self.tab_label)
         else:
             self.var_label.set("")
+
+        # -- the free text
+        self.txt_text.configure(state="normal" if has_text else "disabled")
+        self.cmb_text_font.configure(
+            state="readonly" if has_text else "disabled")
+        self.spin_text_size.configure(
+            state="normal" if has_text else "disabled")
+        self.btn_text_color.configure(
+            state="normal" if has_text else "disabled")
+        for widget in (self.chk_text_bold, self.chk_text_italic,
+                       self.chk_text_formula, self.chk_text_box):
+            widget.configure(state="normal" if has_text else "disabled")
+        if has_text:
+            item = self.composition.texts[self._selected_text]
+            self._set_text_widget(item.text)
+            self.var_text_font.set(item.font or comp.LABEL_FONT_DEFAULT)
+            self.var_text_size.set(f"{item.size:g}")
+            self.var_text_color.set(rgb_to_hex(item.color))
+            self.var_text_bold.set(bool(item.bold))
+            self.var_text_italic.set(bool(item.italic))
+            self.var_text_formula.set(bool(item.formula))
+            self.var_text_box.set(bool(item.box))
+            self._set_swatch(self.btn_text_color, item.color)
+            self.nb.select(self.tab_text)
 
         # -- the graphic element
         self.spin_shape_width.configure(
@@ -1212,6 +1605,7 @@ class ComposeWindow(tk.Toplevel):
                 f"{round(shape.fill_opacity * 100):g}")
             self._set_swatch(self.btn_shape_color, shape.color)
             self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
+            self.nb.select(self.tab_shape)
 
     def _set_swatch(self, button: tk.Button, color) -> None:
         r, g, b = tuple(color)[:3]
@@ -1313,6 +1707,10 @@ class ComposeWindow(tk.Toplevel):
             if 0 <= i < len(self.composition.shapes):
                 items.append(("shape", i,
                               fitz.Rect(self.composition.shapes[i].rect)))
+        for i in self._sel_texts:
+            if 0 <= i < len(self.composition.texts):
+                items.append(("text", i,
+                              fitz.Rect(self.composition.texts[i].rect())))
         if not items:
             self._status("先选中要对齐的元素（Ctrl+点击 可多选）。")
             return
@@ -1320,17 +1718,24 @@ class ComposeWindow(tk.Toplevel):
         target = comp.align_target([r for _, _, r in items], mode, bounds)
         for kind, index, rect in items:
             new = comp.aligned_rect(rect, mode, target)
+            dx = new.x0 - rect.x0
+            dy = new.y0 - rect.y0
             if kind == "figure":
                 self.composition.placements[index].rect = \
                     self._clamp_to_sheet(new)
-            else:
+            elif kind == "shape":
                 shape = self.composition.shapes[index]
-                dx = new.x0 - rect.x0
-                dy = new.y0 - rect.y0
                 self.composition.shapes[index] = dataclasses.replace(
                     shape,
                     start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
                     end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                )
+            else:
+                item = self.composition.texts[index]
+                self.composition.texts[index] = dataclasses.replace(
+                    item,
+                    position=fitz.Point(item.position.x + dx,
+                                        item.position.y + dy),
                 )
         self._redraw()
         names = {"left": "左对齐", "hcenter": "水平居中", "right": "右对齐",
@@ -1350,8 +1755,129 @@ class ComposeWindow(tk.Toplevel):
         p.label_font = "" if font == comp.LABEL_FONT_DEFAULT else font
         p.label_fontfile = getattr(self, "_font_file", "")
         p.label_color = hex_to_rgb(self.var_label_color.get())
+        p.label_bold = bool(self.var_label_bold.get())
+        p.label_italic = bool(self.var_label_italic.get())
+        p.label_formula = bool(self.var_label_formula.get())
         self._set_swatch(self.btn_label_color, p.label_color)
         self._redraw()
+
+    # -- the free text ------------------------------------------------------
+
+    def _set_text_widget(self, text: str) -> None:
+        """Show a text in the content box without firing the change handler."""
+        if self.txt_text.get("1.0", "end-1c") == text:
+            return
+        self.txt_text.delete("1.0", "end")
+        self.txt_text.insert("1.0", text)
+        self.txt_text.edit_modified(False)
+
+    def _on_text_changed(self, event=None) -> None:
+        """Apply the text tab to every selected piece of text."""
+        if self._syncing:
+            return
+        if self._selected_text is None:
+            return
+        if event is not None and not self.txt_text.edit_modified():
+            return
+        self.txt_text.edit_modified(False)
+        text = self.txt_text.get("1.0", "end-1c")
+        try:
+            size = max(4.0, min(48.0, float(self.var_text_size.get())))
+        except ValueError:
+            size = 10.0
+        font = self.var_text_font.get()
+        fontfile = getattr(self, "_text_font_file", "")
+        color = hex_to_rgb(self.var_text_color.get())
+        bold = bool(self.var_text_bold.get())
+        italic = bool(self.var_text_italic.get())
+        formula = bool(self.var_text_formula.get())
+        box = bool(self.var_text_box.get())
+        for i in self._sel_texts:
+            if not 0 <= i < len(self.composition.texts):
+                continue
+            item = self.composition.texts[i]
+            item.text = text
+            item.size = size
+            item.font = "" if font == comp.LABEL_FONT_DEFAULT else font
+            item.fontfile = fontfile
+            item.color = color
+            item.bold = bold
+            item.italic = italic
+            item.formula = formula
+            item.box = box
+        self._set_swatch(self.btn_text_color, color)
+        self._redraw()
+
+    def _choose_text_color(self) -> None:
+        rgb, hexv = colorchooser.askcolor(
+            color=self.var_text_color.get(), title="文字颜色")
+        if not hexv:
+            return
+        self.var_text_color.set(hexv)
+        self._on_text_changed()
+
+    def _choose_text_font_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="选择字体文件",
+            filetypes=[("字体文件", "*.ttf *.otf *.ttc"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        p = Path(path)
+        self.var_text_font.set(p.name)
+        self._text_font_file = str(p)
+        self._on_text_changed()
+
+    # -- distribution -------------------------------------------------------
+
+    def _distribute(self, axis: str) -> None:
+        """Spread the selection out evenly.
+
+        The two outermost objects stay where they are; the ones in between
+        are moved so that the gaps between them come out equal.
+        """
+        items: List[Tuple[str, int, fitz.Rect]] = []
+        for i in self._sel_figs:
+            if 0 <= i < len(self.composition.placements):
+                items.append(("figure", i,
+                              fitz.Rect(self.composition.placements[i].rect)))
+        for i in self._sel_shapes:
+            if 0 <= i < len(self.composition.shapes):
+                items.append(("shape", i,
+                              fitz.Rect(self.composition.shapes[i].rect)))
+        for i in self._sel_texts:
+            if 0 <= i < len(self.composition.texts):
+                items.append(("text", i,
+                              fitz.Rect(self.composition.texts[i].rect())))
+        if len(items) < 3:
+            self._status("至少选中 3 个元素才能分布。")
+            return
+        spread = comp.distribute_rects([r for _, _, r in items], axis)
+        for (kind, index, rect), new in zip(items, spread):
+            dx = new.x0 - rect.x0
+            dy = new.y0 - rect.y0
+            if kind == "figure":
+                p = self.composition.placements[index]
+                p.rect = self._clamp_to_sheet(fitz.Rect(
+                    p.rect.x0 + dx, p.rect.y0 + dy,
+                    p.rect.x1 + dx, p.rect.y1 + dy))
+            elif kind == "shape":
+                shape = self.composition.shapes[index]
+                self.composition.shapes[index] = dataclasses.replace(
+                    shape,
+                    start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+                    end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                )
+            else:
+                item = self.composition.texts[index]
+                self.composition.texts[index] = dataclasses.replace(
+                    item,
+                    position=fitz.Point(item.position.x + dx,
+                                        item.position.y + dy),
+                )
+        self._redraw()
+        name = "水平" if axis == comp.DISTRIBUTE_HORIZONTAL else "垂直"
+        self._status(f"已{name}等间距分布 {len(items)} 个元素。")
 
     def _on_label_mode_changed(self) -> None:
         if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
@@ -1375,6 +1901,15 @@ class ComposeWindow(tk.Toplevel):
 
     def _delete_selected(self) -> None:
         """Remove everything that is selected."""
+        if self._sel_texts:
+            for i in sorted(self._sel_texts, reverse=True):
+                if 0 <= i < len(self.composition.texts):
+                    del self.composition.texts[i]
+            self._sel_texts = []
+            self._sync_properties()
+            self._redraw()
+            self._update_count()
+            return
         if self._sel_shapes:
             # Back to front, so the indices stay valid while deleting.
             for i in sorted(self._sel_shapes, reverse=True):
@@ -1396,14 +1931,17 @@ class ComposeWindow(tk.Toplevel):
         self._update_count()
 
     def _clear_sheet(self) -> None:
-        if not self.composition.placements and not self.composition.shapes:
+        if not (self.composition.placements or self.composition.shapes
+                or self.composition.texts):
             return
         if not messagebox.askyesno("清空画布", "移除画布上的所有图？"):
             return
         self.composition.placements.clear()
         self.composition.shapes.clear()
+        self.composition.texts.clear()
         self._selected = None
         self._selected_shape = None
+        self._selected_text = None
         self._sync_properties()
         self._redraw()
         self._update_count()

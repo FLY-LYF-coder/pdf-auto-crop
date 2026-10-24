@@ -52,7 +52,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pymupdf as fitz
 
-from . import gui_edit, gui_hints
+from . import dpi, gui_edit, gui_hints
 from .config import CropConfig
 from .geometry import add_margin_pt, mm_to_pt
 from .pdf_processor import render_page_to_array
@@ -227,8 +227,11 @@ class App(tk.Tk):
         # button) plus the status footer all fit without the canvas stealing
         # the space; the footer packs at the bottom, so anything that overflows
         # pushes it off-screen entirely.
-        self.geometry("1280x920")
-        self.minsize(1000, 700)
+        # The window is sized in physical pixels, so on a high-DPI display the
+        # geometry has to be scaled to come out the same size on screen.
+        scale = dpi.scale_factor(self)
+        self.geometry(f"{int(1280 * scale)}x{int(920 * scale)}")
+        self.minsize(int(1000 * scale), int(700 * scale))
 
         self._doc: Optional[fitz.Document] = None
         self._src_path: Optional[Path] = None
@@ -1516,6 +1519,12 @@ def _export_batch(
 
 def launch() -> int:
     """Open the desktop window.  Returns a process exit code."""
+    # Before any window exists: on a high-DPI display Windows otherwise
+    # bitmap-scales the whole interface, which blurs the text and clips the
+    # labels of the themed widgets.
+    from .dpi import enable_dpi_awareness
+
+    enable_dpi_awareness()
     try:
         app = App()
     except tk.TclError as exc:  # pragma: no cover -- headless environment

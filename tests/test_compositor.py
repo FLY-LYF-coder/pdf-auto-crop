@@ -709,6 +709,171 @@ def test_an_unknown_alignment_mode_is_refused() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Distribution
+# ---------------------------------------------------------------------------
+
+
+def test_distributing_spreads_the_gaps_evenly() -> None:
+    """The outer two stay put; the gap between them is shared out."""
+    rects = [fitz.Rect(0, 0, 10, 10), fitz.Rect(20, 0, 30, 10),
+             fitz.Rect(50, 0, 60, 10)]
+    out = comp.distribute_rects(rects, comp.DISTRIBUTE_HORIZONTAL)
+    # The first and the last did not move.
+    assert out[0].x0 == 0
+    assert out[2].x0 == 50
+    # The gaps are now 15 and 15.
+    assert out[1].x0 == 25
+    assert out[1].x0 - out[0].x1 == 15
+    assert out[2].x0 - out[1].x1 == 15
+
+
+def test_distributing_keeps_the_sizes() -> None:
+    rects = [fitz.Rect(0, 0, 10, 10), fitz.Rect(20, 0, 35, 10),
+             fitz.Rect(50, 0, 60, 10)]
+    out = comp.distribute_rects(rects, comp.DISTRIBUTE_HORIZONTAL)
+    assert out[1].width == 15
+    assert out[1].height == 10
+
+
+def test_distributing_vertically_counts_upwards() -> None:
+    """The sheet's y points up, so the lowest object comes first."""
+    rects = [fitz.Rect(0, 0, 10, 10), fitz.Rect(0, 20, 10, 30),
+             fitz.Rect(0, 50, 10, 60)]
+    out = comp.distribute_rects(rects, comp.DISTRIBUTE_VERTICAL)
+    assert out[0].y0 == 0
+    assert out[2].y0 == 50
+    assert out[1].y0 == 25
+    assert out[1].y0 - out[0].y1 == 15
+    assert out[2].y0 - out[1].y1 == 15
+
+
+def test_distributing_needs_three_objects() -> None:
+    rects = [fitz.Rect(0, 0, 10, 10), fitz.Rect(20, 0, 30, 10)]
+    out = comp.distribute_rects(rects, comp.DISTRIBUTE_HORIZONTAL)
+    assert [r.x0 for r in out] == [0, 20]
+    with pytest.raises(ValueError):
+        comp.distribute_rects(rects, "sideways")
+
+
+# ---------------------------------------------------------------------------
+# Free labels and free text
+# ---------------------------------------------------------------------------
+
+
+def test_a_label_can_be_put_where_the_user_wants(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(100, 100, 300, 250), label="(a)",
+        label_mode=comp.LABEL_FREE, label_offset=(20.0, 40.0)))
+    # The label's anchor follows the figure's corner plus the offset.
+    anchor = c.placements[0].label_anchor()
+    assert anchor.x == pytest.approx(120.0)
+    assert anchor.y == pytest.approx(140.0)
+    # Moving the figure carries the label along.
+    c.placements[0].rect = fitz.Rect(150, 150, 350, 300)
+    anchor = c.placements[0].label_anchor()
+    assert anchor.x == pytest.approx(170.0)
+    assert anchor.y == pytest.approx(190.0)
+
+
+def test_a_free_label_is_written_where_it_sits(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(100, 100, 300, 250), label="(a)",
+        label_mode=comp.LABEL_FREE, label_offset=(20.0, 40.0)))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        spans = [s for b in doc[0].get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        assert spans
+        # The page counts downwards, so the label's baseline is at
+        # 400 - 140 = 260.
+        assert spans[0]["origin"][1] == pytest.approx(260, abs=1)
+    finally:
+        doc.close()
+
+
+def test_a_free_text_is_written_as_real_text(tmp_path) -> None:
+    c = comp.Composition(width=400, height=400)
+    c.texts.append(comp.TextItem(
+        text="Hello", position=fitz.Point(50, 300), size=12.0,
+        color=(0.1, 0.2, 0.3)))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        assert "Hello" in doc[0].get_text()
+        spans = [s for b in doc[0].get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        assert spans[0]["color"] == 0x1A334D
+    finally:
+        doc.close()
+
+
+def test_a_free_text_survives_a_json_round_trip(tmp_path) -> None:
+    item = comp.TextItem(
+        text="x = 1", position=fitz.Point(10, 20), size=9.5,
+        font="Helvetica-Bold", color=(0.2, 0.4, 0.6), bold=True,
+        italic=True, formula=True, box=True, box_color=(0.1, 0.1, 0.1),
+        box_width=1.5)
+    back = comp.TextItem.from_dict(item.to_dict())
+    assert back.text == "x = 1"
+    assert back.position.x == pytest.approx(10.0)
+    assert back.size == pytest.approx(9.5)
+    assert back.font == "Helvetica-Bold"
+    assert back.color == pytest.approx((0.2, 0.4, 0.6))
+    assert back.bold is True
+    assert back.italic is True
+    assert back.formula is True
+    assert back.box is True
+    assert back.box_color == pytest.approx((0.1, 0.1, 0.1))
+    assert back.box_width == pytest.approx(1.5)
+
+
+def test_the_composition_carries_the_texts_through_json(tmp_path) -> None:
+    c = comp.Composition(width=400, height=400)
+    c.texts.append(comp.TextItem(text="note", position=fitz.Point(5, 6)))
+    back = comp.Composition.from_dict(c.to_dict())
+    assert len(back.texts) == 1
+    assert back.texts[0].text == "note"
+
+
+def test_bold_and_italic_pick_the_right_variant() -> None:
+    assert comp.apply_style("tiro") == "tiro"
+    assert comp.apply_style("tiro", bold=True) == "tibo"
+    assert comp.apply_style("tiro", italic=True) == "tiit"
+    assert comp.apply_style("tiro", bold=True, italic=True) == "tibiz"
+    assert comp.apply_style("helv", bold=True) == "hebo"
+    assert comp.apply_style("cour", italic=True) == "coit"
+    # A face without a variant is left alone.
+    assert comp.apply_style("symb", bold=True) == "symb"
+
+
+def test_a_bold_label_reaches_the_pdf(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=400)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(20, 20, 220, 220), label="(a)", label_bold=True))
+    out = comp.export_composition(
+        c, tmp_path / "out.pdf", fit_to_content=False, page_size=(400, 400))
+    doc = fitz.open(str(out))
+    try:
+        spans = [s for b in doc[0].get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        assert spans
+        assert "Bold" in spans[0]["font"] or "bold" in spans[0]["font"].lower()
+    finally:
+        doc.close()
+
+
+# ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------
 
@@ -881,19 +1046,20 @@ def test_the_selection_grows_and_shrinks_with_ctrl() -> None:
     """Ctrl+click adds to the selection, so a group can be lined up."""
     u = compositor_gui.update_selection
     # A plain click replaces the selection.
-    assert u([], [], "figure", 1, False) == ([1], [], "body")
+    assert u([], [], [], "figure", 1, False) == ([1], [], [], "body")
     # Ctrl+click adds.
-    assert u([1], [], "figure", 3, True) == ([1, 3], [], "body")
+    assert u([1], [], [], "figure", 3, True) == ([1, 3], [], [], "body")
     # Ctrl+click again takes it back out.
-    assert u([1, 3], [], "figure", 3, True) == ([1], [], None)
+    assert u([1, 3], [], [], "figure", 3, True) == ([1], [], [], None)
     # An element under the cursor wins over a figure underneath it.
-    assert u([1], [], "shape", 0, False) == ([], [0], "shape-body")
-    # The two kinds are never selected together.
-    assert u([1], [], "shape", 0, True) == ([], [0], "shape-body")
-    assert u([], [2], "figure", 1, True) == ([1], [], "body")
+    assert u([1], [], [], "shape", 0, False) == ([], [0], [], "shape-body")
+    # The three kinds are never selected together.
+    assert u([1], [], [], "shape", 0, True) == ([], [0], [], "shape-body")
+    assert u([], [2], [], "figure", 1, True) == ([1], [], [], "body")
+    assert u([], [], [4], "text", 5, True) == ([], [], [4, 5], "text-body")
     # Clicking the empty sheet clears the selection -- unless Ctrl is held.
-    assert u([1], [], None, None, False) == ([], [], None)
-    assert u([1], [], None, None, True) == ([1], [], None)
+    assert u([1], [], [], None, None, False) == ([], [], [], None)
+    assert u([1], [], [], None, None, True) == ([1], [], [], None)
 
 
 # ---------------------------------------------------------------------------

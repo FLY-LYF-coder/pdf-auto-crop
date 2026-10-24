@@ -14,8 +14,10 @@ Run:  python scripts/compositor_screenshot.py
 
 from __future__ import annotations
 
+import ctypes
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -32,6 +34,11 @@ from PIL import ImageGrab  # noqa: E402
 
 from pdf_auto_crop import compositor as comp  # noqa: E402
 from pdf_auto_crop import compositor_gui  # noqa: E402
+from pdf_auto_crop.dpi import enable_dpi_awareness  # noqa: E402
+
+# Before any window exists, so the window is drawn at the display's real
+# resolution instead of being bitmap-scaled.
+enable_dpi_awareness()
 
 SHOTS = ROOT / "diag_out" / "compositor"
 SHOTS.mkdir(parents=True, exist_ok=True)
@@ -78,12 +85,47 @@ def figure_colour(pdf: Path, page_index: int, region: fitz.Rect) -> tuple[int, i
         doc.close()
 
 
+def _physical_rect(win) -> Optional[Tuple[int, int, int, int]]:
+    """The window's rectangle in physical screen pixels.
+
+    Tk reports the geometry in logical pixels and ImageGrab grabs physical
+    ones, so on a scaled display the two have to be reconciled.  The thread
+    is made DPI-aware for the call, and the window rectangle is then read
+    in physical pixels.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes.wintypes
+
+        hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), 2)  # GA_ROOT
+        ctypes.windll.user32.SetThreadDpiAwarenessContext(
+            ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+        rect = ctypes.wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:  # noqa: BLE001 -- only the picture suffers
+        return None
+
+
 def _shot(win, name: str) -> Path:
     win.update()
-    x, y = win.winfo_rootx(), win.winfo_rooty()
-    w, h = win.winfo_width(), win.winfo_height()
+    # The screen grab takes whatever is on top, and the user's own window
+    # may well be -- so the compositor comes forward for the picture.
+    was_topmost = bool(win.attributes("-topmost"))
+    if not was_topmost:
+        win.attributes("-topmost", True)
+    win.lift()
+    win.update()
+    bbox = _physical_rect(win)
+    if bbox is None:
+        x, y = win.winfo_rootx(), win.winfo_rooty()
+        w, h = win.winfo_width(), win.winfo_height()
+        bbox = (x, y, x + w, y + h)
     path = SHOTS / name
-    ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(str(path))
+    ImageGrab.grab(bbox=bbox).save(str(path))
+    if not was_topmost:
+        win.attributes("-topmost", False)
     return path
 
 
@@ -120,7 +162,7 @@ def main() -> int:
     make_fixture(fixture)
 
     win = compositor_gui.ComposeWindow(None)
-    win.geometry("1240x820+40+40")
+    # The window sizes itself, scaled for the display's resolution.
     win.update()
     win._redraw()
     win.update()
@@ -377,6 +419,86 @@ def main() -> int:
     win._arrange("grid")
     win.update()
 
+    # -- spreading a group out --------------------------------------------
+    # Three free-standing boxes: on a grid the figures overlap, so there is
+    # nothing sensible to spread there.
+    for x in (100.0, 200.0, 400.0):
+        win.composition.shapes.append(comp.Shape(
+            comp.SHAPE_RECT, fitz.Point(x, 100), fitz.Point(x + 40, 140),
+            color=(0.0, 0.0, 0.0)))
+    win._sel_figs = []
+    win._sel_texts = []
+    win._sel_shapes = list(range(len(win.composition.shapes) - 3,
+                                 len(win.composition.shapes)))
+    win._redraw()
+    win._distribute(comp.DISTRIBUTE_HORIZONTAL)
+    win.update()
+    rects = sorted((fitz.Rect(win.composition.shapes[i].rect)
+                    for i in win._sel_shapes), key=lambda r: r.x0)
+    gaps = [rects[i + 1].x0 - rects[i].x1 for i in range(len(rects) - 1)]
+    check("distributing makes the gaps equal",
+          len(gaps) == 2 and abs(gaps[0] - gaps[1]) < 0.5 and gaps[0] > 0,
+          f"{gaps}")
+    check("distributing leaves the outer ones alone",
+          abs(rects[0].x0 - 100.0) < 0.5 and abs(rects[-1].x0 - 400.0) < 0.5,
+          f"{rects[0].x0} {rects[-1].x0}")
+
+    # -- dragging the label anywhere ---------------------------------------
+    win._selected = 0
+    win._sync_properties()
+    placement = win.composition.placements[0]
+    before_offset = tuple(placement.label_offset)
+    anchor = placement.label_anchor()
+    ax, ay = win._to_canvas(anchor.x, anchor.y)
+    _drag(win, int(ax), int(ay), int(ax) + 60, int(ay) - 40)
+    check("the label can be dragged off the figure",
+          placement.label_mode == comp.LABEL_FREE, placement.label_mode)
+    check("the dragged label moved",
+          abs(placement.label_offset[0] - before_offset[0]) > 10,
+          f"{before_offset} -> {placement.label_offset}")
+    _shot(win, "10_free_label.png")
+
+    # -- dropping a piece of text ------------------------------------------
+    # The texts go to the far right of the sheet, where no figure is: a
+    # colour test on the panels would otherwise find them.
+    win.var_tool.set("text")
+    win._on_tool_changed()
+    tx, ty = win._to_canvas(750, 520)
+    _click(win, int(tx), int(ty))
+    check("the text tool drops a text",
+          len(win.composition.texts) == 1, str(len(win.composition.texts)))
+    win._set_text_widget("Hello")
+    win._on_text_changed()
+    win.var_text_bold.set(True)
+    win.var_text_italic.set(True)
+    win._on_text_changed()
+    win.var_text_color.set("#6a0dad")
+    win._on_text_changed()
+    win.update()
+    item = win.composition.texts[0]
+    check("the text can be typed", item.text == "Hello", item.text)
+    check("the text can be bold", item.bold is True)
+    check("the text can be italic", item.italic is True)
+    check("the text colour can be changed",
+          item.color == pytest.approx((0.416, 0.051, 0.678), abs=0.02),
+          str(item.color))
+
+    # A LaTeX formula, drawn as vector mathematics.
+    win.var_tool.set("textbox")
+    win._on_tool_changed()
+    fx, fy = win._to_canvas(750, 460)
+    _click(win, int(fx), int(fy))
+    win._set_text_widget("E = mc^2")
+    win._on_text_changed()
+    win.var_text_formula.set(True)
+    win._on_text_changed()
+    win.update()
+    check("a formula can be typed",
+          win.composition.texts[1].formula is True)
+    check("the formula is a text box",
+          win.composition.texts[1].box is True)
+    _shot(win, "11_text.png")
+
     # -- export -----------------------------------------------------------
     out = WORK / "composed.pdf"
     comp.export_composition(
@@ -419,6 +541,11 @@ def main() -> int:
                   for d in page.get_drawings()),
               str([round(d.get("fill_opacity") or 1.0, 2)
                    for d in page.get_drawings()]))
+        check("the exported PDF carries the free text",
+              "Hello" in text, repr(text))
+        check("the formula is vector, not a picture",
+              len(page.get_images()) == 0,
+              f"{len(page.get_images())} images")
     finally:
         doc.close()
 

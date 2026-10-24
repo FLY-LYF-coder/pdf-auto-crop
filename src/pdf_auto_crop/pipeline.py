@@ -75,6 +75,37 @@ def _interactive_confirm(figure_count: int, page_no: int) -> str:
         ui_utils.warn(f"'{raw}' is not a valid choice; please answer y/n/q.")
 
 
+def _with_axis_labels(
+    doc: fitz.Document,
+    page_index: int,
+    rects: Sequence[fitz.Rect],
+    page_h_pt: float,
+) -> List[fitz.Rect]:
+    """Grow the detected rectangles to include their own axis labels.
+
+    The detector works on the raster and finds the ink of the plot.  The axis
+    ticks, the axis titles and the figure's title are separate ink
+    components just outside the frame, so they are not in the detected box
+    -- and a crop taken from that box loses them.
+
+    The rectangles come bottom-up (PDF user space) and the page's text is
+    reported top-down, so both are converted through the same flip.
+    """
+    if not rects:
+        return list(rects)
+    from .figure_text import expand_regions_with_text, text_blocks
+
+    top_down = [
+        fitz.Rect(r.x0, page_h_pt - r.y1, r.x1, page_h_pt - r.y0)
+        for r in rects
+    ]
+    grown = expand_regions_with_text(top_down, text_blocks(doc[page_index]))
+    return [
+        fitz.Rect(r.x0, page_h_pt - r.y1, r.x1, page_h_pt - r.y0)
+        for r in grown
+    ]
+
+
 def run_pipeline(
     args: argparse.Namespace,
     cfg: CropConfig,
@@ -168,6 +199,12 @@ def run_pipeline(
                 )
             else:
                 rects = detect(rgb, (page_w_pt, page_h_pt), cfg)
+                # The detector finds the *ink* of a plot.  The axis ticks,
+                # the axis titles and the figure's title sit a millimetre or
+                # two outside the frame, so they are folded back in from the
+                # page's text -- otherwise a curve plot is cropped without
+                # its axes.
+                rects = _with_axis_labels(doc, page_index, rects, page_h_pt)
                 margin_pt = mm_to_pt(cfg.margin_mm + cfg.padding_mm)
                 log.info("Detected %d figure(s) on page %d", len(rects), page_index + 1)
             per_page_counts.append(len(rects))

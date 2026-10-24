@@ -55,6 +55,12 @@ def _ask_mode() -> str:
 
 def main() -> int:
     ui_utils.enable_ansi()
+    # Before any window exists: on a high-DPI display Windows otherwise
+    # bitmap-scales the whole interface, which blurs the text and clips the
+    # labels of the themed widgets.
+    from .dpi import enable_dpi_awareness
+
+    enable_dpi_awareness()
     try:
         if _ask_mode() == "gui":
             from .gui import launch
