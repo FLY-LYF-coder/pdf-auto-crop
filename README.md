@@ -363,11 +363,19 @@ write 中文, say — the label falls back to a Chinese face automatically.  A
 missing glyph is worse than a different typeface, so the fallback is silent
 rather than a row of empty boxes.
 
-**位置** puts the label 图下 (centred under the figure — the journal
-convention), 角上 (in the corner of the figure) or 自由 (wherever you want it).
-It can also simply be **dragged**: grab the label on the sheet and pull it
-anywhere, and it stays there when the figure is moved — the offset is kept
-relative to the figure, not to the page.
+**位置** puts the label where you want it:
+
+| Position | Where it goes |
+| -------- | ------------- |
+| 图下 | Centred under the figure — the journal convention |
+| 左上 | In the top-left corner of the figure |
+| 左下 | In the bottom-left corner of the figure |
+| 右下 | In the bottom-right corner of the figure |
+| 自由 | Wherever you want it |
+
+In 自由 you simply **drag the label** on the sheet: grab it and pull it
+anywhere.  The offset is kept relative to the figure, so the label travels
+with the figure when you move it.
 
 ### Free text and formulas
 

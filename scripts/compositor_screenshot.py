@@ -515,15 +515,39 @@ def main() -> int:
     win._sync_properties()
     placement = win.composition.placements[0]
     before_offset = tuple(placement.label_offset)
+    rect_before = fitz.Rect(placement.rect)
+    # Grab the label where it is *drawn*, the way a person does: the ink has
+    # to be where the grab area is, or the label cannot be caught at all.
     anchor = placement.label_anchor()
-    ax, ay = win._to_canvas(anchor.x, anchor.y)
-    _drag(win, int(ax), int(ay), int(ax) + 60, int(ay) - 40)
+    drawn_x, drawn_y = win._to_canvas(anchor.x, anchor.y)
+    grab_x = int(drawn_x + placement.label_size * win._zoom / 2)
+    grab_y = int(drawn_y - placement.label_size * 0.6 * win._zoom)
+    check("the label can be caught where it is drawn",
+          win._hit_label(grab_x, grab_y) == 0,
+          str(win._hit_label(grab_x, grab_y)))
+    _drag(win, grab_x, grab_y, grab_x + 60, grab_y - 40)
     check("the label can be dragged off the figure",
           placement.label_mode == comp.LABEL_FREE, placement.label_mode)
     check("the dragged label moved",
           abs(placement.label_offset[0] - before_offset[0]) > 10,
           f"{before_offset} -> {placement.label_offset}")
+    check("dragging the label leaves the figure where it was",
+          rect_before == fitz.Rect(placement.rect),
+          f"{rect_before} vs {placement.rect}")
     _shot(win, "10_free_label.png")
+
+    # -- the built-in places for a label ------------------------------------
+    for mode, name in ((comp.LABEL_TOP_LEFT, "左上"),
+                       (comp.LABEL_BOTTOM_RIGHT, "右下"),
+                       (comp.LABEL_OVERLAY, "左下")):
+        win.var_label_mode.set(mode)
+        win._on_label_mode_changed()
+        win.update()
+        check(f"the label can be put {name}",
+              placement.label_mode == mode, placement.label_mode)
+    win.var_label_mode.set(comp.LABEL_BELOW)
+    win._on_label_mode_changed()
+    win.update()
 
     # -- dropping a piece of text ------------------------------------------
     # The texts go to the far right of the sheet, where no figure is: a

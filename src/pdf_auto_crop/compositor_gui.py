@@ -180,12 +180,17 @@ TK_FONTS: Dict[str, str] = {
 }
 
 
-def tk_font(label_font: str, size: int, style: str = "normal"
+def tk_font(label_font: str, size_px: int, style: str = "normal"
             ) -> Tuple[str, int, str]:
     """The Tk font tuple for a label font.
 
     ``label_font`` is a key of :data:`pdf_auto_crop.compositor.LABEL_FONTS`,
     or the name of a font file the user picked.
+
+    The size is in **pixels** (a negative number in Tk), not in points: the
+    canvas draws the sheet at the user's zoom, and a size in points would
+    ignore it -- the labels would come out far too big, and would not sit
+    where the exporter puts them.
     """
     family = TK_FONTS.get(label_font, label_font or "Times New Roman")
     if style == "normal":
@@ -196,7 +201,7 @@ def tk_font(label_font: str, size: int, style: str = "normal"
                      else "bold")
         elif "Italic" in label_font or "Oblique" in label_font:
             style = "italic"
-    return (family, max(8, size), style)
+    return (family, -max(1, int(size_px)), style)
 
 
 def resolve_pick(shape_hit: Optional[int], figure_hit: Optional[int],
@@ -689,16 +694,16 @@ class ComposeWindow(tk.Toplevel):
         ttk.Label(tab, text="位置").grid(row=1, column=0, sticky="w", pady=3)
         self.var_label_mode = tk.StringVar(value=comp.LABEL_BELOW)
         box = ttk.Frame(tab)
-        box.grid(row=1, column=1, sticky="w", pady=3)
-        ttk.Radiobutton(box, text="图下", value=comp.LABEL_BELOW,
-                        variable=self.var_label_mode,
-                        command=self._on_label_mode_changed()).pack(side=tk.LEFT)
-        ttk.Radiobutton(box, text="角上", value=comp.LABEL_OVERLAY,
-                        variable=self.var_label_mode,
-                        command=self._on_label_mode_changed()).pack(side=tk.LEFT, padx=6)
-        ttk.Radiobutton(box, text="自由", value=comp.LABEL_FREE,
-                        variable=self.var_label_mode,
-                        command=self._on_label_mode_changed()).pack(side=tk.LEFT)
+        box.grid(row=1, column=1, columnspan=2, sticky="w", pady=3)
+        for text, value in (("图下", comp.LABEL_BELOW),
+                            ("左上", comp.LABEL_TOP_LEFT),
+                            ("左下", comp.LABEL_OVERLAY),
+                            ("右下", comp.LABEL_BOTTOM_RIGHT),
+                            ("自由", comp.LABEL_FREE)):
+            ttk.Radiobutton(box, text=text, value=value,
+                            variable=self.var_label_mode,
+                            command=self._on_label_mode_changed()).pack(
+                side=tk.LEFT, padx=1)
 
         ttk.Label(tab, text="字号").grid(row=2, column=0, sticky="w", pady=3)
         self.var_label_size = tk.StringVar(value="9")
@@ -1339,23 +1344,11 @@ class ComposeWindow(tk.Toplevel):
     def _draw_label(self, idx: int, placement: comp.Placement) -> None:
         if not placement.label:
             return
-        left, top, right, bottom = self._canvas_rect(placement.rect)
         family = placement.label_font or comp.LABEL_FONT_DEFAULT
-        if placement.label_mode == comp.LABEL_OVERLAY:
-            # In the corner of the figure itself.
-            tx, ty = left + 4, bottom - 4
-            anchor = tk.SW
-        elif placement.label_mode == comp.LABEL_FREE:
-            # Wherever the user put it: the offset is measured from the
-            # figure's bottom-left corner, so the label travels with it.
-            tx, ty = self._to_canvas(
-                placement.rect.x0 + placement.label_offset[0],
-                placement.rect.y0 + placement.label_offset[1])
-            anchor = tk.SW
-        else:
-            # Under the figure, which is the journal convention.
-            tx, ty = (left + right) / 2, bottom + 4
-            anchor = tk.N
+        # The label is drawn where the exporter will put it: the same
+        # anchor, the same size -- scaled with the sheet.
+        anchor = placement.label_anchor()
+        x, y = self._to_canvas(anchor.x, anchor.y)
         r, g, b = placement.label_color
         style = "normal"
         if placement.label_bold and placement.label_italic:
@@ -1365,10 +1358,10 @@ class ComposeWindow(tk.Toplevel):
         elif placement.label_italic:
             style = "italic"
         self.canvas.create_text(
-            tx, ty, text=placement.label, fill="#%02x%02x%02x" % (
+            x, y, text=placement.label, fill="#%02x%02x%02x" % (
                 int(r * 255), int(g * 255), int(b * 255)),
-            font=tk_font(family, int(placement.label_size), style),
-            anchor=anchor, tags=("fig", str(idx)),
+            font=tk_font(family, placement.label_size * self._zoom, style),
+            anchor=tk.SW, tags=("fig", str(idx)),
         )
 
     def _draw_text(self, idx: int, item: comp.TextItem) -> None:
@@ -1406,7 +1399,7 @@ class ComposeWindow(tk.Toplevel):
         self.canvas.create_text(
             x, y, text=item.text, fill="#%02x%02x%02x" % (
                 int(r * 255), int(g * 255), int(b * 255)),
-            font=tk_font(family, int(item.size), style),
+            font=tk_font(family, item.size * self._zoom, style),
             anchor=tk.SW, tags=("text", str(idx)))
         if selected:
             for hx, hy in ((x, y - h), (x + w, y - h), (x + w, y), (x, y)):
@@ -1531,7 +1524,7 @@ class ComposeWindow(tk.Toplevel):
                 (left + right) / 2, (top + bottom) / 2, text=shape.text,
                 fill="#%02x%02x%02x" % tuple(
                     int(c * 255) for c in shape.caption_rgb),
-                font=tk_font("Helvetica", int(shape.text_size)),
+                font=tk_font("Helvetica", shape.text_size * self._zoom),
                 anchor=tk.CENTER, tags=("shape", tag))
 
         if primary:

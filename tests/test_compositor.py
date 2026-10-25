@@ -638,14 +638,46 @@ def test_a_font_file_with_a_space_in_its_name_is_usable(tmp_path) -> None:
 def test_the_canvas_font_follows_the_chosen_face() -> None:
     """Tk does not know a base-14 name, so the preview needs a real family."""
     assert compositor_gui.tk_font("Times-Roman", 12) == (
-        "Times New Roman", 12, "normal")
+        "Times New Roman", -12, "normal")
     assert compositor_gui.tk_font("Helvetica-Bold", 12) == (
-        "Arial", 12, "bold")
+        "Arial", -12, "bold")
     assert compositor_gui.tk_font("Times-Bold Italic", 12) == (
-        "Times New Roman", 12, "bold italic")
-    assert compositor_gui.tk_font("Courier", 12) == ("Courier New", 12, "normal")
-    # A size below Tk's minimum is bumped up rather than refused.
-    assert compositor_gui.tk_font("Times-Roman", 2)[1] == 8
+        "Times New Roman", -12, "bold italic")
+    assert compositor_gui.tk_font("Courier", 12) == ("Courier New", -12, "normal")
+    # The size is in pixels, so the canvas can draw the sheet at its zoom
+    # instead of at one size whatever the zoom is.
+    assert compositor_gui.tk_font("Courier", 12)[1] < 0
+
+
+def test_the_label_has_a_place_in_every_corner() -> None:
+    """Each corner mode puts the label in that corner of the figure."""
+    figure = comp.Figure(path=Path("x.pdf"), page_index=0,
+                          region=fitz.Rect(0, 0, 10, 10))
+    rect = fitz.Rect(100, 100, 300, 260)
+
+    top_left = comp.Placement(figure, rect, label="(a)",
+                               label_mode=comp.LABEL_TOP_LEFT)
+    anchor = top_left.label_anchor()
+    assert anchor.x < rect.x0 + 10          # at the left
+    assert anchor.y > rect.y1 - 20          # and near the top
+
+    bottom_left = comp.Placement(figure, rect, label="(a)",
+                                  label_mode=comp.LABEL_OVERLAY)
+    anchor = bottom_left.label_anchor()
+    assert anchor.x < rect.x0 + 10
+    assert anchor.y < rect.y0 + 20
+
+    bottom_right = comp.Placement(figure, rect, label="(a)",
+                                   label_mode=comp.LABEL_BOTTOM_RIGHT)
+    anchor = bottom_right.label_anchor()
+    assert anchor.x > rect.x1 - 20          # at the right
+    assert anchor.y < rect.y0 + 20
+
+    below = comp.Placement(figure, rect, label="(a)",
+                            label_mode=comp.LABEL_BELOW)
+    anchor = below.label_anchor()
+    assert anchor.y < rect.y0               # under the figure
+    assert rect.x0 < anchor.x < rect.x1     # and centred
 
 
 # ---------------------------------------------------------------------------

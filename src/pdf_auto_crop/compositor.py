@@ -84,11 +84,14 @@ from .geometry import mm_to_pt
 
 #: Label placement modes.
 LABEL_BELOW = "below"      # centred under the figure -- the journal convention
-LABEL_OVERLAY = "overlay"  # bottom-left corner, on top of the figure
+LABEL_OVERLAY = "overlay"  # in the bottom-left corner of the figure
+LABEL_TOP_LEFT = "topleft"  # in the top-left corner of the figure
+LABEL_BOTTOM_RIGHT = "bottomright"  # in the bottom-right corner
 LABEL_FREE = "free"        # wherever the user dropped it
 
 #: The label modes that place the label by itself rather than by a rule.
-LABEL_MODES: Tuple[str, ...] = (LABEL_BELOW, LABEL_OVERLAY, LABEL_FREE)
+LABEL_MODES: Tuple[str, ...] = (LABEL_BELOW, LABEL_OVERLAY, LABEL_TOP_LEFT,
+                                LABEL_BOTTOM_RIGHT, LABEL_FREE)
 
 #: Base-14 fonts that need no embedding.  ``tiro`` is Times-Roman, which
 #: matches the body font of most papers.
@@ -418,17 +421,24 @@ class Placement:
     def label_anchor(self) -> fitz.Point:
         """Where the label's baseline starts, in composition user space."""
         size = self.label_size
+        fontname, fontfile = self.label_font_info()
+        width = text_width(self.label, fontname, size, fontfile)
         if self.label_mode == LABEL_OVERLAY:
-            # In the corner of the figure itself, sitting on the baseline
-            # that keeps it inside the frame.
+            # The bottom-left corner of the figure itself.
             return fitz.Point(self.rect.x0 + 3,
+                               self.rect.y0 + 3 + size * 0.85)
+        if self.label_mode == LABEL_TOP_LEFT:
+            # The top-left corner: the baseline sits an ascent below the top.
+            return fitz.Point(self.rect.x0 + 3,
+                               self.rect.y1 - 3 - size * 0.85)
+        if self.label_mode == LABEL_BOTTOM_RIGHT:
+            # The bottom-right corner, right-aligned to the edge.
+            return fitz.Point(self.rect.x1 - 3 - width,
                                self.rect.y0 + 3 + size * 0.85)
         if self.label_mode == LABEL_FREE:
             return fitz.Point(self.rect.x0 + self.label_offset[0],
                                self.rect.y0 + self.label_offset[1])
         # Below the figure, centred: the journal convention.
-        fontname, fontfile = self.label_font_info()
-        width = text_width(self.label, fontname, size, fontfile)
         return fitz.Point((self.rect.x0 + self.rect.x1) / 2 - width / 2,
                           self.rect.y0 - LABEL_GAP_PT - size * 0.2)
 
@@ -1200,21 +1210,16 @@ def fit_rect(aspect: float, target: fitz.Rect) -> fitz.Rect:
 def label_rect(placement: Placement) -> fitz.Rect:
     """The box a label occupies, in composition user space."""
     size = placement.label_size
-    if placement.label_mode == LABEL_OVERLAY:
+    if placement.label_mode == LABEL_BELOW:
+        # Under the figure: the whole width of the figure counts, so the
+        # page is big enough for a label of any size.
         return fitz.Rect(
-            placement.rect.x0 + 2,
-            placement.rect.y0 + 2,
-            placement.rect.x0 + 2 + size * 3,
-            placement.rect.y0 + 2 + size * 1.2,
+            placement.rect.x0,
+            placement.rect.y0 - LABEL_GAP_PT - size * 1.2,
+            placement.rect.x1,
+            placement.rect.y0 - LABEL_GAP_PT,
         )
-    if placement.label_mode == LABEL_FREE:
-        return free_label_rect(placement)
-    return fitz.Rect(
-        placement.rect.x0,
-        placement.rect.y0 - LABEL_GAP_PT - size * 1.2,
-        placement.rect.x1,
-        placement.rect.y0 - LABEL_GAP_PT,
-    )
+    return free_label_rect(placement)
 
 
 def free_label_rect(placement: Placement) -> fitz.Rect:
