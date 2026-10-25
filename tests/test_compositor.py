@@ -1425,12 +1425,12 @@ def test_the_selection_grows_and_shrinks_with_ctrl() -> None:
     assert u([1], [], [], "figure", 3, True) == ([1, 3], [], [], "body")
     # Ctrl+click again takes it back out.
     assert u([1, 3], [], [], "figure", 3, True) == ([1], [], [], None)
-    # An element under the cursor wins over a figure underneath it.
-    assert u([1], [], [], "shape", 0, False) == ([], [0], [], "shape-body")
-    # The three kinds are never selected together.
-    assert u([1], [], [], "shape", 0, True) == ([], [0], [], "shape-body")
-    assert u([], [2], [], "figure", 1, True) == ([1], [], [], "body")
-    assert u([], [], [4], "text", 5, True) == ([], [], [4, 5], "text-body")
+    # The three kinds can be picked together: a figure, a box and a note
+    # lined up against each other.
+    assert u([1], [], [], "shape", 0, True) == ([1], [0], [], "shape-body")
+    assert u([1], [0], [], "text", 0, True) == ([1], [0], [0], "text-body")
+    # A plain click still starts afresh.
+    assert u([1], [0], [0], "text", 2, False) == ([], [], [2], "text-body")
     # Clicking the empty sheet clears the selection -- unless Ctrl is held.
     assert u([1], [], [], None, None, False) == ([], [], [], None)
     assert u([1], [], [], None, None, True) == ([1], [], [], None)

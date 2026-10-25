@@ -443,6 +443,7 @@ def main() -> int:
     text_index = len(win.composition.placements)
     win.composition.placements.append(comp.Placement(
         figure=win.palette[-1], rect=fitz.Rect(20, 20, 220, 140), label=""))
+    win._clear_selection()
     win._selected = text_index
     win._sync_properties()
     blocks = comp.figure_text_blocks(win.composition.placements[text_index].figure)
@@ -462,10 +463,8 @@ def main() -> int:
     win.update()
 
     # -- grouping ----------------------------------------------------------
-    win._selected = 0
+    win._clear_selection()
     win._sel_figs = [0, 1]
-    win._sel_shapes = []
-    win._sel_texts = []
     win._group_selected()
     win.update()
     check("objects can be grouped",
@@ -590,9 +589,26 @@ def main() -> int:
           win.composition.texts[1].box is True)
     _shot(win, "11_text.png")
 
+    # -- aligning a mixed selection -----------------------------------------
+    # A figure, a box and a note, all lined up against each other.
+    win._clear_selection()
+    win._sel_figs = [0]
+    win._sel_shapes = [0]
+    win._sel_texts = [0]
+    win._redraw()
+    win._align(comp.ALIGN_LEFT)
+    win.update()
+    fig_x = win.composition.placements[0].rect.x0
+    shape_x = win.composition.shapes[0].rect.x0
+    text_x = win.composition.texts[0].rect().x0
+    check("a figure, a box and a note can be lined up together",
+          abs(fig_x - shape_x) < 0.01 and abs(fig_x - text_x) < 0.01,
+          f"{fig_x:.1f} {shape_x:.1f} {text_x:.1f}")
+
     # -- turning an element ------------------------------------------------
     win.var_tool.set("选择/移动")
     win._on_tool_changed()
+    win._clear_selection()
     win._selected_text = 0
     win._sync_properties()
     win.var_text_rotation.set("45")
@@ -605,6 +621,7 @@ def main() -> int:
     win._on_text_changed()
     win.update()
 
+    win._clear_selection()
     win._selected_shape = 0
     win._sync_properties()
     win.var_shape_rotation.set("45")
@@ -640,6 +657,7 @@ def main() -> int:
 
     # -- copying and flipping ----------------------------------------------
     n_shapes = len(win.composition.shapes)
+    win._clear_selection()
     win._selected_shape = 0
     win._duplicate_selected()
     win.update()

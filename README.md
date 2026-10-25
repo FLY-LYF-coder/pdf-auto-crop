@@ -311,13 +311,17 @@ default; **角上** puts them in the corner of the figure instead.
 
 ### Aligning
 
-Select several figures with `Ctrl`+click (or `Shift`+click) and the **对齐**
+Select several objects with `Ctrl`+click (or `Shift`+click) and the **对齐**
 buttons line them up:
 
 | Button | Effect |
 | ------ | ------ |
 | 左 / 中 / 右 | The left edges, the centres or the right edges meet |
 | 顶 / 中 / 底 | The top edges, the centres or the bottom edges meet |
+
+The selection may **mix kinds**: a figure, a box and a note can be lined up
+against each other in one go.  (A plain click still starts afresh; `Ctrl`+click
+adds to what is already picked.)
 
 With more than one object selected they are lined up against *each other* —
 "align left" puts every left edge on the leftmost one.  With a single object
@@ -330,6 +334,9 @@ and the aspect ratio it was given.
 **分布** spreads a group out instead: the two outermost objects stay where
 they are and the ones in between are moved so that the gaps between them come
 out equal — 水平等间距 and 垂直等间距 for the two directions.
+
+A figure's number travels with the figure, so lining the figures up lines
+the numbers up too.
 
 ### Groups
 

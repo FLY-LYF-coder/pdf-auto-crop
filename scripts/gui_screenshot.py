@@ -27,6 +27,33 @@ from PIL import ImageGrab  # noqa: E402
 from pdf_auto_crop import gui  # noqa: E402
 from pdf_auto_crop.config import CropConfig  # noqa: E402
 
+
+def _grab(win, path) -> None:
+    """Save a picture of the window, if the screen allows it.
+
+    A locked or switched-away desktop cannot be grabbed; the checks do not
+    need the picture, so it must not stop the run.
+    """
+    bbox = None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        hwnd = ctypes.windll.user32.GetAncestor(win.winfo_id(), 2)  # GA_ROOT
+        ctypes.windll.user32.SetThreadDpiAwarenessContext(
+            ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+        rect = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        bbox = (rect.left, rect.top, rect.right, rect.bottom)
+    except Exception:  # noqa: BLE001
+        x, y = win.winfo_rootx(), win.winfo_rooty()
+        w, h = win.winfo_width(), win.winfo_height()
+        bbox = (x, y, x + w, y + h)
+    try:
+        ImageGrab.grab(bbox=bbox).save(str(path))
+    except OSError as exc:
+        print(f"(no screenshot for {path}: {exc})")
+
 SHOTS = ROOT / "diag_out" / "gui"
 SHOTS.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +86,7 @@ def main() -> int:
     x, y = app.winfo_rootx(), app.winfo_rooty()
     w, h = app.winfo_width(), app.winfo_height()
     shot = SHOTS / "gui_main.png"
-    ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(str(shot))
+    _grab(app, shot)
     print(f"figures detected: {len(app._rects)}")
     print(f"status: {app.lbl_status.cget('text')}")
     print(f"hint  : {app.lbl_hint_title.cget('text')}")
@@ -75,7 +102,7 @@ def main() -> int:
     _pump(app)
     app.update()
     shot2 = SHOTS / "gui_fragmented.png"
-    ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(str(shot2))
+    _grab(app, shot2)
     print(f"fragmented hint: {app.lbl_hint_title.cget('text')}")
     print(f"saved : {shot2}")
 

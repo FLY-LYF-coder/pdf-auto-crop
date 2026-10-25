@@ -228,14 +228,10 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
                      ) -> Tuple[List[int], List[int], List[int], Optional[str]]:
     """The selection after a click, and the drag mode it starts.
 
-    A plain click replaces the selection with the object under the cursor;
-    holding ``Ctrl`` (or ``Shift``) toggles that object in the selection, so
-    a group of panels can be lined up against each other.
-
-    The graphic elements and the free text are drawn *on top of* the
-    figures, so they win the pick over a figure underneath them.  Only one
-    kind of object is selected at a time, because the property panel edits
-    one kind.
+    A plain click replaces the selection; holding ``Ctrl`` (or ``Shift``)
+    toggles that object in it.  The three kinds can be selected together --
+    a figure, a box and a note can be lined up against each other -- so a
+    Ctrl+click never throws away what was already picked.
 
     Args:
         sel_figs: The selected figures.
@@ -258,15 +254,6 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
         if not additive:
             return [], [], [], None
         return figs, shapes, texts, None
-
-    # Clicking an object of another kind starts again with this one.
-    if additive:
-        if kind == "figure" and (shapes or texts):
-            figs, shapes, texts, additive = [], [], [], False
-        elif kind == "shape" and (figs or texts):
-            figs, shapes, texts, additive = [], [], [], False
-        elif kind == "text" and (figs or shapes):
-            figs, shapes, texts, additive = [], [], [], False
 
     if additive:
         if kind == "figure":
@@ -419,6 +406,8 @@ class ComposePanel(tk.Frame):
         self._drag_start: Optional[Tuple[float, float]] = None
         self._drag_rect: Optional[fitz.Rect] = None
         self._drag_shape: Optional[comp.Shape] = None
+        #: Which half of the property panel to show: the kind picked last.
+        self._last_kind: Optional[str] = None
         #: Where every selected object was when the drag started, so a group
         #: moves by one offset instead of by one offset per motion event.
         self._drag_rects: Dict[int, fitz.Rect] = {}
@@ -460,12 +449,9 @@ class ComposePanel(tk.Frame):
 
     @_selected.setter
     def _selected(self, value: Optional[int]) -> None:
+        # The three kinds can be selected together, so setting one of them
+        # does not throw the others away.
         self._sel_figs = [] if value is None else [value]
-        if value is not None:
-            # Only one kind of object is selected at a time: the property
-            # panel edits one kind, and a selection of both is ambiguous.
-            self._sel_shapes = []
-            self._sel_texts = []
 
     @property
     def _selected_shape(self) -> Optional[int]:
@@ -475,9 +461,6 @@ class ComposePanel(tk.Frame):
     @_selected_shape.setter
     def _selected_shape(self, value: Optional[int]) -> None:
         self._sel_shapes = [] if value is None else [value]
-        if value is not None:
-            self._sel_figs = []
-            self._sel_texts = []
 
     @property
     def _selected_text(self) -> Optional[int]:
@@ -487,9 +470,6 @@ class ComposePanel(tk.Frame):
     @_selected_text.setter
     def _selected_text(self, value: Optional[int]) -> None:
         self._sel_texts = [] if value is None else [value]
-        if value is not None:
-            self._sel_figs = []
-            self._sel_shapes = []
 
     # -- styling ----------------------------------------------------------
 
@@ -701,7 +681,7 @@ class ComposePanel(tk.Frame):
                             ("自由", comp.LABEL_FREE)):
             ttk.Radiobutton(box, text=text, value=value,
                             variable=self.var_label_mode,
-                            command=self._on_label_mode_changed()).pack(
+                            command=self._on_label_mode_changed).pack(
                 side=tk.LEFT, padx=1)
 
         ttk.Label(tab, text="字号").grid(row=2, column=0, sticky="w", pady=3)
@@ -1625,11 +1605,30 @@ class ComposePanel(tk.Frame):
                 return i
         return None
 
+    def _clear_selection(self) -> None:
+        """Forget the selection, whichever kinds it held."""
+        self._sel_figs = []
+        self._sel_shapes = []
+        self._sel_texts = []
+        self._last_kind = None
+
+    def _clamp_to_sheet_point(self, x: float, y: float) -> Tuple[float, float]:
+        """A point pulled back onto the sheet.
+
+        The area around the sheet is not part of the page, so an element
+        drawn there would be invisible -- and the user would think nothing
+        happened.  Pulling it back to the edge keeps it where it can be
+        seen.
+        """
+        return (min(max(x, 0.0), self.sheet_w),
+                min(max(y, 0.0), self.sheet_h))
+
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
         if self.tool in (TOOL_TEXT, TOOL_TEXTBOX):
             # Drop a piece of text where the cursor is.
             ux, uy = self._to_user(event.x, event.y)
+            ux, uy = self._clamp_to_sheet_point(ux, uy)
             self.composition.texts.append(comp.TextItem(
                 text="", position=fitz.Point(ux, uy),
                 size=10.0, box=(self.tool == TOOL_TEXTBOX),
@@ -1637,6 +1636,7 @@ class ComposePanel(tk.Frame):
             self._sel_figs = []
             self._sel_shapes = []
             self._sel_texts = [len(self.composition.texts) - 1]
+            self._last_kind = "text"
             self._sync_properties()
             self._redraw()
             self._update_count()
@@ -1644,6 +1644,7 @@ class ComposePanel(tk.Frame):
         if self.tool != "select":
             # Start drawing a graphic element, in the style the panel shows.
             ux, uy = self._to_user(event.x, event.y)
+            ux, uy = self._clamp_to_sheet_point(ux, uy)
             self._shape_preview = comp.Shape(
                 self.tool, fitz.Point(ux, uy), fitz.Point(ux, uy),
                 color=hex_to_rgb(self.var_shape_color.get()),
@@ -1694,6 +1695,7 @@ class ComposePanel(tk.Frame):
                 update_selection(
                     self._sel_figs, self._sel_shapes, self._sel_texts,
                     kind, index, additive)
+            self._last_kind = kind
             # An object that belongs to a group brings the whole group
             # along: a group is one thing, as far as the cursor is
             # concerned.
@@ -1762,6 +1764,7 @@ class ComposePanel(tk.Frame):
             return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
+            ux, uy = self._clamp_to_sheet_point(ux, uy)
             if self._shape_preview is not None:
                 self._shape_preview.end = fitz.Point(ux, uy)
                 self._redraw()
@@ -1895,8 +1898,9 @@ class ComposePanel(tk.Frame):
                 # opacities and the line style included.
                 self.composition.shapes.append(dataclasses.replace(
                     preview, end=fitz.Point(ux, uy)))
-                self._selected = None
+                self._clear_selection()
                 self._selected_shape = len(self.composition.shapes) - 1
+                self._last_kind = "shape"
                 self._sync_properties()
             self._redraw()
             return
@@ -2008,8 +2012,7 @@ class ComposePanel(tk.Frame):
             self._delete_selected()
             return
         if key == "Escape":
-            self._selected = None
-            self._selected_shape = None
+            self._clear_selection()
             self._sync_properties()
             self._redraw()
             return
@@ -2096,7 +2099,6 @@ class ComposePanel(tk.Frame):
             self.var_label_formula.set(bool(p.label_formula))
             self.var_fig_rotation.set(f"{p.rotation:g}")
             self._set_swatch(self.btn_label_color, p.label_color)
-            self.nb.select(self.tab_label)
         else:
             self.var_label.set("")
 
@@ -2123,7 +2125,8 @@ class ComposePanel(tk.Frame):
             self.var_text_box.set(bool(item.box))
             self.var_text_rotation.set(f"{item.rotation:g}")
             self._set_swatch(self.btn_text_color, item.color)
-            self.nb.select(self.tab_text)
+        else:
+            self._set_text_widget("")
 
         # -- the graphic element
         self.spin_shape_width.configure(
@@ -2161,7 +2164,14 @@ class ComposePanel(tk.Frame):
             self.var_shape_text_size.set(f"{shape.text_size:g}")
             self._set_swatch(self.btn_shape_color, shape.color)
             self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
+
+        # -- which tab to show: the kind that was picked last
+        if self._last_kind == "shape" and has_shape:
             self.nb.select(self.tab_shape)
+        elif self._last_kind == "text" and has_text:
+            self.nb.select(self.tab_text)
+        elif has_fig:
+            self.nb.select(self.tab_label)
 
     def _set_swatch(self, button: tk.Button, color) -> None:
         r, g, b = tuple(color)[:3]
@@ -2300,9 +2310,7 @@ class ComposePanel(tk.Frame):
         if not made:
             self._status("先选中要复制的元素。")
             return
-        self._selected = None
-        self._selected_shape = None
-        self._selected_text = None
+        self._clear_selection()
         self._redraw()
         self._update_count()
         self._status("已复制所选元素。")
@@ -2607,9 +2615,7 @@ class ComposePanel(tk.Frame):
         self.composition.placements.clear()
         self.composition.shapes.clear()
         self.composition.texts.clear()
-        self._selected = None
-        self._selected_shape = None
-        self._selected_text = None
+        self._clear_selection()
         self._sync_properties()
         self._redraw()
         self._update_count()

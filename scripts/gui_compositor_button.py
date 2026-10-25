@@ -60,7 +60,12 @@ def _grab(win, path: Path) -> None:
         x, y = win.winfo_rootx(), win.winfo_rooty()
         w, h = win.winfo_width(), win.winfo_height()
         bbox = (x, y, x + w, y + h)
-    ImageGrab.grab(bbox=bbox).save(str(path))
+    try:
+        ImageGrab.grab(bbox=bbox).save(str(path))
+    except OSError as exc:
+        # A locked or switched-away desktop cannot be grabbed; the checks
+        # do not need the picture.
+        print(f"(no screenshot for {path.name}: {exc})")
 
 
 def main() -> int:

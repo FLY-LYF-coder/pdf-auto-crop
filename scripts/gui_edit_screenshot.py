@@ -61,7 +61,13 @@ def _shot(app, name: str) -> Path:
     x, y = app.winfo_rootx(), app.winfo_rooty()
     w, h = app.winfo_width(), app.winfo_height()
     path = SHOTS / name
-    ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(str(path))
+    try:
+        ImageGrab.grab(bbox=(x, y, x + w, y + h)).save(str(path))
+    except OSError as exc:
+        # A locked or switched-away desktop cannot be grabbed; the checks
+        # do not need the picture.
+        print(f"(no screenshot for {name}: {exc})")
+        path = None
     return path
 
 
