@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -136,6 +137,19 @@ def _shot(win, name: str) -> Optional[Path]:
     return path
 
 
+def _settle(win) -> None:
+    """Let the window finish laying out before anything is clicked.
+
+    The canvas is only the right size after the window manager has had a
+    turn, and a click that lands before that misses the figure.
+    """
+    for _ in range(5):
+        win.update()
+        time.sleep(0.05)
+    win._redraw()
+    win.update()
+
+
 def _click(win, x: int, y: int, ctrl: bool = False) -> None:
     """A press and a release, with or without Ctrl held down."""
     canvas = win.canvas
@@ -170,7 +184,7 @@ def main() -> int:
 
     win = compositor_gui.ComposeWindow(None)
     # The window sizes itself, scaled for the display's resolution.
-    win.update()
+    _settle(win)
     win._redraw()
     win.update()
 

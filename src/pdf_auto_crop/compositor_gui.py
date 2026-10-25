@@ -999,29 +999,64 @@ class ComposePanel(tk.Frame):
 
     # -- import ------------------------------------------------------------
 
+    def import_pdfs(self, paths: Sequence[Path]
+                    ) -> Tuple[int, List[str], List[str]]:
+        """Import the figures of several PDFs into the palette.
+
+        Args:
+            paths: The files to read.
+
+        Returns:
+            ``(added, empty, failed)`` -- how many figures went in, the
+            files that held no figure, and the files that could not be read.
+            One unreadable file does not stop the others.
+        """
+        added = 0
+        empty: List[str] = []
+        failed: List[str] = []
+        for path in paths:
+            try:
+                found = comp.detect_figures(Path(path), self.cfg)
+            except Exception as exc:  # noqa: BLE001 -- shown to the user
+                failed.append(f"{Path(path).name}：{exc}")
+                continue
+            if not found:
+                empty.append(Path(path).name)
+                continue
+            self.palette.extend(found)
+            added += len(found)
+        if added:
+            self._refresh_palette()
+            self._update_count()
+        return added, empty, failed
+
     def _import_pdf(self) -> None:
-        path = filedialog.askopenfilename(
-            title="选择要取子图的 PDF",
+        """Import the figures of one or more PDFs into the palette."""
+        paths = filedialog.askopenfilenames(
+            title="选择要取子图的 PDF（可多选）",
             filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")],
         )
-        if not path:
+        if not paths:
             return
-        try:
-            found = comp.detect_figures(Path(path), self.cfg)
-        except Exception as exc:  # noqa: BLE001 -- shown to the user
-            self._status(f"读取失败：{exc}")
-            return
-        if not found:
+        added, empty, failed = self.import_pdfs([Path(p) for p in paths])
+        if failed:
+            messagebox.showwarning(
+                "部分文件读取失败",
+                "以下文件没有读进来：\n\n" + "\n".join(failed),
+            )
+        if empty:
             messagebox.showinfo(
                 "没有检测到子图",
-                "这份 PDF 里没有自动检测出图片。\n"
-                "可以用「导入已裁剪的图」把整页作为一个图放进来。",
+                "这些 PDF 里没有自动检测出图片：\n"
+                + "\n".join(empty)
+                + "\n\n可以用「导入已裁剪的图」把整页作为一个图放进来。",
             )
-            return
-        for fig in found:
-            self.palette.append(fig)
-        self._refresh_palette()
-        self._status(f"从 {Path(path).name} 导入 {len(found)} 个子图。")
+        if added:
+            names = "、".join(Path(n).name for n in paths[:3])
+            more = " 等" if len(paths) > 3 else ""
+            self._status(f"从 {names}{more} 导入 {added} 个子图。")
+        elif not failed and not empty:
+            self._status("没有导入任何图。")
 
     def add_paths(self, paths: Sequence[Path]) -> int:
         """Put whole pages of files into the palette.
@@ -1050,28 +1085,18 @@ class ComposePanel(tk.Frame):
         return added
 
     def _import_cropped(self) -> None:
-        path = filedialog.askopenfilename(
-            title="选择已裁剪好的图（整页作为一个图）",
+        """Import one or more already-cropped figures, whole page each."""
+        paths = filedialog.askopenfilenames(
+            title="选择已裁剪好的图（可多选，整页作为一个图）",
             filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")],
         )
-        if not path:
+        if not paths:
             return
-        p = Path(path)
-        try:
-            doc = fitz.open(str(p))
-        except Exception as exc:  # noqa: BLE001
-            self._status(f"无法打开：{exc}")
-            return
-        try:
-            visible = comp.source_visible_rect(doc, 0)
-            # A region is measured relative to the visible rect's bottom-left,
-            # so "the whole page" is the visible rect's own size.
-            region = fitz.Rect(0, 0, visible.width, visible.height)
-        finally:
-            doc.close()
-        self.palette.append(comp.Figure(path=p, page_index=0, region=region))
-        self._refresh_palette()
-        self._status(f"已导入 {p.name}（整页）。")
+        added = self.add_paths([Path(p) for p in paths])
+        if added:
+            self._status(f"已导入 {added} 个图（整页）。")
+        else:
+            self._status("没有文件能读进来。")
 
     def _refresh_palette(self) -> None:
         self.lst_palette.delete(0, tk.END)

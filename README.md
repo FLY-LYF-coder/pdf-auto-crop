@@ -272,10 +272,12 @@ Open it with the **组合…** button in the main window's toolbar.
 
 ### The workflow
 
-1. **导入 PDF…** — pick a PDF and the same detector used for cropping finds
-   the figures on every page; they land in the palette on the left.
-   **导入已裁剪的图…** takes a PDF that is already one figure per page and
-   uses each page whole.
+1. **导入 PDF…** — pick one or more PDFs (the dialog takes a whole selection)
+   and the same detector used for cropping finds the figures on every page;
+   they land in the palette on the left.  **导入已裁剪的图…** takes one or
+   more PDFs that are already one figure per page and uses each page whole.
+   A file that cannot be read, or that holds no figure, is reported and the
+   rest still come in.
 2. **Double-click** a palette entry to drop it onto the sheet, or drag it in
    from the list.
 3. **Drag** a figure to move it, drag an orange corner handle to resize it.

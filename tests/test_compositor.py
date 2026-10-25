@@ -1115,7 +1115,6 @@ def test_the_text_rotation_survives_a_json_round_trip() -> None:
 
 def test_a_group_survives_a_json_round_trip() -> None:
     c = comp.Composition(width=400, height=400)
-    c.figs = []
     group = comp.Group(figs=[0, 2], shapes=[1])
     c.groups.append(group)
     back = comp.Composition.from_dict(c.to_dict())
@@ -1245,6 +1244,57 @@ def test_a_rewritten_line_keeps_the_look_of_the_original(tmp_path) -> None:
     assert comp._replacement_font("Helvetica") == "helv"
     assert comp._replacement_font("Courier-Oblique") == "coit"
     assert comp._replacement_font("Symbol") == "symb"
+
+
+# ---------------------------------------------------------------------------
+# Importing several files at once
+# ---------------------------------------------------------------------------
+
+
+@needs_tk
+def test_several_files_can_be_imported_at_once(tmp_path) -> None:
+    """One go, several PDFs -- and one bad file does not stop the rest."""
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+
+        good = []
+        for i in range(2):
+            src = tmp_path / f"fig{i}.pdf"
+            doc = fitz.open()
+            page = doc.new_page(width=200, height=200)
+            page.draw_rect(fitz.Rect(20, 20, 180, 180),
+                           color=(0, 0, 1), fill=(0, 0, 1), width=0)
+            doc.save(str(src))
+            doc.close()
+            good.append(src)
+        empty = tmp_path / "empty.pdf"
+        doc = fitz.open()
+        doc.new_page(width=200, height=200)
+        doc.save(str(empty))
+        doc.close()
+        broken = tmp_path / "broken.pdf"
+        broken.write_bytes(b"not a pdf at all")
+
+        added, empty_files, failed = panel.import_pdfs(
+            [good[0], empty, broken, good[1]])
+
+        # Two figures, one from each of the two good files.
+        assert added == 2, added
+        assert len(panel.palette) == 2
+        # The file with no figure and the unreadable one are told apart.
+        assert empty_files == ["empty.pdf"], empty_files
+        assert len(failed) == 1 and "broken.pdf" in failed[0], failed
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
 
 
 # ---------------------------------------------------------------------------
