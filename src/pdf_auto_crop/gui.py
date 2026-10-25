@@ -45,6 +45,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -1363,6 +1364,10 @@ class App(tk.Tk):
             return
         out_dir = Path(self.var_output.get().strip() or "./output")
         cfg = self.current_config()
+        # When the export is done, the files it wrote are the ones newer
+        # than this moment -- that is how the compose window is handed
+        # exactly this run's figures.
+        self._export_started = time.time()
 
         if self._src_path.is_dir():
             pdfs = sorted(self._src_path.glob("*.pdf"))
@@ -1421,11 +1426,45 @@ class App(tk.Tk):
             )
             if messagebox.askyesno(
                 "导出完成",
+                f"已写出 {written} 个 PDF。\n\n"
+                "是否把它们送入组合排版窗口（可直接拼成一张大图）？",
+            ):
+                self._send_to_compositor(out_dir, written)
+                return
+            if messagebox.askyesno(
+                "导出完成",
                 f"已写出 {written} 个 PDF。\n\n是否现在打开输出文件夹？",
             ):
                 self._open_output()
         else:
             self._set_status("没有检测到可导出的图片。", level=gui_hints.LEVEL_WARN)
+
+    def _send_to_compositor(self, out_dir: Path, written: int) -> None:
+        """Open the compose window with the cropped figures already in it.
+
+        The two windows used to be separate: the cropped files had to be
+        imported again by hand.  Now the hand-over is one click.
+        """
+        try:
+            from .compositor_gui import open_compositor
+        except ImportError as exc:  # pragma: no cover -- environment dependent
+            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
+            return
+        try:
+            cfg = getattr(self, "_last_config", None) or CropConfig()
+            window = open_compositor(self, cfg)
+            # Only the files this run wrote, not the ones left over from
+            # an earlier one.
+            files = sorted(
+                p for p in out_dir.glob("*.pdf")
+                if p.stat().st_mtime >= self._export_started - 1
+            )
+            added = window.add_paths(files)
+            self._set_status(
+                f"已把 {added} 个裁剪结果送入组合排版窗口。",
+                level=gui_hints.LEVEL_OK)
+        except Exception as exc:  # noqa: BLE001 -- reported in the status bar
+            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
 
     def _open_output(self) -> None:
         folder = Path(self.var_output.get().strip() or "./output")

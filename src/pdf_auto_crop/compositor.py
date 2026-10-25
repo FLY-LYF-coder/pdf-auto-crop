@@ -391,6 +391,9 @@ class Placement:
     #: How far the figure is turned about the middle of its box, in
     #: degrees, clockwise.
     rotation: float = 0.0
+    #: The text inside the figure that the user has changed: the line's
+    #: number -> its new text.  An empty text takes the line away.
+    text_edits: Dict[int, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
@@ -398,6 +401,7 @@ class Placement:
         self.label_offset = (float(self.label_offset[0]),
                              float(self.label_offset[1]))
         self.rotation = float(self.rotation) % 360.0
+        self.text_edits = {int(k): str(v) for k, v in self.text_edits.items()}
 
     @property
     def aspect(self) -> float:
@@ -443,6 +447,7 @@ class Placement:
             "label_formula": self.label_formula,
             "label_offset": list(self.label_offset),
             "rotation": self.rotation,
+            "text_edits": {str(k): v for k, v in self.text_edits.items()},
         }
 
     @classmethod
@@ -463,7 +468,143 @@ class Placement:
             label_formula=bool(data.get("label_formula", False)),
             label_offset=(float(offset[0]), float(offset[1])),
             rotation=float(data.get("rotation", 0.0)),
+            text_edits={int(k): str(v)
+                        for k, v in (data.get("text_edits") or {}).items()},
         )
+
+
+@dataclass
+class FigureText:
+    """A line of text inside an imported figure.
+
+    The figure is an embedded PDF page, so its text comes with it; these
+    are the lines that can be changed.
+    """
+
+    index: int
+    text: str
+    #: The line's box, in the figure's own user space.
+    rect: fitz.Rect
+    #: Where the line's baseline starts.
+    origin: fitz.Point
+    font: str = ""
+    size: float = 9.0
+    color: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+def figure_text_blocks(figure: Figure) -> List[FigureText]:
+    """The text inside a figure, in the order the editor lists it.
+
+    The order has to be stable, because the edits are stored by their
+    number: the same figure must always give the same list.
+    """
+    baked = fitz.open(str(bake_figure(figure)))
+    try:
+        page = baked[0]
+        out: List[FigureText] = []
+        index = 0
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                spans = line.get("spans", [])
+                if not spans:
+                    continue
+                text = "".join(s.get("text", "") for s in spans)
+                if not text.strip():
+                    continue
+                first = spans[0]
+                out.append(FigureText(
+                    index=index,
+                    text=text,
+                    rect=fitz.Rect(line["bbox"]),
+                    origin=fitz.Point(*first["origin"]),
+                    font=first.get("font", ""),
+                    size=float(first.get("size", 9.0)),
+                    color=_srgb_to_rgb(first.get("color", 0)),
+                ))
+                index += 1
+        return out
+    finally:
+        baked.close()
+
+
+def _srgb_to_rgb(value: int) -> Tuple[float, float, float]:
+    """PyMuPDF's packed sRGB integer -> (r, g, b) in 0..1."""
+    return (((value >> 16) & 255) / 255.0,
+            ((value >> 8) & 255) / 255.0,
+            (value & 255) / 255.0)
+
+
+def _replacement_font(name: str) -> str:
+    """The base-14 face to write a rewritten line in.
+
+    The font of the source is not necessarily available on the machine that
+    opens the output, so the closest built-in face is used -- a line written
+    in Times stays in Times.
+    """
+    lowered = (name or "").lower()
+    if "symbol" in lowered:
+        return "symb"
+    if "zapf" in lowered or "dingbat" in lowered:
+        return "zadb"
+    if "courier" in lowered or "mono" in lowered:
+        base = "cour"
+    elif "times" in lowered or "serif" in lowered or "roman" in lowered:
+        base = "tiro"
+    else:
+        base = "helv"
+    if "bold" in lowered:
+        return {"tiro": "tibo", "cour": "cobo", "helv": "hebo"}[base]
+    if "italic" in lowered or "oblique" in lowered:
+        return {"tiro": "tiit", "cour": "coit", "helv": "hebi"}[base]
+    return base
+
+
+def bake_with_edits(figure: Figure, edits: Dict[int, str]) -> Path:
+    """The figure with some of its text replaced.
+
+    The text is taken out of the figure and written again, so the result is
+    still vector -- and the rest of the artwork is left alone.
+    """
+    if not edits:
+        return bake_figure(figure)
+    key = hashlib.sha256(
+        (figure.key + "|" + repr(sorted(edits.items()))).encode("utf-8")
+    ).hexdigest()[:24]
+    cache = Path(tempfile.gettempdir()) / "pdf_auto_crop_bake"
+    cache.mkdir(parents=True, exist_ok=True)
+    out_path = cache / f"edited_{key}.pdf"
+    if out_path.exists():
+        return out_path
+
+    blocks = figure_text_blocks(figure)
+    doc = fitz.open(str(bake_figure(figure)))
+    try:
+        page = doc[0]
+        touched = []
+        for index, text in edits.items():
+            if not 0 <= index < len(blocks):
+                continue
+            block = blocks[index]
+            page.add_redact_annot(block.rect, fill=None)
+            touched.append((block, text))
+        if touched:
+            # Only the text goes: the artwork underneath must survive.
+            page.apply_redactions(
+                images=fitz.PDF_REDACT_IMAGE_NONE,
+                graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+                text=fitz.PDF_REDACT_TEXT_REMOVE,
+            )
+        for block, text in touched:
+            if not text:
+                continue
+            page.insert_text(
+                block.origin, text, fontsize=block.size,
+                fontname=_replacement_font(block.font), color=block.color,
+            )
+        doc.save(str(out_path), garbage=4, deflate=True)
+    finally:
+        doc.close()
+    return out_path if out_path.exists() else bake_figure(figure)
 
 
 @dataclass
@@ -1620,7 +1761,8 @@ def export_composition(
                 placement.rect.x0 + dx, placement.rect.y0 + dy,
                 placement.rect.x1 + dx, placement.rect.y1 + dy,
             )
-            baked = fitz.open(str(bake_figure(placement.figure)))
+            baked = fitz.open(str(bake_with_edits(placement.figure,
+                                                  placement.text_edits)))
             try:
                 # The figure's rect is in user space; MuPDF wants top-down.
                 target = to_mupdf_rect(rect, h)

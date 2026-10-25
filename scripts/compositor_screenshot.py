@@ -427,6 +427,40 @@ def main() -> int:
     win._arrange("grid")
     win.update()
 
+    # -- editing the text inside an imported figure --------------------------
+    # The panels above are plain colours; a figure with text is needed here.
+    text_fig = WORK / "with_text.pdf"
+    if not text_fig.exists():
+        doc = fitz.open()
+        pg = doc.new_page(width=300, height=200)
+        pg.draw_rect(fitz.Rect(50, 40, 250, 150), color=(0, 0, 0), width=1)
+        pg.insert_text(fitz.Point(120, 170), "time t (s)", fontsize=9)
+        doc.save(str(text_fig))
+        doc.close()
+    win.palette.append(comp.Figure(
+        path=text_fig, page_index=0, region=fitz.Rect(0, 0, 300, 200)))
+    win._refresh_palette()
+    text_index = len(win.composition.placements)
+    win.composition.placements.append(comp.Placement(
+        figure=win.palette[-1], rect=fitz.Rect(20, 20, 220, 140), label=""))
+    win._selected = text_index
+    win._sync_properties()
+    blocks = comp.figure_text_blocks(win.composition.placements[text_index].figure)
+    check("the text inside a figure is recognised",
+          len(blocks) == 1 and blocks[0].text == "time t (s)",
+          f"{[b.text for b in blocks]}")
+    win._apply_text_edits({0: "edited"})
+    win.update()
+    check("the text inside a figure can be changed",
+          win.composition.placements[text_index].text_edits == {0: "edited"},
+          str(win.composition.placements[text_index].text_edits))
+    win._apply_text_edits({})
+    win.update()
+    # The extra figure must not upset the checks that come later.
+    del win.composition.placements[text_index]
+    win._selected = 0
+    win.update()
+
     # -- grouping ----------------------------------------------------------
     win._selected = 0
     win._sel_figs = [0, 1]

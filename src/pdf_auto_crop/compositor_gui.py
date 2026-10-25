@@ -27,7 +27,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
 from PIL import Image, ImageTk
@@ -296,6 +296,92 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
     elif kind == "text" and index in texts:
         mode = "text-body"
     return figs, shapes, texts, mode
+
+
+class _TextEditDialog(tk.Toplevel):
+    """The text inside a figure, listed and editable.
+
+    The lines are recognised from the figure itself.  Leaving a line empty
+    takes it away; changing it writes the new text in its place.
+    """
+
+    def __init__(self, master: tk.Misc, blocks: List[comp.FigureText],
+                 edits: Dict[int, str],
+                 on_ok: Callable[[Dict[int, str]], None]) -> None:
+        super().__init__(master)
+        self.title("编辑图中的文字")
+        self.transient(master)
+        self.geometry("460x460")
+        self.minsize(360, 320)
+        self._blocks = blocks
+        self._on_ok = on_ok
+        self._entries: Dict[int, tk.Entry] = {}
+        self._vars: Dict[int, tk.StringVar] = {}
+
+        body = ttk.Frame(self, padding=10)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            body,
+            text="识别到的文字（留空即删除该行）：",
+            style="Hint.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        frame = ttk.Frame(body)
+        frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        body.rowconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(frame, highlightthickness=0, background="#f0f0f0")
+        scroll = ttk.Scrollbar(frame, orient=tk.VERTICAL,
+                                command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>",
+                   lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda _e: canvas.itemconfigure(window, width=canvas.winfo_width()))
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        for row, block in enumerate(blocks):
+            current = edits.get(block.index, block.text)
+            var = tk.StringVar(value=current)
+            self._vars[block.index] = var
+            ttk.Label(inner, text=f"第 {block.index + 1} 行:").grid(
+                row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            entry = ttk.Entry(inner, textvariable=var, width=40)
+            entry.grid(row=row, column=1, sticky="ew", pady=2)
+            self._entries[block.index] = entry
+            if block.index in edits:
+                entry.configure(background="#fff3cd")
+        inner.columnconfigure(1, weight=1)
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="恢复原样", command=self._restore).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="确定", command=self._apply).pack(
+            side=tk.RIGHT, padx=4)
+        self.bind("<Return>", lambda _e: self._apply())
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _restore(self) -> None:
+        for block in self._blocks:
+            self._vars[block.index].set(block.text)
+
+    def _apply(self) -> None:
+        edits: Dict[int, str] = {}
+        for block in self._blocks:
+            new = self._vars[block.index].get()
+            if new != block.text:
+                edits[block.index] = new
+        try:
+            self._on_ok(edits)
+        finally:
+            self.destroy()
 
 
 class ComposeWindow(tk.Toplevel):
@@ -672,6 +758,15 @@ class ComposeWindow(tk.Toplevel):
         ttk.Label(tab, text="度", style="Hint.TLabel").grid(
             row=6, column=2, sticky="w", padx=(4, 0))
 
+        ttk.Button(tab, text="编辑图中的文字…", width=16,
+                   command=self._edit_figure_text).grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=(8, 3))
+        ttk.Label(
+            tab,
+            text="识别并改写导入图里的文字\n（矢量保留，留空即删除）",
+            style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
+        ).grid(row=8, column=0, columnspan=3, sticky="w")
+
     # -- the free text tab --------------------------------------------------
 
     def _build_text_tab(self, tab: ttk.Frame) -> None:
@@ -943,6 +1038,32 @@ class ComposeWindow(tk.Toplevel):
             self.palette.append(fig)
         self._refresh_palette()
         self._status(f"从 {Path(path).name} 导入 {len(found)} 个子图。")
+
+    def add_paths(self, paths: Sequence[Path]) -> int:
+        """Put whole pages of files into the palette.
+
+        This is what the cropping window hands over: each cropped file is
+        already one figure, so the page is taken whole.
+        """
+        added = 0
+        for p in paths:
+            try:
+                doc = fitz.open(str(p))
+            except Exception:  # noqa: BLE001 -- a file that cannot be read
+                continue
+            try:
+                visible = comp.source_visible_rect(doc, 0)
+                # A region is measured from the visible rect's bottom-left.
+                region = fitz.Rect(0, 0, visible.width, visible.height)
+            finally:
+                doc.close()
+            self.palette.append(comp.Figure(path=Path(p), page_index=0,
+                                             region=region))
+            added += 1
+        if added:
+            self._refresh_palette()
+            self._update_count()
+        return added
 
     def _import_cropped(self) -> None:
         path = filedialog.askopenfilename(
@@ -1794,6 +1915,39 @@ class ComposeWindow(tk.Toplevel):
         self._drag_rects = {}
         self._drag_shapes = {}
         self._update_count()
+
+    def _edit_figure_text(self) -> None:
+        """Let the user change the text inside an imported figure.
+
+        The figure is an embedded PDF page, so its text comes with it.  The
+        lines are recognised, listed, and may be rewritten -- or taken away
+        altogether.  Everything stays vector: the old glyphs are removed and
+        the new ones written in their place.
+        """
+        i = self._selected
+        if i is None:
+            self._status("先选中一个图。")
+            return
+        placement = self.composition.placements[i]
+        try:
+            blocks = comp.figure_text_blocks(placement.figure)
+        except Exception as exc:  # noqa: BLE001 -- shown to the user
+            self._status(f"无法读取图中的文字：{exc}")
+            return
+        if not blocks:
+            self._status("这个图里没有可编辑的文字（它多半是位图）。")
+            return
+        _TextEditDialog(self, blocks, placement.text_edits,
+                        self._apply_text_edits)
+
+    def _apply_text_edits(self, edits: Dict[int, str]) -> None:
+        i = self._selected
+        if i is None:
+            return
+        self.composition.placements[i].text_edits = dict(edits)
+        self._redraw()
+        n = len(edits)
+        self._status(f"已修改图中的 {n} 处文字。" if n else "已恢复图中文字。")
 
     def _group_selected(self) -> None:
         """Make the selection one object that travels together."""

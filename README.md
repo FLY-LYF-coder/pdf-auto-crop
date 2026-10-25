@@ -451,9 +451,40 @@ selectable text.  The graphic elements are drawn as real vector paths.  Nothing
 is rasterised, so the result stays sharp at any zoom and the text can be
 searched and copied.
 
+**It goes straight into a LaTeX document.**  The exported PDF is a normal PDF:
+`\includegraphics` takes it, and both `pdflatex` and `xelatex` compile it
+without complaint — figures, dashed and translucent boxes, formulas, turned
+panels and coloured labels all survive.  A formula is drawn with an embedded
+TrueType font, so it needs no LaTeX package on your side.
+
 The exported page is either the sheet you arranged (A4 landscape or
 portrait) or, with **适应内容**, exactly as large as the content — which is
 what you want for a figure going into a manuscript.
+
+### Editing the text inside a figure
+
+An imported figure is an embedded PDF page, so its text comes with it: the
+axis titles, the tick labels, the legend — all of it is still real text in the
+output.
+
+**编辑图中的文字…** (in the 标签 tab of the selected figure) recognises those
+lines and lists them.  Each one can be rewritten, or emptied to take it away.
+The old glyphs are removed and the new ones written in their place, so the
+figure stays vector and the artwork around the text is untouched.
+
+The rewritten line keeps the look of the original as far as possible: a line
+that was in Times is written in Times, one in Helvetica in Helvetica.
+
+### The two windows
+
+The cropping window and the compose window are separate windows, but they are
+not strangers: after an export the cropping window offers to hand the figures
+it just wrote over to the compose window, where they land in the palette ready
+to be arranged.  You can also bring them across by hand — **导入已裁剪的图…**
+in the compose window takes a PDF that is already one figure per page.
+
+The cropping window splits a page into its figures; the compose window puts
+figures from anywhere onto one sheet.  That is the whole division of labour.
 
 ### Known limits
 

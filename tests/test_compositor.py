@@ -1122,6 +1122,100 @@ def test_a_group_keeps_its_members_when_one_is_removed() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Editing the text inside an imported figure
+# ---------------------------------------------------------------------------
+
+
+def _figure_with_text(tmp_path) -> tuple[Path, comp.Figure]:
+    src = tmp_path / "figure.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=220)
+    page.draw_rect(fitz.Rect(50, 40, 250, 170), color=(0, 0, 0), width=1)
+    page.draw_line(fitz.Point(60, 150), fitz.Point(240, 60),
+                   color=(0, 0, 1), width=2)
+    page.insert_text(fitz.Point(120, 190), "time t (s)", fontsize=9)
+    page.insert_text(fitz.Point(15, 100), "amplitude", fontsize=9)
+    doc.save(str(src))
+    doc.close()
+    figure = comp.Figure(path=src, page_index=0,
+                         region=fitz.Rect(10, 30, 260, 200))
+    return src, figure
+
+
+def test_the_text_inside_a_figure_is_recognised(tmp_path) -> None:
+    _src, figure = _figure_with_text(tmp_path)
+    blocks = comp.figure_text_blocks(figure)
+    assert [b.text for b in blocks] == ["time t (s)", "amplitude"]
+    # The numbering is stable: the edits are stored by it.
+    assert [b.index for b in blocks] == [0, 1]
+    assert blocks[0].size == pytest.approx(9.0)
+
+
+def test_the_text_inside_a_figure_can_be_rewritten(tmp_path) -> None:
+    _src, figure = _figure_with_text(tmp_path)
+    edited = comp.bake_with_edits(figure, {0: "time t (ms)"})
+    doc = fitz.open(str(edited))
+    try:
+        text = doc[0].get_text()
+        assert "time t (ms)" in text
+        assert "time t (s)" not in text
+        # The artwork is untouched, and nothing was rasterised.
+        assert len(doc[0].get_images()) == 0
+        assert len(doc[0].get_drawings()) >= 2
+    finally:
+        doc.close()
+
+
+def test_a_line_of_text_can_be_taken_away(tmp_path) -> None:
+    _src, figure = _figure_with_text(tmp_path)
+    edited = comp.bake_with_edits(figure, {1: ""})
+    doc = fitz.open(str(edited))
+    try:
+        text = doc[0].get_text()
+        assert "amplitude" not in text
+        assert "time t (s)" in text
+    finally:
+        doc.close()
+
+
+def test_the_rewritten_text_reaches_the_composition(tmp_path) -> None:
+    src, figure = _figure_with_text(tmp_path)
+    c = comp.Composition(width=400, height=300)
+    c.placements.append(comp.Placement(
+        figure=figure, rect=fitz.Rect(20, 20, 320, 220), label="(a)",
+        text_edits={0: "time t (ms)", 1: ""}))
+    out = comp.export_composition(c, tmp_path / "out.pdf", fit_to_content=False,
+                                  page_size=(400, 300))
+    doc = fitz.open(str(out))
+    try:
+        text = doc[0].get_text()
+        assert "time t (ms)" in text
+        assert "amplitude" not in text
+        assert "(a)" in text
+        assert doc[0].get_images() == []
+    finally:
+        doc.close()
+
+
+def test_the_text_edits_survive_a_json_round_trip(tmp_path) -> None:
+    src, region = _build_source(tmp_path)
+    c = comp.Placement(comp.Figure(path=src, page_index=0, region=region),
+                        fitz.Rect(0, 0, 100, 100), text_edits={0: "x", 2: ""})
+    back = comp.Placement.from_dict(c.to_dict())
+    assert back.text_edits == {0: "x", 2: ""}
+
+
+def test_a_rewritten_line_keeps_the_look_of_the_original(tmp_path) -> None:
+    """A line written in Times stays in Times."""
+    _src, figure = _figure_with_text(tmp_path)
+    assert comp._replacement_font("Times-Roman") == "tiro"
+    assert comp._replacement_font("Times-Bold") == "tibo"
+    assert comp._replacement_font("Helvetica") == "helv"
+    assert comp._replacement_font("Courier-Oblique") == "coit"
+    assert comp._replacement_font("Symbol") == "symb"
+
+
+# ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------
 
