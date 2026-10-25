@@ -492,52 +492,54 @@ class ComposePanel(tk.Frame):
 
         ttk.Button(bar, text="导入 PDF…", command=self._import_pdf).grid(
             row=0, column=0, sticky="w")
-        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+        ttk.Button(bar, text="导入整页…", command=self._import_whole_pages).grid(
             row=0, column=1, padx=6, sticky="w")
+        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+            row=0, column=2, padx=6, sticky="w")
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=2, sticky="ns", padx=8)
+            row=0, column=3, sticky="ns", padx=8)
 
-        ttk.Label(bar, text="纸张").grid(row=0, column=3, padx=(0, 4), sticky="e")
+        ttk.Label(bar, text="纸张").grid(row=0, column=4, padx=(0, 4), sticky="e")
         self.var_sheet = tk.StringVar(value="A4 横向")
         ttk.Combobox(
             bar, textvariable=self.var_sheet, state="readonly", width=10,
             values=["A4 横向", "A4 纵向", "适应内容", "自定义"],
-        ).grid(row=0, column=4, sticky="w")
+        ).grid(row=0, column=5, sticky="w")
         self.var_sheet.trace_add("write", lambda *_a: self._on_sheet_changed())
 
         # The custom page size, in millimetres.
-        ttk.Label(bar, text="宽").grid(row=0, column=5, padx=(12, 2), sticky="e")
+        ttk.Label(bar, text="宽").grid(row=0, column=6, padx=(12, 2), sticky="e")
         self.var_sheet_w = tk.StringVar(value="297")
         self.ent_sheet_w = ttk.Entry(bar, textvariable=self.var_sheet_w, width=6)
-        self.ent_sheet_w.grid(row=0, column=6, sticky="w")
+        self.ent_sheet_w.grid(row=0, column=7, sticky="w")
         self.var_sheet_w.trace_add("write", lambda *_a: self._on_sheet_changed())
-        ttk.Label(bar, text="高 mm").grid(row=0, column=7, padx=(6, 2), sticky="e")
+        ttk.Label(bar, text="高 mm").grid(row=0, column=8, padx=(6, 2), sticky="e")
         self.var_sheet_h = tk.StringVar(value="210")
         self.ent_sheet_h = ttk.Entry(bar, textvariable=self.var_sheet_h, width=6)
-        self.ent_sheet_h.grid(row=0, column=8, sticky="w")
+        self.ent_sheet_h.grid(row=0, column=9, sticky="w")
         self.var_sheet_h.trace_add("write", lambda *_a: self._on_sheet_changed())
 
-        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=9, padx=(12, 4), sticky="e")
+        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=10, padx=(12, 4), sticky="e")
         self.var_margin = tk.StringVar(value="3")
         ttk.Entry(bar, textvariable=self.var_margin, width=6).grid(
-            row=0, column=10, sticky="w")
+            row=0, column=11, sticky="w")
         self.var_margin.trace_add("write", lambda *_a: self._on_margin_changed())
 
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=11, sticky="ns", padx=8)
+            row=0, column=12, sticky="ns", padx=8)
         ttk.Button(bar, text="自动编号", command=self._auto_label).grid(
-            row=0, column=12, padx=(0, 6), sticky="w")
+            row=0, column=13, padx=(0, 6), sticky="w")
         ttk.Button(bar, text="横向排列", command=lambda: self._arrange("row")).grid(
-            row=0, column=13, padx=6, sticky="w")
-        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=14, padx=6, sticky="w")
+        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
+            row=0, column=15, padx=6, sticky="w")
 
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=15, padx=12, sticky="e")
+            row=0, column=16, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=16, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=17, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         self.cmb_tool = ttk.Combobox(
@@ -567,9 +569,24 @@ class ComposePanel(tk.Frame):
         self.lst_palette.bind("<Double-Button-1>", lambda _e: self._add_selected())
         ttk.Label(
             left,
-            text="「导入 PDF」会自动检测子图；\n「导入已裁剪的图」直接取整页。",
+            text="「导入 PDF」自动检测子图；\n「导入整页」一点不裁；\n"
+                 "「导入已裁剪的图」取整页。",
             style="Hint.TLabel", wraplength=170, justify=tk.LEFT,
         ).pack(side=tk.TOP, fill=tk.X, pady=(6, 0))
+
+        # How much white space the detection keeps around a figure.  The
+        # detector measures the ink, so an element that is very pale -- or
+        # that sits just outside the ink -- can end up cut off; the margin
+        # gives it room.
+        margin_row = ttk.Frame(left)
+        margin_row.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
+        ttk.Label(margin_row, text="识别留白").pack(side=tk.LEFT)
+        self.var_detect_margin = tk.StringVar(value="2")
+        ttk.Spinbox(
+            margin_row, from_=0, to=20, increment=1,
+            textvariable=self.var_detect_margin, width=5,
+        ).pack(side=tk.LEFT, padx=4)
+        ttk.Label(margin_row, text="mm", style="Hint.TLabel").pack(side=tk.LEFT)
 
         # -- sheet
         mid = ttk.Frame(body)
@@ -999,6 +1016,13 @@ class ComposePanel(tk.Frame):
 
     # -- import ------------------------------------------------------------
 
+    def _detect_margin(self) -> float:
+        """How much white space the detection keeps, in points."""
+        try:
+            return max(0.0, float(self.var_detect_margin.get())) * 72.0 / 25.4
+        except (ValueError, tk.TclError):
+            return 2.0 * 72.0 / 25.4
+
     def import_pdfs(self, paths: Sequence[Path]
                     ) -> Tuple[int, List[str], List[str]]:
         """Import the figures of several PDFs into the palette.
@@ -1014,6 +1038,7 @@ class ComposePanel(tk.Frame):
         added = 0
         empty: List[str] = []
         failed: List[str] = []
+        margin = self._detect_margin()
         for path in paths:
             try:
                 found = comp.detect_figures(Path(path), self.cfg)
@@ -1023,12 +1048,61 @@ class ComposePanel(tk.Frame):
             if not found:
                 empty.append(Path(path).name)
                 continue
-            self.palette.extend(found)
+            for fig in found:
+                if margin > 0:
+                    # The detector measures the ink; a pale element, or one
+                    # that sits just outside it, would be cut off.  The
+                    # margin gives everything a little room.
+                    fig.region = fitz.Rect(
+                        fig.region.x0 - margin, fig.region.y0 - margin,
+                        fig.region.x1 + margin, fig.region.y1 + margin)
+                self.palette.append(fig)
             added += len(found)
         if added:
             self._refresh_palette()
             self._update_count()
         return added, empty, failed
+
+    def _import_whole_pages(self) -> None:
+        """Import pages as they are -- nothing is cut off.
+
+        This is the way to bring in a figure the detector would split or
+        trim: the whole page becomes one figure.
+        """
+        paths = filedialog.askopenfilenames(
+            title="选择要整页导入的 PDF（可多选）",
+            filetypes=[("PDF 文件", "*.pdf"), ("所有文件", "*.*")],
+        )
+        if not paths:
+            return
+        added = 0
+        failed: List[str] = []
+        for name in paths:
+            path = Path(name)
+            try:
+                doc = fitz.open(str(path))
+            except Exception as exc:  # noqa: BLE001 -- shown to the user
+                failed.append(f"{path.name}：{exc}")
+                continue
+            try:
+                for pno in range(len(doc)):
+                    visible = comp.source_visible_rect(doc, pno)
+                    self.palette.append(comp.Figure(
+                        path=path, page_index=pno,
+                        region=fitz.Rect(0, 0, visible.width, visible.height)))
+                    added += 1
+            finally:
+                doc.close()
+        if added:
+            self._refresh_palette()
+            self._update_count()
+        if failed:
+            messagebox.showwarning(
+                "部分文件读取失败",
+                "以下文件没有读进来：\n\n" + "\n".join(failed),
+            )
+        if added:
+            self._status(f"已整页导入 {added} 个图。")
 
     def _import_pdf(self) -> None:
         """Import the figures of one or more PDFs into the palette."""
@@ -1665,6 +1739,10 @@ class ComposePanel(tk.Frame):
             self._sync_properties()
             self._redraw()
             self._update_count()
+            # An empty text shows nothing, so the caret goes straight into
+            # the box where it is typed.
+            self.nb.select(self.tab_text)
+            self.txt_text.focus_set()
             return
         if self.tool != "select":
             # Start drawing a graphic element, in the style the panel shows.
@@ -1909,24 +1987,44 @@ class ComposePanel(tk.Frame):
         y0 = min(max(rect.y0, 0.0), max(self.sheet_h - h, 0.0))
         return fitz.Rect(x0, y0, x0 + w, y0 + h)
 
+    def _default_shape_size(self) -> Tuple[float, float]:
+        """How big a shape is when it is placed with a click.
+
+        A quarter of the sheet is big enough to see and small enough to
+        place anywhere.
+        """
+        return (self.sheet_w * 0.25, self.sheet_h * 0.25)
+
     def _on_release(self, event: tk.Event) -> None:
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
+            ux, uy = self._clamp_to_sheet_point(ux, uy)
             preview = self._shape_preview
             self._shape_preview = None
             self._drag_mode = None
             self._drag_start = None
-            if preview is not None and (
-                    abs(ux - preview.start.x) > 1.0
+            if preview is None:
+                self._redraw()
+                return
+            if (abs(ux - preview.start.x) > 1.0
                     or abs(uy - preview.start.y) > 1.0):
-                # Keep the whole style of the preview -- the fill, the
-                # opacities and the line style included.
-                self.composition.shapes.append(dataclasses.replace(
-                    preview, end=fitz.Point(ux, uy)))
-                self._clear_selection()
-                self._selected_shape = len(self.composition.shapes) - 1
-                self._last_kind = "shape"
-                self._sync_properties()
+                # A drag: the shape is exactly what was dragged out.
+                end = fitz.Point(ux, uy)
+            else:
+                # A click: the shape is placed with a sensible size, so a
+                # single click is enough to put one on the sheet.
+                w, h = self._default_shape_size()
+                start = fitz.Point(ux - w / 2, uy - h / 2)
+                end = fitz.Point(start.x + w, start.y + h)
+                preview = dataclasses.replace(preview, start=start)
+            # Keep the whole style of the preview -- the fill, the
+            # opacities and the line style included.
+            self.composition.shapes.append(dataclasses.replace(
+                preview, end=end))
+            self._clear_selection()
+            self._selected_shape = len(self.composition.shapes) - 1
+            self._last_kind = "shape"
+            self._sync_properties()
             self._redraw()
             return
         self._drag_mode = None

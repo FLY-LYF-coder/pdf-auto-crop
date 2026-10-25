@@ -274,10 +274,17 @@ Open it with the **组合…** button in the main window's toolbar.
 
 1. **导入 PDF…** — pick one or more PDFs (the dialog takes a whole selection)
    and the same detector used for cropping finds the figures on every page;
-   they land in the palette on the left.  **导入已裁剪的图…** takes one or
-   more PDFs that are already one figure per page and uses each page whole.
+   they land in the palette on the left.  **导入整页…** brings the pages in
+   as they are, nothing cut off — that is the way to take in a figure the
+   detector would split or trim.  **导入已裁剪的图…** takes one or more PDFs
+   that are already one figure per page and uses each page whole.
    A file that cannot be read, or that holds no figure, is reported and the
    rest still come in.
+
+   The detector measures the **ink**, so a very pale element — or one that
+   sits just outside the ink — can end up cut off.  **识别留白** (in the
+   palette) keeps a margin around every detected figure; raise it when
+   something is missing, or use 导入整页… when in doubt.
 2. **Double-click** a palette entry to drop it onto the sheet, or drag it in
    from the list.
 3. **Drag** a figure to move it, drag an orange corner handle to resize it.
@@ -409,7 +416,7 @@ ordinary text — the LaTeX source as it stands — rather than failing.
 The **工具** dropdown offers the shapes PowerPoint offers — 箭头 (a line with a
 head), 方框, 圆角框, 圆圈, 三角形, 菱形, 平行四边形, 右箭头, 左箭头, 上箭头,
 下箭头 and 直线 — plus 文本 and 文本框.  Pick one and drag on the sheet to
-create the element.
+draw it, or **click** on the sheet to place one with a sensible size.
 
 Once an element is selected, the properties panel styles it:
 

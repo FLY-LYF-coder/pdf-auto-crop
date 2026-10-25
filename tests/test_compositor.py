@@ -1297,6 +1297,41 @@ def test_several_files_can_be_imported_at_once(tmp_path) -> None:
         root.destroy()
 
 
+@needs_tk
+def test_the_detection_keeps_a_margin_around_the_figure(tmp_path) -> None:
+    """The detector measures the ink, so a pale element can be cut off."""
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        panel.var_detect_margin.set("4")
+        assert panel._detect_margin() == pytest.approx(4 * 72 / 25.4)
+
+        src = tmp_path / "fig.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        page.draw_rect(fitz.Rect(40, 40, 160, 160), color=(0, 0, 1),
+                       fill=(0, 0, 1), width=0)
+        doc.save(str(src))
+        doc.close()
+
+        added, empty, failed = panel.import_pdfs([src])
+        assert added == 1 and not empty and not failed
+        region = panel.palette[0].region
+        # The ink is at 40..160; the margin gives it room on every side.
+        assert region.x0 < 40 and region.x1 > 160
+        assert region.y0 < 40 and region.y1 > 160
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
 # ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------

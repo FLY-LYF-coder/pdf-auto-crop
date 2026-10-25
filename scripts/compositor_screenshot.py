@@ -322,11 +322,20 @@ def main() -> int:
     _shot(win, "06_label_style.png")
 
     # -- drawing a graphic element ---------------------------------------
+    # The coordinates are worked out from the sheet, so the test does not
+    # depend on the window's size or the display's resolution.
+    sheet = win._canvas_rect(fitz.Rect(0, 0, win.sheet_w, win.sheet_h))
+    sx, sy, ex, ey = sheet
+    sw, sh = ex - sx, ey - sy
+
+    def at(fx: float, fy: float) -> tuple[int, int]:
+        return (int(sx + sw * fx), int(sy + sh * fy))
+
     n_shapes = len(win.composition.shapes)
     win.var_tool.set("箭头")
     win._on_tool_changed()
     check("the arrow tool is active", win.tool == "arrow", win.tool)
-    _drag(win, 700, 200, 780, 260)
+    _drag(win, *at(0.60, 0.12), *at(0.78, 0.28))
     check("dragging draws an arrow",
           len(win.composition.shapes) == n_shapes + 1,
           f"{len(win.composition.shapes)} shapes")
@@ -338,15 +347,38 @@ def main() -> int:
               f"{arrow.start} -> {arrow.end}")
         check("the new arrow is selected", win._selected_shape is not None)
 
+    # A click alone is enough: the element is placed with a sensible size.
+    win.var_tool.set("方框")
+    win._on_tool_changed()
+    n_shapes = len(win.composition.shapes)
+    _click(win, *at(0.20, 0.80))
+    check("a click places an element",
+          len(win.composition.shapes) == n_shapes + 1,
+          f"{len(win.composition.shapes)} shapes")
+    if len(win.composition.shapes) > n_shapes:
+        placed = win.composition.shapes[-1]
+        check("the placed element has a size",
+              placed.rect.width > 1 and placed.rect.height > 1,
+              f"{placed.rect}")
+        check("the placed element is on the sheet",
+              0 <= placed.rect.x0 and placed.rect.x1 <= win.sheet_w
+              and 0 <= placed.rect.y0 and placed.rect.y1 <= win.sheet_h,
+              f"{placed.rect}")
+        # Take it away again, so the checks that follow are not disturbed.
+        win._clear_selection()
+        win._selected_shape = len(win.composition.shapes) - 1
+        win._delete_selected()
+        win.update()
+
     # A box, a circle and a triangle, to show the other tools work too.
-    for tool, x0, y0, x1, y1 in (("方框", 700, 320, 800, 400),
-                                 ("圆圈", 700, 420, 800, 500),
-                                 ("三角形", 640, 540, 720, 610)):
+    for tool, fx0, fy0, fx1, fy1 in (("方框", 0.60, 0.36, 0.78, 0.48),
+                                     ("圆圈", 0.60, 0.52, 0.78, 0.64),
+                                     ("三角形", 0.60, 0.68, 0.78, 0.80)):
         win.var_tool.set(tool)
         win._on_tool_changed()
-        _drag(win, x0, y0, x1, y1)
+        _drag(win, *at(fx0, fy0), *at(fx1, fy1))
     check("all the graphic tools drew something",
-          len(win.composition.shapes) == n_shapes + 4,
+          len(win.composition.shapes) == n_shapes + 3,
           f"{len(win.composition.shapes)} shapes")
     drawn = win.composition.shapes[-1]
     check("a new element takes the style of the panel",
