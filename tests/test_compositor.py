@@ -1246,6 +1246,29 @@ def test_a_rewritten_line_keeps_the_look_of_the_original(tmp_path) -> None:
     assert comp._replacement_font("Symbol") == "symb"
 
 
+@needs_tk
+def test_the_callbacks_take_what_tk_hands_them() -> None:
+    """A dropdown's event carries an argument.
+
+    A handler that cannot take it raises a TypeError, the control silently
+    does nothing -- which is how the tool dropdown stopped working and the
+    elements could not be inserted.
+    """
+    import inspect
+
+    handlers = [
+        compositor_gui.ComposePanel._on_tool_changed,
+        compositor_gui.ComposePanel._on_label_changed,
+        compositor_gui.ComposePanel._on_text_changed,
+        compositor_gui.ComposePanel._on_shape_changed,
+    ]
+    for handler in handlers:
+        params = inspect.signature(handler).parameters
+        takes_one = len(params) >= 2 or any(
+            p.default is not inspect.Parameter.empty for p in params.values())
+        assert takes_one, f"{handler.__name__} cannot take the event Tk sends"
+
+
 # ---------------------------------------------------------------------------
 # Importing several files at once
 # ---------------------------------------------------------------------------

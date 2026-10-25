@@ -150,6 +150,18 @@ def _settle(win) -> None:
     win.update()
 
 
+def _pick_tool(win, name: str) -> None:
+    """Choose a tool the way a user does: through the dropdown.
+
+    The dropdown's event carries an argument, so calling the handler
+    directly would not exercise the same path -- and a handler that cannot
+    take the argument fails exactly where the user is looking.
+    """
+    win.var_tool.set(name)
+    win.cmb_tool.event_generate("<<ComboboxSelected>>")
+    win.update()
+
+
 def _click(win, x: int, y: int, ctrl: bool = False) -> None:
     """A press and a release, with or without Ctrl held down."""
     canvas = win.canvas
@@ -305,7 +317,8 @@ def main() -> int:
     win._selected_shape = None
     win._sync_properties()
     win.var_label_font.set("Helvetica-Bold")
-    win._on_label_changed()
+    win.cmb_label_font.event_generate("<<ComboboxSelected>>")
+    win.update()
     win.var_label_size.set("14")
     win._on_label_changed()
     win.var_label_color.set("#cc0000")
@@ -321,6 +334,27 @@ def main() -> int:
           str(placement.label_color))
     _shot(win, "06_label_style.png")
 
+    # -- every callback has to take what Tk hands it ------------------------
+    # A dropdown's event carries an argument; a handler that cannot take
+    # it fails exactly where the user is looking, and the control silently
+    # does nothing.
+    callbacks = [
+        ("the tool dropdown", win.cmb_tool, win._on_tool_changed),
+        ("the label font dropdown", win.cmb_label_font, win._on_label_changed),
+        ("the text font dropdown", win.cmb_text_font, win._on_text_changed),
+        ("the dash dropdown", win.cmb_shape_dash, win._on_shape_changed),
+    ]
+    for name, widget, handler in callbacks:
+        try:
+            handler(object())        # what Tk passes a virtual event
+            ok = True
+        except TypeError as exc:
+            ok = False
+            detail = str(exc)
+        else:
+            detail = ""
+        check(f"{name} accepts the event Tk sends", ok, detail)
+
     # -- drawing a graphic element ---------------------------------------
     # The coordinates are worked out from the sheet, so the test does not
     # depend on the window's size or the display's resolution.
@@ -332,8 +366,7 @@ def main() -> int:
         return (int(sx + sw * fx), int(sy + sh * fy))
 
     n_shapes = len(win.composition.shapes)
-    win.var_tool.set("箭头")
-    win._on_tool_changed()
+    _pick_tool(win, "箭头")
     check("the arrow tool is active", win.tool == "arrow", win.tool)
     _drag(win, *at(0.60, 0.12), *at(0.78, 0.28))
     check("dragging draws an arrow",
@@ -348,8 +381,7 @@ def main() -> int:
         check("the new arrow is selected", win._selected_shape is not None)
 
     # A click alone is enough: the element is placed with a sensible size.
-    win.var_tool.set("方框")
-    win._on_tool_changed()
+    _pick_tool(win, "方框")
     n_shapes = len(win.composition.shapes)
     _click(win, *at(0.20, 0.80))
     check("a click places an element",
@@ -374,8 +406,7 @@ def main() -> int:
     for tool, fx0, fy0, fx1, fy1 in (("方框", 0.60, 0.36, 0.78, 0.48),
                                      ("圆圈", 0.60, 0.52, 0.78, 0.64),
                                      ("三角形", 0.60, 0.68, 0.78, 0.80)):
-        win.var_tool.set(tool)
-        win._on_tool_changed()
+        _pick_tool(win, tool)
         _drag(win, *at(fx0, fy0), *at(fx1, fy1))
     check("all the graphic tools drew something",
           len(win.composition.shapes) == n_shapes + 3,
@@ -389,8 +420,7 @@ def main() -> int:
     _shot(win, "07_shapes.png")
 
     # -- moving a graphic element ----------------------------------------
-    win.var_tool.set("选择/移动")
-    win._on_tool_changed()
+    _pick_tool(win, "选择/移动")
     arrow = win.composition.shapes[-3]
     before = fitz.Point(arrow.start.x, arrow.start.y)
     cx, cy = win._to_canvas(arrow.start.x, arrow.start.y)
@@ -415,6 +445,8 @@ def main() -> int:
     win.var_shape_color.set("#0070c0")
     win.var_shape_width.set("3")
     win.var_shape_dash.set(comp.DASH_DASHED)
+    win.cmb_shape_dash.event_generate("<<ComboboxSelected>>")
+    win.update()
     win.var_shape_opacity.set("60")
     win.var_shape_fill.set(True)
     win.var_shape_fill_color.set("#ffe08a")
@@ -439,8 +471,7 @@ def main() -> int:
     _shot(win, "08_style.png")
 
     # -- selecting several figures and lining them up ---------------------
-    win.var_tool.set("选择/移动")
-    win._on_tool_changed()
+    _pick_tool(win, "选择/移动")
     win._selected = 0
     win._sel_figs = [0]
     win._redraw()
@@ -597,8 +628,7 @@ def main() -> int:
     # -- dropping a piece of text ------------------------------------------
     # The texts go to the far right of the sheet, where no figure is: a
     # colour test on the panels would otherwise find them.
-    win.var_tool.set("文本")
-    win._on_tool_changed()
+    _pick_tool(win, "文本")
     tx, ty = win._to_canvas(750, 520)
     _click(win, int(tx), int(ty))
     check("the text tool drops a text",
@@ -620,8 +650,7 @@ def main() -> int:
           str(item.color))
 
     # A LaTeX formula, drawn as vector mathematics.
-    win.var_tool.set("文本框")
-    win._on_tool_changed()
+    _pick_tool(win, "文本框")
     fx, fy = win._to_canvas(750, 460)
     _click(win, int(fx), int(fy))
     win._set_text_widget("E = mc^2")
@@ -652,8 +681,7 @@ def main() -> int:
           f"{fig_x:.1f} {shape_x:.1f} {text_x:.1f}")
 
     # -- turning an element ------------------------------------------------
-    win.var_tool.set("选择/移动")
-    win._on_tool_changed()
+    _pick_tool(win, "选择/移动")
     win._clear_selection()
     win._selected_text = 0
     win._sync_properties()

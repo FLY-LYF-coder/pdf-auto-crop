@@ -2302,7 +2302,13 @@ class ComposePanel(tk.Frame):
             background="#%02x%02x%02x" % (int(r * 255), int(g * 255),
                                           int(b * 255)))
 
-    def _on_tool_changed(self) -> None:
+    def _on_tool_changed(self, event=None) -> None:
+        """The tool dropdown changed.
+
+        The event is accepted because Tk hands one to a callback bound to
+        ``<<ComboboxSelected>>``; without it the handler would raise and
+        the tool would never change.
+        """
         self.tool = TOOL_BY_NAME.get(self.var_tool.get(), "select")
         self.canvas.configure(cursor="crosshair" if self.tool != "select"
                               else "")
@@ -2345,8 +2351,12 @@ class ComposePanel(tk.Frame):
         self.var_shape_fill_color.set(hexv)
         self._on_shape_changed()
 
-    def _on_shape_changed(self) -> None:
-        """Apply the style panel to every selected graphic element."""
+    def _on_shape_changed(self, event=None) -> None:
+        """Apply the style panel to every selected graphic element.
+
+        The event is accepted because Tk hands one to a callback bound to
+        ``<<ComboboxSelected>>``.
+        """
         if not self._sel_shapes:
             return
         color = hex_to_rgb(self.var_shape_color.get())
@@ -2532,7 +2542,12 @@ class ComposePanel(tk.Frame):
                  "top": "顶对齐", "vcenter": "垂直居中", "bottom": "底对齐"}
         self._status(f"已{ names.get(mode, mode) } {len(items)} 个元素。")
 
-    def _on_label_changed(self) -> None:
+    def _on_label_changed(self, event=None) -> None:
+        """Apply the label panel to the selected figure.
+
+        The event is accepted because Tk hands one to a callback bound to
+        ``<<ComboboxSelected>>``.
+        """
         if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
             return
         p = self.composition.placements[self._selected]
