@@ -75,7 +75,7 @@ python scripts/make_test_pdfs.py
 pytest tests/ -q
 ```
 
-The suite is 376 tests.  Three of them deserve a note, because they encode bugs
+The suite is 386 tests.  Three of them deserve a note, because they encode bugs
 that a coordinate comparison cannot see:
 
 - `test_crop_lands_on_the_requested_region` puts a marker of a unique colour in
@@ -384,8 +384,8 @@ notation.  Matplotlib's mathtext does the typesetting — no TeX installation
 needed — and the result is drawn as **vector** PDF with the font embedded, so
 it stays sharp and the symbols remain selectable.
 
-Matplotlib is an optional dependency: without it a formula falls back to
-plain text rather than failing.
+Matplotlib is an optional dependency: without it a formula is written as
+ordinary text — the LaTeX source as it stands — rather than failing.
 
 ### Graphic elements
 
@@ -498,6 +498,14 @@ figures from anywhere onto one sheet.  That is the whole division of labour.
   with a non-breaking space instead of a plain one — that is how PyMuPDF maps
   the space glyph for a subset font.  Searching the PDF for the text still
   finds it.
+- A **figure** cannot be mirrored: it is an embedded PDF page, and turning
+  one inside out would mean rasterising it.  Turning it — rotating it — is
+  fine.
+- A line of text that was rewritten inside a figure is written in the closest
+  built-in face, not in the original one: the original font file does not
+  necessarily travel with the PDF.
+- Without matplotlib installed, a formula is written as ordinary text — the
+  LaTeX source as it stands — rather than failing.
 
 ---
 
@@ -963,6 +971,12 @@ pdf-auto-crop/
 ├── scripts/
 │   ├── make_test_pdfs.py       # Generates the 7 fixtures
 │   ├── compare_algorithms.py   # legacy vs smart across all fixtures
+│   ├── run_all_cases.py        # Runs every fixture through every algorithm
+│   ├── diagnose.py             # Detects on one PDF and writes an overlay
+│   ├── deep_diagnose.py        # The same, with the page's ink analysed
+│   ├── diag_overlay_vs_export.py  # The overlay against the exported crop
+│   ├── explore_gaps.py         # The gap histogram of a page
+│   ├── make_previews.py        # Preview images of the fixtures
 │   ├── compositor_screenshot.py # Drives the compose window with real events
 │   ├── gui_compositor_button.py # Checks the 组合… button opens the window
 │   ├── gui_screenshot.py       # Headless GUI smoke test + screenshot
@@ -975,12 +989,15 @@ pdf-auto-crop/
     ├── fixtures_diag/          # generated D1-D8 layout-diagnostic PDFs
     ├── test_batch.py           # batch scanning + per-PDF processing
     ├── test_compositor.py      # compositor model, bake, export fidelity
+    ├── test_dpi.py             # high-DPI awareness and window scaling
     ├── test_end_to_end.py      # CLI invocation tests, one per case
+    ├── test_figure_text.py     # folding a figure's axis labels into its box
     ├── test_gui.py             # hint engine + GUI worker bodies
     ├── test_gui_edit.py        # manual editor geometry + store
     ├── test_interactive.py     # presets, ui_utils, history, wizard steps
     ├── test_preview.py         # --preview / --preview-only tests
     ├── test_smart_detector.py  # gap histogram / bimodality / kernel ladder
+    ├── test_tex.py             # LaTeX mathematics rendered as vector PDF
     └── test_vector_preservation.py
 ```
 

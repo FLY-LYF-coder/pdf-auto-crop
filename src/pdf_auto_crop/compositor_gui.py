@@ -2342,7 +2342,7 @@ class ComposeWindow(tk.Toplevel):
             flipped += 1
         if not flipped:
             if self._sel_figs:
-                self._status("图是嵌入的 PDF 片段，镜像会破坏矢量，故不���持。")
+                self._status("图是嵌入的 PDF 片段，镜像会破坏矢量，故不支持。")
             else:
                 self._status("先选中要翻转的图形。")
             return
