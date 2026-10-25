@@ -27,7 +27,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
 from PIL import Image, ImageTk
@@ -389,20 +389,19 @@ class _TextEditDialog(tk.Toplevel):
             self.destroy()
 
 
-class ComposeWindow(tk.Toplevel):
-    """The compositor."""
+class ComposePanel(tk.Frame):
+    """The compositor, as a panel that can live inside another window.
+
+    The cropping window and the compositor are two halves of one job, so
+    the compositor is built as a panel: the main window can drop it into
+    the same place as its own content and switch between the two.
+    """
 
     def __init__(self, master: tk.Misc, cfg: Optional[CropConfig] = None) -> None:
         super().__init__(master)
         # Tk does not notice a high-DPI display by itself; tell it the real
         # resolution of the monitor this window is on.
         dpi.apply_tk_scaling(self)
-        self.title("组合 — 把多张 PDF 的子图拼成一张大图")
-        # The window is sized in physical pixels, so on a high-DPI display
-        # the geometry has to be scaled to come out the same size on screen.
-        scale = dpi.scale_factor(self)
-        self.geometry(f"{int(1240 * scale)}x{int(820 * scale)}")
-        self.minsize(int(1000 * scale), int(680 * scale))
 
         self.cfg = cfg or CropConfig()
         self.sheet_w, self.sheet_h = SHEET_LANDSCAPE
@@ -2701,10 +2700,51 @@ class ComposeWindow(tk.Toplevel):
         self._status(f"已导出：{path}")
 
 
+class ComposeWindow(tk.Toplevel):
+    """The compositor in a window of its own.
+
+    The panel is what the main window embeds; this is the same thing for
+    anyone who would rather have a second window.
+    """
+
+    def __init__(self, master: tk.Misc, cfg: Optional[CropConfig] = None) -> None:
+        super().__init__(master)
+        self.title("组合 — 把多张 PDF 的子图拼成一张大图")
+        # The window is sized in physical pixels, so on a high-DPI display
+        # the geometry has to be scaled to come out the same size on screen.
+        scale = dpi.scale_factor(self)
+        self.geometry(f"{int(1240 * scale)}x{int(820 * scale)}")
+        self.minsize(int(1000 * scale), int(680 * scale))
+        self.panel = ComposePanel(self, cfg)
+        self.panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def __getattr__(self, name: str) -> Any:
+        """Everything lives in the panel; forward to it.
+
+        This keeps the window interchangeable with the panel -- the old
+        code that reached for ``window.canvas`` still works.
+        """
+        if name == "panel":
+            raise AttributeError(name)
+        return getattr(self.panel, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Writes go to the panel too, or the window would be a half proxy.
+
+        Setting ``window._selected`` has to reach the panel's selection, not
+        shadow it with an attribute of the window's own.
+        """
+        if name == "panel" or "panel" not in self.__dict__:
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self.panel, name, value)
+
+
 def open_compositor(master: tk.Misc, cfg: Optional[CropConfig] = None
                     ) -> ComposeWindow:
     """Open the compositor window and return it."""
     return ComposeWindow(master, cfg)
 
 
-__all__ = ["ComposeWindow", "open_compositor", "SHEET_LANDSCAPE", "SHEET_PORTRAIT"]
+__all__ = ["ComposePanel", "ComposeWindow", "open_compositor",
+           "SHEET_LANDSCAPE", "SHEET_PORTRAIT"]

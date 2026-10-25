@@ -485,14 +485,18 @@ that was in Times is written in Times, one in Helvetica in Helvetica.
 
 ### The two windows
 
-The cropping window and the compose window are separate windows, but they are
-not strangers: after an export the cropping window offers to hand the figures
-it just wrote over to the compose window, where they land in the palette ready
-to be arranged.  You can also bring them across by hand — **导入已裁剪的图…**
-in the compose window takes a PDF that is already one figure per page.
+The cropping window and the compose window used to be two windows.  They are
+**one window now**, with a **裁剪 / 组合** switch at the top: the two halves
+of the job share the same place, and switching between them keeps
+everything where you left it.
 
-The cropping window splits a page into its figures; the compose window puts
-figures from anywhere onto one sheet.  That is the whole division of labour.
+The division of labour is unchanged: the cropping half splits a page into
+its figures; the compose half puts figures from anywhere onto one sheet.
+
+After an export the cropping half offers to hand the figures it just wrote
+over to the compose half, where they land in the palette ready to be
+arranged.  You can also bring them across by hand — **导入已裁剪的图…**
+takes a PDF that is already one figure per page.
 
 ### Known limits
 

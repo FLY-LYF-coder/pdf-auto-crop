@@ -234,8 +234,8 @@ class App(tk.Tk):
         # The window is sized in physical pixels, so on a high-DPI display the
         # geometry has to be scaled to come out the same size on screen.
         scale = dpi.scale_factor(self)
-        self.geometry(f"{int(1280 * scale)}x{int(920 * scale)}")
-        self.minsize(int(1000 * scale), int(700 * scale))
+        self.geometry(f"{int(1280 * scale)}x{int(860 * scale)}")
+        self.minsize(int(1000 * scale), int(660 * scale))
 
         self._doc: Optional[fitz.Document] = None
         self._src_path: Optional[Path] = None
@@ -249,6 +249,10 @@ class App(tk.Tk):
         self._box_items: List[int] = []
         self._zoom = 1.0
         self._bg = _Background(self)
+        #: Which half of the window is showing: "crop" or "compose".
+        self._mode = "crop"
+        #: The compose panel, made the first time it is asked for.
+        self._compose_panel = None
 
         # -- manual editor state.  ``_manual`` is the per-page box store (the
         # single source of truth for what gets exported); ``_boxes`` mirrors
@@ -303,31 +307,46 @@ class App(tk.Tk):
         self.var_input = tk.StringVar(value="—")
         self.var_output = tk.StringVar(value="./output")
 
-        ttk.Button(bar, text="打开 PDF…", command=self._choose_pdf).grid(
+        # -- the mode switch: one window, two halves of one job
+        self.var_mode = tk.StringVar(value="crop")
+        modes = ttk.Frame(bar)
+        modes.grid(row=0, column=0, rowspan=2, sticky="ns", padx=(0, 12))
+        for text, value in (("裁剪", "crop"), ("组合", "compose")):
+            ttk.Radiobutton(
+                modes, text=text, value=value, variable=self.var_mode,
+                command=self._on_mode_changed,
+            ).pack(side=tk.LEFT, padx=2)
+
+        # The cropping tools live in a frame of their own, so they can be
+        # taken out of the way when the compose panel takes over.
+        tools = ttk.Frame(bar)
+        tools.grid(row=0, column=1, rowspan=2, sticky="ew")
+        tools.columnconfigure(1, weight=3)
+        tools.columnconfigure(4, weight=2)
+        self._crop_tools = tools
+
+        ttk.Button(tools, text="打开 PDF…", command=self._choose_pdf).grid(
             row=0, column=0, padx=(0, 6), sticky="w"
         )
-        ttk.Button(bar, text="选择文件夹…", command=self._choose_folder).grid(
+        ttk.Button(tools, text="选择文件夹…", command=self._choose_folder).grid(
             row=0, column=2, padx=6, sticky="w"
         )
-        ttk.Button(bar, text="组合…", command=self._open_compositor).grid(
-            row=0, column=6, padx=(14, 0), sticky="w"
-        )
-        ttk.Label(bar, text="输入:").grid(row=0, column=3, padx=(10, 4), sticky="e")
+        ttk.Label(tools, text="输入:").grid(row=0, column=3, padx=(10, 4), sticky="e")
         # An explicit width caps each entry's *natural* size.  Without it a
         # long path sets that width and shoves the "分析" button off the right
         # edge of the toolbar; the column weights still stretch them to fill.
-        ttk.Entry(bar, textvariable=self.var_input, state="readonly", width=32).grid(
+        ttk.Entry(tools, textvariable=self.var_input, state="readonly", width=32).grid(
             row=0, column=4, columnspan=2, sticky="ew", padx=(0, 6)
         )
 
-        ttk.Label(bar, text="输出:").grid(row=1, column=0, sticky="e", pady=(6, 0))
-        ttk.Entry(bar, textvariable=self.var_output, width=32).grid(
+        ttk.Label(tools, text="输出:").grid(row=1, column=0, sticky="e", pady=(6, 0))
+        ttk.Entry(tools, textvariable=self.var_output, width=32).grid(
             row=1, column=1, sticky="ew", pady=(6, 0), padx=(6, 6)
         )
-        ttk.Button(bar, text="…", width=3, command=self._choose_output).grid(
+        ttk.Button(tools, text="…", width=3, command=self._choose_output).grid(
             row=1, column=2, pady=(6, 0), sticky="w"
         )
-        ttk.Button(bar, text="分析", command=self._analyse).grid(
+        ttk.Button(tools, text="分析", command=self._analyse).grid(
             row=1, column=3, padx=(10, 0), pady=(6, 0), sticky="e"
         )
         self.bar = bar
@@ -335,6 +354,8 @@ class App(tk.Tk):
     def _build_body(self) -> None:
         body = ttk.Frame(self, padding=(10, 0, 10, 0))
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # Kept so the compose panel can take this one's place.
+        self._crop_body = body
 
         # -- preview canvas
         left = ttk.Frame(body)
@@ -507,10 +528,41 @@ class App(tk.Tk):
     def _build_footer(self) -> None:
         foot = ttk.Frame(self, padding=(10, 4, 10, 8))
         foot.pack(side=tk.BOTTOM, fill=tk.X)
+        self._crop_footer = foot
         self.lbl_status = ttk.Label(foot, text="", style="Status.TLabel")
         self.lbl_status.pack(side=tk.LEFT)
         self.lbl_figures = ttk.Label(foot, text="", style="Hint.TLabel")
         self.lbl_figures.pack(side=tk.RIGHT)
+
+    # -- the two halves of the window ---------------------------------------
+
+    def _on_mode_changed(self) -> None:
+        """Switch between cropping and composing, in the same window."""
+        mode = self.var_mode.get()
+        if mode == "compose":
+            self._show_compose()
+        else:
+            self._show_crop()
+
+    def _show_crop(self) -> None:
+        if self._compose_panel is not None:
+            self._compose_panel.pack_forget()
+        self._crop_body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._crop_tools.grid()
+        self._crop_footer.pack(side=tk.BOTTOM, fill=tk.X)
+        self._mode = "crop"
+        self._set_status("裁剪模式：检测并裁出页面里的图。")
+
+    def _show_compose(self) -> None:
+        from .compositor_gui import ComposePanel
+
+        if self._compose_panel is None:
+            self._compose_panel = ComposePanel(self, self.current_config())
+        self._crop_body.pack_forget()
+        self._crop_tools.grid_remove()
+        self._crop_footer.pack_forget()
+        self._compose_panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._mode = "compose"
 
     # -- config plumbing ---------------------------------------------------
 
@@ -575,23 +627,15 @@ class App(tk.Tk):
         )
 
     def _open_compositor(self) -> None:
-        """Open the figure compositor in its own window.
+        """Switch to the compositor, in this same window.
 
-        Imported lazily: the compositor pulls in the compositing module, and
-        a user who only ever crops should not pay for it.
+        The two halves of the job -- splitting a page into figures, and
+        putting figures onto one sheet -- used to live in two windows.  They
+        share a window now, so there is one place to look and one thing to
+        learn.
         """
-        try:
-            from .compositor_gui import open_compositor
-        except ImportError as exc:  # pragma: no cover -- environment dependent
-            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
-            return
-        try:
-            # ``_last_config`` only exists once something has been analysed,
-            # and the compositor must open on a fresh start too.
-            cfg = getattr(self, "_last_config", None) or CropConfig()
-            open_compositor(self, cfg)
-        except Exception as exc:  # noqa: BLE001 -- reported in the status bar
-            self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
+        self.var_mode.set("compose")
+        self._on_mode_changed()
 
     def _choose_output(self) -> None:
         folder = filedialog.askdirectory(title="选择输出文件夹")
@@ -1440,28 +1484,30 @@ class App(tk.Tk):
             self._set_status("没有检测到可导出的图片。", level=gui_hints.LEVEL_WARN)
 
     def _send_to_compositor(self, out_dir: Path, written: int) -> None:
-        """Open the compose window with the cropped figures already in it.
+        """Hand the cropped figures over to the compositor.
 
-        The two windows used to be separate: the cropped files had to be
-        imported again by hand.  Now the hand-over is one click.
+        The two live in one window now, so the hand-over is a switch: the
+        figures land in the compose panel's palette, ready to be arranged.
         """
         try:
-            from .compositor_gui import open_compositor
+            from .compositor_gui import ComposePanel
         except ImportError as exc:  # pragma: no cover -- environment dependent
             self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
             return
         try:
-            cfg = getattr(self, "_last_config", None) or CropConfig()
-            window = open_compositor(self, cfg)
+            if self._compose_panel is None:
+                self._compose_panel = ComposePanel(self, self.current_config())
             # Only the files this run wrote, not the ones left over from
             # an earlier one.
             files = sorted(
                 p for p in out_dir.glob("*.pdf")
                 if p.stat().st_mtime >= self._export_started - 1
             )
-            added = window.add_paths(files)
+            added = self._compose_panel.add_paths(files)
+            self.var_mode.set("compose")
+            self._on_mode_changed()
             self._set_status(
-                f"已把 {added} 个裁剪结果送入组合排版窗口。",
+                f"已把 {added} 个裁剪结果送到组合排版。",
                 level=gui_hints.LEVEL_OK)
         except Exception as exc:  # noqa: BLE001 -- reported in the status bar
             self._set_status(f"无法打开组合窗口：{exc}", level=gui_hints.LEVEL_ERROR)
