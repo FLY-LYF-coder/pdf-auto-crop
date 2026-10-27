@@ -286,7 +286,9 @@ Open it with the **组合…** button in the main window's toolbar.
    palette) keeps a margin around every detected figure; raise it when
    something is missing, or use 导入整页… when in doubt.
 2. **Double-click** a palette entry to drop it onto the sheet, or drag it in
-   from the list.
+   from the list.  **删除选中** takes an entry back out of the palette —
+   and the figure it had on the sheet goes with it, because it is the same
+   picture.  **清空素材** empties the palette altogether.
 3. **Drag** a figure to move it, drag an orange corner handle to resize it.
 4. **Type a label** in the properties panel — `(a)`, `(b)`, … — or let
    **自动编号** number them in order.  The label's font, size and colour are

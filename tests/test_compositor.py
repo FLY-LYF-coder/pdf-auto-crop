@@ -1355,6 +1355,43 @@ def test_the_detection_keeps_a_margin_around_the_figure(tmp_path) -> None:
         root.destroy()
 
 
+@needs_tk
+def test_a_palette_entry_can_be_removed(tmp_path) -> None:
+    """Taking a figure out of the palette takes it off the sheet too."""
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        src = tmp_path / "fig.pdf"
+        doc = fitz.open()
+        page = doc.new_page(width=200, height=200)
+        page.draw_rect(fitz.Rect(20, 20, 180, 180), color=(0, 0, 1),
+                       fill=(0, 0, 1), width=0)
+        doc.save(str(src))
+        doc.close()
+
+        panel.import_pdfs([src])
+        assert len(panel.palette) == 1
+        panel.lst_palette.selection_set(0)
+        panel._add_selected()
+        assert len(panel.composition.placements) == 1
+
+        panel.lst_palette.selection_set(0)
+        panel._remove_from_palette()
+        assert len(panel.palette) == 0
+        # The figure that was on the sheet went with it.
+        assert len(panel.composition.placements) == 0
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
 # ---------------------------------------------------------------------------
 # Graphic element styling
 # ---------------------------------------------------------------------------

@@ -567,6 +567,9 @@ class ComposePanel(tk.Frame):
                                       exportselection=False)
         self.lst_palette.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.lst_palette.bind("<Double-Button-1>", lambda _e: self._add_selected())
+        # Delete takes the selected entry out of the palette.
+        self.lst_palette.bind("<Delete>", lambda _e: self._remove_from_palette())
+        self.lst_palette.bind("<BackSpace>", lambda _e: self._remove_from_palette())
         ttk.Label(
             left,
             text="「导入 PDF」自动检测子图；\n「导入整页」一点不裁；\n"
@@ -587,6 +590,14 @@ class ComposePanel(tk.Frame):
             textvariable=self.var_detect_margin, width=5,
         ).pack(side=tk.LEFT, padx=4)
         ttk.Label(margin_row, text="mm", style="Hint.TLabel").pack(side=tk.LEFT)
+
+        # What to do with a palette entry that is not wanted.
+        palette_buttons = ttk.Frame(left)
+        palette_buttons.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
+        ttk.Button(palette_buttons, text="删除选中", width=9,
+                   command=self._remove_from_palette).pack(side=tk.LEFT)
+        ttk.Button(palette_buttons, text="清空素材", width=9,
+                   command=self._clear_palette).pack(side=tk.LEFT, padx=4)
 
         # -- sheet
         mid = ttk.Frame(body)
@@ -1185,6 +1196,61 @@ class ComposePanel(tk.Frame):
             return comp.figure_display_size(fig)
         except Exception:  # noqa: BLE001
             return (0.0, 0.0)
+
+    def _remove_from_palette(self) -> None:
+        """Take the selected entries out of the palette.
+
+        A figure that is already on the sheet goes with them: it is the same
+        picture, and leaving it there would be a figure nobody can take
+        away any more.
+        """
+        selection = self.lst_palette.curselection()
+        if not selection:
+            self._status("先在素材栏里选中要删除的条目。")
+            return
+        chosen = set(selection)
+        gone = [self.palette[i] for i in selection]
+        # The figures on the sheet that came from these entries.
+        keys = {fig.key for fig in gone}
+        keep = [p for p in self.composition.placements
+                if p.figure.key not in keys]
+        removed = len(self.composition.placements) - len(keep)
+        if removed:
+            self.composition.placements = keep
+            self._clear_selection()
+        # Back to front, so the indices stay valid while deleting.
+        for i in sorted(chosen, reverse=True):
+            del self.palette[i]
+        self._refresh_palette()
+        self._update_count()
+        self._redraw()
+        message = f"已从素材栏删除 {len(chosen)} 个条目。"
+        if removed:
+            message += f"画布上的 {removed} 个图也一并移除了。"
+        self._status(message)
+
+    def _clear_palette(self) -> None:
+        """Empty the palette -- and the sheet with it."""
+        if not self.palette:
+            self._status("素材栏已经是空的。")
+            return
+        if not messagebox.askyesno(
+            "清空素材",
+            f"素材栏里的 {len(self.palette)} 个条目都要去掉吗？\n\n"
+            "已经放到画布上的图也会一起移除。",
+        ):
+            return
+        n = len(self.palette)
+        keys = {fig.key for fig in self.palette}
+        self.palette.clear()
+        self.composition.placements = [
+            p for p in self.composition.placements if p.figure.key not in keys
+        ]
+        self._clear_selection()
+        self._refresh_palette()
+        self._update_count()
+        self._redraw()
+        self._status(f"已清空素材栏（{n} 个条目）。")
 
     def _add_selected(self) -> None:
         sel = self.lst_palette.curselection()

@@ -270,14 +270,14 @@ def main() -> int:
     win._selected = 1
     win.canvas.focus_set()
     before_y = win.composition.placements[1].rect.y0
-    win.canvas.event_generate("<Up>")
+    win.canvas.event_generate("<Up>", when="now")
     win.update()
     after_y = win.composition.placements[1].rect.y0
     check("the up arrow nudges the figure up",
           abs((after_y - before_y) - 1.0) < 1e-6,
           f"{after_y - before_y:.3f}")
     before_y = after_y
-    win.canvas.event_generate("<Down>")
+    win.canvas.event_generate("<Down>", when="now")
     win.update()
     after_y = win.composition.placements[1].rect.y0
     check("the down arrow nudges the figure down",
@@ -879,6 +879,21 @@ def main() -> int:
               f"want {expect_x0:.0f}..{expect_x1:.0f}/"
               f"{expect_y0:.0f}..{expect_y1:.0f}")
     _shot(win, "05_final.png")
+
+    # -- taking a figure out of the palette -------------------------------
+    # Last, because it takes a figure off the sheet.
+    n_palette = len(win.palette)
+    win.lst_palette.selection_clear(0, "end")
+    win.lst_palette.selection_set(0)
+    n_placements = len(win.composition.placements)
+    win._remove_from_palette()
+    win.update()
+    check("a palette entry can be removed",
+          len(win.palette) == n_palette - 1,
+          f"{len(win.palette)} entries")
+    check("the figure it had on the sheet goes with it",
+          len(win.composition.placements) < n_placements,
+          f"{len(win.composition.placements)} figures")
 
     win.destroy()
 
