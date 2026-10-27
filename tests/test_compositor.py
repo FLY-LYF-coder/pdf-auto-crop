@@ -1321,6 +1321,52 @@ def test_several_files_can_be_imported_at_once(tmp_path) -> None:
 
 
 @needs_tk
+def test_a_picture_can_be_imported(tmp_path) -> None:
+    """A picture is turned into a page, so it can be placed like a figure."""
+    from PIL import Image
+
+    png = tmp_path / "pic.png"
+    Image.new("RGB", (400, 200), (200, 30, 30)).save(png)
+
+    pdf = comp.image_to_pdf(png)
+    assert pdf.exists()
+    doc = fitz.open(str(pdf))
+    try:
+        assert len(doc) == 1
+        # The page is as big as the picture would be printed.
+        assert doc[0].rect.width == pytest.approx(400 * 72 / 150, rel=0.02)
+        assert doc[0].rect.height == pytest.approx(200 * 72 / 150, rel=0.02)
+        assert doc[0].get_images(), "the picture was not embedded"
+    finally:
+        doc.close()
+
+    # And it goes into the palette like any other figure.
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        doc = fitz.open(str(pdf))
+        try:
+            visible = comp.source_visible_rect(doc, 0)
+            panel.palette.append(comp.Figure(
+                path=pdf, page_index=0,
+                region=fitz.Rect(0, 0, visible.width, visible.height)))
+        finally:
+            doc.close()
+        panel._refresh_palette()
+        assert panel.lst_palette.size() == 1
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
+@needs_tk
 def test_the_detection_keeps_a_margin_around_the_figure(tmp_path) -> None:
     """The detector measures the ink, so a pale element can be cut off."""
     import tkinter as tk
@@ -1565,20 +1611,23 @@ def test_the_selection_grows_and_shrinks_with_ctrl() -> None:
     """Ctrl+click adds to the selection, so a group can be lined up."""
     u = compositor_gui.update_selection
     # A plain click replaces the selection.
-    assert u([], [], [], "figure", 1, False) == ([1], [], [], "body")
+    assert u([], [], [], [], "figure", 1, False) == ([1], [], [], [], "body")
     # Ctrl+click adds.
-    assert u([1], [], [], "figure", 3, True) == ([1, 3], [], [], "body")
+    assert u([1], [], [], [], "figure", 3, True) == ([1, 3], [], [], [], "body")
     # Ctrl+click again takes it back out.
-    assert u([1, 3], [], [], "figure", 3, True) == ([1], [], [], None)
-    # The three kinds can be picked together: a figure, a box and a note
+    assert u([1, 3], [], [], [], "figure", 3, True) == ([1], [], [], [], None)
+    # The kinds can be picked together: a figure, a box, a note and a number
     # lined up against each other.
-    assert u([1], [], [], "shape", 0, True) == ([1], [0], [], "shape-body")
-    assert u([1], [0], [], "text", 0, True) == ([1], [0], [0], "text-body")
+    assert u([1], [], [], [], "shape", 0, True) == ([1], [0], [], [], "shape-body")
+    assert u([1], [0], [], [], "text", 0, True) == ([1], [0], [0], [], "text-body")
+    assert u([1], [0], [0], [], "label", 1, True) == (
+        [1], [0], [0], [1], "label")
     # A plain click still starts afresh.
-    assert u([1], [0], [0], "text", 2, False) == ([], [], [2], "text-body")
+    assert u([1], [0], [0], [1], "text", 2, False) == (
+        [], [], [2], [], "text-body")
     # Clicking the empty sheet clears the selection -- unless Ctrl is held.
-    assert u([1], [], [], None, None, False) == ([], [], [], None)
-    assert u([1], [], [], None, None, True) == ([1], [], [], None)
+    assert u([1], [], [], [], None, None, False) == ([], [], [], [], None)
+    assert u([1], [], [], [], None, None, True) == ([1], [], [], [], None)
 
 
 # ---------------------------------------------------------------------------

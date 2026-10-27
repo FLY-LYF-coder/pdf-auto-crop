@@ -442,6 +442,15 @@ class Placement:
         return fitz.Point((self.rect.x0 + self.rect.x1) / 2 - width / 2,
                           self.rect.y0 - LABEL_GAP_PT - size * 0.2)
 
+    def set_label_anchor(self, point: fitz.Point) -> None:
+        """Put the label's baseline at ``point``.
+
+        The label becomes a free one: it keeps that place until the figure
+        moves, and then it travels with the figure.
+        """
+        self.label_mode = LABEL_FREE
+        self.label_offset = (point.x - self.rect.x0, point.y - self.rect.y0)
+
     def to_dict(self) -> dict:
         return {
             "figure": self.figure.to_dict(),
@@ -615,6 +624,55 @@ def bake_with_edits(figure: Figure, edits: Dict[int, str]) -> Path:
     finally:
         doc.close()
     return out_path if out_path.exists() else bake_figure(figure)
+
+
+def image_to_pdf(path: Path, out_dir: Optional[Path] = None) -> Path:
+    """A one-page PDF of an image, so it can be placed like any figure.
+
+    A picture is a picture, whatever it was drawn in: turning it into a
+    page means the compositor needs no new kind of object, and the image
+    ends up in the output as the image it always was.
+
+    The page is the size the image would be printed at, so its own
+    resolution decides how large it comes out.
+    """
+    source = Path(path)
+    if out_dir is None:
+        out_dir = Path(tempfile.gettempdir()) / "pdf_auto_crop_images"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    key = hashlib.sha1(
+        f"{source.resolve()}|{source.stat().st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:16]
+    out_path = out_dir / f"img_{key}.pdf"
+    if out_path.exists():
+        return out_path
+
+    pix = fitz.Pixmap(str(source))
+    # The resolution the picture was made at.  PyMuPDF reports 96 for
+    # everything, so the file's own metadata is asked for first; a picture
+    # without any is assumed to be a screen picture.
+    dpi = 0.0
+    try:
+        from PIL import Image
+
+        with Image.open(str(source)) as img:
+            info = img.info.get("dpi") or (0, 0)
+            dpi = float(info[0] or 0)
+    except Exception:  # noqa: BLE001 -- a picture without metadata
+        dpi = 0.0
+    if dpi < 1:
+        dpi = 150.0
+    width = max(1.0, pix.width * 72.0 / dpi)
+    height = max(1.0, pix.height * 72.0 / dpi)
+
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=width, height=height)
+        page.insert_image(page.rect, filename=str(source))
+        doc.save(str(out_path), garbage=4, deflate=True)
+    finally:
+        doc.close()
+    return out_path
 
 
 @dataclass

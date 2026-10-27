@@ -222,38 +222,41 @@ def resolve_pick(shape_hit: Optional[int], figure_hit: Optional[int],
     return figure_hit, None, part
 
 def update_selection(sel_figs: List[int], sel_shapes: List[int],
-                     sel_texts: List[int],
+                     sel_texts: List[int], sel_labels: List[int],
                      kind: Optional[str], index: Optional[int],
                      additive: bool
-                     ) -> Tuple[List[int], List[int], List[int], Optional[str]]:
+                     ) -> Tuple[List[int], List[int], List[int], List[int],
+                                Optional[str]]:
     """The selection after a click, and the drag mode it starts.
 
     A plain click replaces the selection; holding ``Ctrl`` (or ``Shift``)
-    toggles that object in it.  The three kinds can be selected together --
-    a figure, a box and a note can be lined up against each other -- so a
-    Ctrl+click never throws away what was already picked.
+    toggles that object in it.  The kinds can be selected together -- a
+    figure, a box, a note and a number can be lined up against each other
+    -- so a Ctrl+click never throws away what was already picked.
 
     Args:
         sel_figs: The selected figures.
         sel_shapes: The selected graphic elements.
         sel_texts: The selected free texts.
-        kind: ``"figure"``, ``"shape"``, ``"text"`` or ``None``.
+        sel_labels: The selected labels (by the figure they belong to).
+        kind: ``"figure"``, ``"shape"``, ``"text"``, ``"label"`` or ``None``.
         index: The index of the object under the cursor.
         additive: Whether Ctrl or Shift was held.
 
     Returns:
-        ``(figures, shapes, texts, drag_mode)``.
+        ``(figures, shapes, texts, labels, drag_mode)``.
     """
     figs = list(sel_figs)
     shapes = list(sel_shapes)
     texts = list(sel_texts)
+    labels = list(sel_labels)
 
     if kind is None:
         # The empty sheet.  A plain click clears the selection; a modified
         # one leaves it alone, so a stray Ctrl-click does not lose it.
         if not additive:
-            return [], [], [], None
-        return figs, shapes, texts, None
+            return [], [], [], [], None
+        return figs, shapes, texts, labels, None
 
     if additive:
         if kind == "figure":
@@ -266,17 +269,24 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
                 shapes.remove(index)
             else:
                 shapes.append(index)
+        elif kind == "label":
+            if index in labels:
+                labels.remove(index)
+            else:
+                labels.append(index)
         else:
             if index in texts:
                 texts.remove(index)
             else:
                 texts.append(index)
     else:
-        figs, shapes, texts = [], [], []
+        figs, shapes, texts, labels = [], [], [], []
         if kind == "figure":
             figs = [index]
         elif kind == "shape":
             shapes = [index]
+        elif kind == "label":
+            labels = [index]
         else:
             texts = [index]
 
@@ -287,7 +297,9 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
         mode = "shape-body"
     elif kind == "text" and index in texts:
         mode = "text-body"
-    return figs, shapes, texts, mode
+    elif kind == "label" and index in labels:
+        mode = "label"
+    return figs, shapes, texts, labels, mode
 
 
 class _TextEditDialog(tk.Toplevel):
@@ -376,6 +388,49 @@ class _TextEditDialog(tk.Toplevel):
             self.destroy()
 
 
+class _ArrayDialog(tk.Toplevel):
+    """How many rows and columns the array should have."""
+
+    def __init__(self, master: tk.Misc, count: int,
+                 on_ok: Callable[[int, int], None]) -> None:
+        super().__init__(master)
+        self.title("矩阵阵列")
+        self.transient(master)
+        self.geometry("260x150")
+        self._on_ok = on_ok
+
+        body = ttk.Frame(self, padding=12)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.var_cols = tk.IntVar(value=max(1, count))
+        self.var_rows = tk.IntVar(value=1)
+        ttk.Label(body, text="列").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Spinbox(body, from_=1, to=50, textvariable=self.var_cols,
+                     width=6).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="行").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Spinbox(body, from_=1, to=50, textvariable=self.var_rows,
+                     width=6).grid(row=1, column=1, sticky="w", padx=6)
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="确定", command=self._apply).pack(
+            side=tk.RIGHT, padx=4)
+        self.bind("<Return>", lambda _e: self._apply())
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _apply(self) -> None:
+        try:
+            columns = max(1, int(self.var_cols.get()))
+            rows = max(1, int(self.var_rows.get()))
+        except (ValueError, tk.TclError):
+            return
+        try:
+            self._on_ok(columns, rows)
+        finally:
+            self.destroy()
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -402,6 +457,8 @@ class ComposePanel(tk.Frame):
         self._sel_figs: List[int] = []
         self._sel_shapes: List[int] = []
         self._sel_texts: List[int] = []
+        #: The labels that are picked, by the figure they belong to.
+        self._sel_labels: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         self._drag_rect: Optional[fitz.Rect] = None
@@ -471,6 +528,11 @@ class ComposePanel(tk.Frame):
     def _selected_text(self, value: Optional[int]) -> None:
         self._sel_texts = [] if value is None else [value]
 
+    @property
+    def _selected_label(self) -> Optional[int]:
+        """The label that is picked, by the figure it belongs to."""
+        return self._sel_labels[-1] if self._sel_labels else None
+
     # -- styling ----------------------------------------------------------
 
     def _build_style(self) -> None:
@@ -492,54 +554,56 @@ class ComposePanel(tk.Frame):
 
         ttk.Button(bar, text="导入 PDF…", command=self._import_pdf).grid(
             row=0, column=0, sticky="w")
-        ttk.Button(bar, text="导入整页…", command=self._import_whole_pages).grid(
+        ttk.Button(bar, text="导入图片…", command=self._import_images).grid(
             row=0, column=1, padx=6, sticky="w")
-        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+        ttk.Button(bar, text="导入整页…", command=self._import_whole_pages).grid(
             row=0, column=2, padx=6, sticky="w")
+        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+            row=0, column=3, padx=6, sticky="w")
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=3, sticky="ns", padx=8)
+            row=0, column=4, sticky="ns", padx=8)
 
-        ttk.Label(bar, text="纸张").grid(row=0, column=4, padx=(0, 4), sticky="e")
+        ttk.Label(bar, text="纸张").grid(row=0, column=5, padx=(0, 4), sticky="e")
         self.var_sheet = tk.StringVar(value="A4 横向")
         ttk.Combobox(
             bar, textvariable=self.var_sheet, state="readonly", width=10,
             values=["A4 横向", "A4 纵向", "适应内容", "自定义"],
-        ).grid(row=0, column=5, sticky="w")
+        ).grid(row=0, column=6, sticky="w")
         self.var_sheet.trace_add("write", lambda *_a: self._on_sheet_changed())
 
         # The custom page size, in millimetres.
-        ttk.Label(bar, text="宽").grid(row=0, column=6, padx=(12, 2), sticky="e")
+        ttk.Label(bar, text="宽").grid(row=0, column=7, padx=(12, 2), sticky="e")
         self.var_sheet_w = tk.StringVar(value="297")
         self.ent_sheet_w = ttk.Entry(bar, textvariable=self.var_sheet_w, width=6)
-        self.ent_sheet_w.grid(row=0, column=7, sticky="w")
+        self.ent_sheet_w.grid(row=0, column=8, sticky="w")
         self.var_sheet_w.trace_add("write", lambda *_a: self._on_sheet_changed())
-        ttk.Label(bar, text="高 mm").grid(row=0, column=8, padx=(6, 2), sticky="e")
+        ttk.Label(bar, text="高 mm").grid(row=0, column=9, padx=(6, 2), sticky="e")
         self.var_sheet_h = tk.StringVar(value="210")
         self.ent_sheet_h = ttk.Entry(bar, textvariable=self.var_sheet_h, width=6)
-        self.ent_sheet_h.grid(row=0, column=9, sticky="w")
+        self.ent_sheet_h.grid(row=0, column=10, sticky="w")
         self.var_sheet_h.trace_add("write", lambda *_a: self._on_sheet_changed())
 
-        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=10, padx=(12, 4), sticky="e")
+        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=11, padx=(12, 4), sticky="e")
         self.var_margin = tk.StringVar(value="3")
         ttk.Entry(bar, textvariable=self.var_margin, width=6).grid(
-            row=0, column=11, sticky="w")
+            row=0, column=12, sticky="w")
         self.var_margin.trace_add("write", lambda *_a: self._on_margin_changed())
 
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=12, sticky="ns", padx=8)
+            row=0, column=13, sticky="ns", padx=8)
         ttk.Button(bar, text="自动编号", command=self._auto_label).grid(
-            row=0, column=13, padx=(0, 6), sticky="w")
+            row=0, column=14, padx=(0, 6), sticky="w")
         ttk.Button(bar, text="横向排列", command=lambda: self._arrange("row")).grid(
-            row=0, column=14, padx=6, sticky="w")
-        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=15, padx=6, sticky="w")
+        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
+            row=0, column=16, padx=6, sticky="w")
 
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=16, padx=12, sticky="e")
+            row=0, column=17, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=17, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=18, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         self.cmb_tool = ttk.Combobox(
@@ -978,6 +1042,34 @@ class ComposePanel(tk.Frame):
                    command=lambda: self._distribute(
                        comp.DISTRIBUTE_VERTICAL)).pack(side=tk.LEFT, padx=1)
 
+        ttk.Label(tab, text="一样大").grid(row=2, column=0, sticky="w", pady=3)
+        same = ttk.Frame(tab)
+        same.grid(row=2, column=1, columnspan=2, sticky="w", pady=3)
+        ttk.Button(same, text="同宽", width=5,
+                   command=lambda: self._match_size("width")).pack(side=tk.LEFT,
+                                                                   padx=1)
+        ttk.Button(same, text="同高", width=5,
+                   command=lambda: self._match_size("height")).pack(side=tk.LEFT,
+                                                                    padx=1)
+        ttk.Button(same, text="等大", width=5,
+                   command=lambda: self._match_size("both")).pack(side=tk.LEFT,
+                                                                  padx=1)
+
+        ttk.Label(tab, text="阵列").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Button(tab, text="矩阵阵列…", width=12,
+                   command=self._array_dialog).grid(
+            row=3, column=1, columnspan=2, sticky="w", pady=3)
+
+        ttk.Label(
+            tab,
+            text="多选（Ctrl+点击）后：\n"
+                 "对齐 = 彼此对齐；单个时对齐到纸张\n"
+                 "分布 = 首尾不动，中间等间距\n"
+                 "一样大 = 第一个跟第二个（先选的改）\n"
+                 "编号也能单独选中一起对齐",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
         ttk.Label(
             tab,
             text="多选（Ctrl+点击）后：\n"
@@ -985,7 +1077,6 @@ class ComposePanel(tk.Frame):
                  "分布 = 首尾不动，中间等间距",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
-
     def _build_footer(self) -> None:
         foot = ttk.Frame(self, padding=(10, 4, 10, 8))
         foot.pack(side=tk.BOTTOM, fill=tk.X)
@@ -1073,6 +1164,47 @@ class ComposePanel(tk.Frame):
             self._refresh_palette()
             self._update_count()
         return added, empty, failed
+
+    def _import_images(self) -> None:
+        """Bring one or more pictures in.
+
+        A picture is turned into a page of its own first, so it can be
+        placed and aligned like any other figure.
+        """
+        paths = filedialog.askopenfilenames(
+            title="选择图片（可多选）",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.gif"),
+                       ("所有文件", "*.*")],
+        )
+        if not paths:
+            return
+        added = 0
+        failed: List[str] = []
+        for name in paths:
+            path = Path(name)
+            try:
+                pdf = comp.image_to_pdf(path)
+            except Exception as exc:  # noqa: BLE001 -- shown to the user
+                failed.append(f"{path.name}：{exc}")
+                continue
+            doc = fitz.open(str(pdf))
+            try:
+                visible = comp.source_visible_rect(doc, 0)
+                self.palette.append(comp.Figure(
+                    path=pdf, page_index=0,
+                    region=fitz.Rect(0, 0, visible.width, visible.height)))
+            finally:
+                doc.close()
+            added += 1
+        if added:
+            self._refresh_palette()
+            self._update_count()
+            self._status(f"已导入 {added} 张图片。")
+        if failed:
+            messagebox.showwarning(
+                "部分图片读取失败",
+                "以下图片没有读进来：\n\n" + "\n".join(failed),
+            )
 
     def _import_whole_pages(self) -> None:
         """Import pages as they are -- nothing is cut off.
@@ -1775,6 +1907,7 @@ class ComposePanel(tk.Frame):
         self._sel_figs = []
         self._sel_shapes = []
         self._sel_texts = []
+        self._sel_labels = []
         self._last_kind = None
 
     def _clamp_to_sheet_point(self, x: float, y: float) -> Tuple[float, float]:
@@ -1838,9 +1971,9 @@ class ComposePanel(tk.Frame):
         fig_hit, shape_hit, part = resolve_pick(shape_idx, idx, part)
 
         if label_idx is not None:
-            # The label is the thing under the cursor: it can be dragged
-            # off the figure altogether.
-            kind: Optional[str] = "figure"
+            # A label is an object of its own: it can be picked, dragged
+            # and lined up without moving the figure it belongs to.
+            kind: Optional[str] = "label"
             index: Optional[int] = label_idx
         elif text_idx is not None:
             kind, index = "text", text_idx
@@ -1858,12 +1991,13 @@ class ComposePanel(tk.Frame):
             self._sel_figs = [fig_hit] if fig_hit is not None else []
             self._sel_shapes = []
             self._sel_texts = []
+            self._sel_labels = []
             mode: Optional[str] = part
         else:
-            self._sel_figs, self._sel_shapes, self._sel_texts, mode = \
-                update_selection(
-                    self._sel_figs, self._sel_shapes, self._sel_texts,
-                    kind, index, additive)
+            (self._sel_figs, self._sel_shapes, self._sel_texts,
+             self._sel_labels, mode) = update_selection(
+                self._sel_figs, self._sel_shapes, self._sel_texts,
+                self._sel_labels, kind, index, additive)
             self._last_kind = kind
             # An object that belongs to a group brings the whole group
             # along: a group is one thing, as far as the cursor is
@@ -1893,8 +2027,6 @@ class ComposePanel(tk.Frame):
                             self._sel_texts.append(m)
                 else:
                     self._sel_texts = members
-            if label_idx is not None and label_idx in self._sel_figs:
-                mode = "label"
 
         self._drag_mode = mode
         self._drag_start = (event.x, event.y)
@@ -1914,8 +2046,8 @@ class ComposePanel(tk.Frame):
             i: dataclasses.replace(self.composition.texts[i])
             for i in self._sel_texts
         }
-        if mode == "label" and self._selected is not None:
-            placement = self.composition.placements[self._selected]
+        if mode == "label" and self._selected_label is not None:
+            placement = self.composition.placements[self._selected_label]
             anchor = placement.label_anchor()
             ux, uy = self._to_user(event.x, event.y)
             self._drag_label_grab = (ux - anchor.x, uy - anchor.y)
@@ -1965,18 +2097,14 @@ class ComposePanel(tk.Frame):
         if self._drag_mode == "label":
             # The label is dragged free: it gets an offset from the
             # figure's corner, so it travels with the figure afterwards.
-            i = self._selected
+            i = self._selected_label
             if i is None:
                 return
             ux, uy = self._to_user(event.x, event.y)
             anchor = fitz.Point(ux - self._drag_label_grab[0],
                                 uy - self._drag_label_grab[1])
             placement = self.composition.placements[i]
-            placement.label_mode = comp.LABEL_FREE
-            placement.label_offset = (
-                anchor.x - placement.rect.x0,
-                anchor.y - placement.rect.y0,
-            )
+            placement.set_label_anchor(anchor)
             self._redraw()
             return
         if not self._drag_rects:
@@ -2255,8 +2383,13 @@ class ComposePanel(tk.Frame):
             self._syncing = False
 
     def _sync_properties_inner(self) -> None:
-        has_fig = (self._selected is not None
-                   and 0 <= self._selected < len(self.composition.placements))
+        # A label may be picked on its own; then its figure's properties are
+        # what the panel shows.
+        label_index = self._selected_label
+        if label_index is None:
+            label_index = self._selected
+        has_fig = (label_index is not None
+                   and 0 <= label_index < len(self.composition.placements))
         has_shape = (self._selected_shape is not None
                      and 0 <= self._selected_shape
                      < len(self.composition.shapes))
@@ -2278,7 +2411,7 @@ class ComposePanel(tk.Frame):
         self.spin_fig_rotation.configure(
             state="normal" if has_fig else "disabled")
         if has_fig:
-            p = self.composition.placements[self._selected]
+            p = self.composition.placements[label_index]
             self.var_label.set(p.label)
             self.var_label_mode.set(p.label_mode)
             self.var_label_size.set(f"{p.label_size:g}")
@@ -2558,6 +2691,73 @@ class ComposePanel(tk.Frame):
 
     # -- alignment ---------------------------------------------------------
 
+    def _match_size(self, how: str) -> None:
+        """Make the first selected figure the size of the second.
+
+        "width" and "height" keep the figure's aspect ratio; "both" makes
+        it exactly the other's size, which may stretch it.
+        """
+        if len(self._sel_figs) < 2:
+            self._status("选中两个图：先选的要改，后选的是参照。")
+            return
+        first, second = self._sel_figs[0], self._sel_figs[1]
+        a = self.composition.placements[first]
+        b = self.composition.placements[second]
+        source = fitz.Rect(b.rect)
+        target = fitz.Rect(a.rect)
+        if how == "width":
+            scale = source.width / target.width if target.width else 1.0
+            new = fitz.Rect(target.x0, target.y0,
+                            target.x0 + source.width,
+                            target.y0 + source.width * target.height / target.width)
+        elif how == "height":
+            new = fitz.Rect(target.x0, target.y0,
+                            target.x0 + source.height * target.width / target.height,
+                            target.y0 + source.height)
+        else:
+            new = fitz.Rect(target.x0, target.y0,
+                            target.x0 + source.width,
+                            target.y0 + source.height)
+        a.rect = self._clamp_to_sheet(new)
+        self._redraw()
+        name = {"width": "同宽", "height": "同高", "both": "等大"}[how]
+        self._status(f"已把图改为与参照图{name}。")
+
+    def _array_dialog(self) -> None:
+        """Ask how many rows and columns the array should have."""
+        _ArrayDialog(self, len(self._sel_figs), self._apply_array)
+
+    def _apply_array(self, columns: int, rows: int) -> None:
+        """Lay the selected figures out in a grid of the given size."""
+        items = self._sel_figs
+        if not items:
+            self._status("先选中要排成阵列的图。")
+            return
+        if columns < 1 or rows < 1:
+            return
+        needed = columns * rows
+        if needed < len(items):
+            self._status(f"{columns}×{rows} 放不下 {len(items)} 个图。")
+            return
+        cell_w = max(self.composition.placements[i].rect.width
+                     for i in items)
+        cell_h = max(self.composition.placements[i].rect.height
+                     for i in items)
+        gap = mm_to_pt(4.0)
+        total_w = columns * cell_w + (columns - 1) * gap
+        total_h = rows * cell_h + (rows - 1) * gap
+        x0 = (self.sheet_w - total_w) / 2
+        y0 = (self.sheet_h - total_h) / 2
+        for n, i in enumerate(items):
+            r, c = divmod(n, columns)
+            p = self.composition.placements[i]
+            p.rect = fitz.Rect(
+                x0 + c * (cell_w + gap), y0 + total_h - (r + 1) * cell_h - r * gap,
+                x0 + c * (cell_w + gap) + cell_w,
+                y0 + total_h - r * cell_h - r * gap)
+        self._redraw()
+        self._status(f"已排成 {columns}×{rows} 的阵列。")
+
     def _align(self, mode: str) -> None:
         """Line the selection up.
 
@@ -2577,6 +2777,11 @@ class ComposePanel(tk.Frame):
             if 0 <= i < len(self.composition.texts):
                 items.append(("text", i,
                               fitz.Rect(self.composition.texts[i].rect())))
+        for i in self._sel_labels:
+            if 0 <= i < len(self.composition.placements):
+                placement = self.composition.placements[i]
+                if placement.label:
+                    items.append(("label", i, comp.free_label_rect(placement)))
         if not items:
             self._status("先选中要对齐的元素（Ctrl+点击 可多选）。")
             return
@@ -2589,6 +2794,12 @@ class ComposePanel(tk.Frame):
             if kind == "figure":
                 self.composition.placements[index].rect = \
                     self._clamp_to_sheet(new)
+            elif kind == "label":
+                # A label is moved by its anchor, which is the baseline it
+                # is written on.
+                placement = self.composition.placements[index]
+                placement.set_label_anchor(
+                    fitz.Point(new.x0, new.y0))
             elif kind == "shape":
                 shape = self.composition.shapes[index]
                 self.composition.shapes[index] = dataclasses.replace(
@@ -2756,9 +2967,14 @@ class ComposePanel(tk.Frame):
         self._status(f"已{name}等间距分布 {len(items)} 个元素。")
 
     def _on_label_mode_changed(self) -> None:
-        if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
+        # The label may be picked on its own, or the figure may be picked
+        # and the label edited with it.
+        index = self._selected_label
+        if index is None:
+            index = self._selected
+        if index is None or not (0 <= index < len(self.composition.placements)):
             return
-        self.composition.placements[self._selected].label_mode = self.var_label_mode.get()
+        self.composition.placements[index].label_mode = self.var_label_mode.get()
         self._redraw()
 
     def _restack(self, direction: int) -> None:

@@ -274,10 +274,13 @@ Open it with the **组合…** button in the main window's toolbar.
 
 1. **导入 PDF…** — pick one or more PDFs (the dialog takes a whole selection)
    and the same detector used for cropping finds the figures on every page;
-   they land in the palette on the left.  **导入整页…** brings the pages in
-   as they are, nothing cut off — that is the way to take in a figure the
-   detector would split or trim.  **导入已裁剪的图…** takes one or more PDFs
-   that are already one figure per page and uses each page whole.
+   they land in the palette on the left.  **导入图片…** brings in PNG, JPEG
+   and the rest: a picture is turned into a page of its own first, so it can
+   be placed and aligned like any other figure.  **导入整页…** brings the
+   pages in as they are, nothing cut off — that is the way to take in a
+   figure the detector would split or trim.  **导入已裁剪的图…** takes one
+   or more PDFs that are already one figure per page and uses each page
+   whole.
    A file that cannot be read, or that holds no figure, is reported and the
    rest still come in.
 
@@ -346,8 +349,18 @@ and the aspect ratio it was given.
 they are and the ones in between are moved so that the gaps between them come
 out equal — 水平等间距 and 垂直等间距 for the two directions.
 
+**一样大** makes the first selected figure the size of the second: 同宽
+matches the width, 同高 the height (both keeping the aspect ratio), and 等大
+makes it exactly the other's size, which may stretch it.  Pick the figure to
+change first and the one to copy second.
+
+**矩阵阵列…** lays the selected figures out in a grid of as many rows and
+columns as you ask for.
+
 A figure's number travels with the figure, so lining the figures up lines
-the numbers up too.
+the numbers up too.  A number can also be **picked on its own** — click it
+and it is the label that is selected, so several numbers can be lined up
+without moving the figures they belong to.
 
 ### Groups
 

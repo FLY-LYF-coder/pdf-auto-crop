@@ -880,6 +880,44 @@ def main() -> int:
               f"{expect_y0:.0f}..{expect_y1:.0f}")
     _shot(win, "05_final.png")
 
+    # -- making one figure the size of another ------------------------------
+    win._clear_selection()
+    win._sel_figs = [0, 1]
+    win.composition.placements[0].rect = fitz.Rect(100, 100, 200, 150)
+    win.composition.placements[1].rect = fitz.Rect(300, 300, 500, 400)
+    win._match_size("width")
+    win.update()
+    a = win.composition.placements[0].rect
+    b = win.composition.placements[1].rect
+    check("a figure can be made the width of another",
+          abs(a.width - b.width) < 0.5, f"{a.width} vs {b.width}")
+    win._match_size("height")
+    win.update()
+    a = win.composition.placements[0].rect
+    check("a figure can be made the height of another",
+          abs(a.height - b.height) < 0.5, f"{a.height} vs {b.height}")
+
+    # -- an array of the selected figures -----------------------------------
+    win._clear_selection()
+    win._sel_figs = [0, 1, 2]
+    win._apply_array(2, 2)
+    win.update()
+    placed = [win.composition.placements[i].rect for i in (0, 1, 2)]
+    check("the figures can be laid out in an array",
+          len({round(r.x0, 1) for r in placed}) == 2
+          and len({round(r.y0, 1) for r in placed}) == 2,
+          str([(round(r.x0), round(r.y0)) for r in placed]))
+
+    # -- lining the labels up on their own ----------------------------------
+    win._clear_selection()
+    win._sel_labels = [0, 1]
+    win._align(comp.ALIGN_LEFT)
+    win.update()
+    x0 = comp.free_label_rect(win.composition.placements[0]).x0
+    x1 = comp.free_label_rect(win.composition.placements[1]).x0
+    check("the labels can be lined up on their own",
+          abs(x0 - x1) < 0.01, f"{x0} vs {x1}")
+
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
     n_palette = len(win.palette)
