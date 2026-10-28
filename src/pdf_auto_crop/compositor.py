@@ -1931,6 +1931,7 @@ def export_composition(
     *,
     fit_to_content: bool = True,
     page_size: Optional[Tuple[float, float]] = None,
+    offset: Tuple[float, float] = (0.0, 0.0),
 ) -> Path:
     """Write the composition to a PDF.
 
@@ -1941,6 +1942,8 @@ def export_composition(
             margin, which is what you want for a figure destined for a
             manuscript.  When false, ``page_size`` is used instead.
         page_size: ``(width_pt, height_pt)`` for a fixed-size page.
+        offset: Where the sheet stands on the canvas.  The page is the sheet,
+            so the content is moved by this much to sit on it.
 
     Returns:
         ``out_path``, for chaining.
@@ -1949,7 +1952,7 @@ def export_composition(
         bounds = comp.content_bounds()
         if bounds is None:
             w, h = comp.width, comp.height
-            dx = dy = 0.0
+            dx, dy = offset
         else:
             m = comp.margin_pt
             w, h = bounds.width + 2 * m, bounds.height + 2 * m
@@ -1960,10 +1963,10 @@ def export_composition(
             dy = -bounds.y0 + m
     elif page_size:
         w, h = page_size
-        dx = dy = 0.0
+        dx, dy = offset
     else:
         w, h = comp.width, comp.height
-        dx = dy = 0.0
+        dx, dy = offset
     w, h = max(w, 1.0), max(h, 1.0)
 
     _write_composition(comp, out_path, w, h, dx, dy, subset=True)

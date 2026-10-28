@@ -351,10 +351,12 @@ and the aspect ratio it was given.
 they are and the ones in between are moved so that the gaps between them come
 out equal — 水平等间距 and 垂直等间距 for the two directions.
 
-**一样大** makes the first selected figure the size of the second: 同宽
+**一样大** makes the first selected object the size of the second: 同宽
 matches the width, 同高 the height (both keeping the aspect ratio), and 等大
-makes it exactly the other's size, which may stretch it.  Pick the figure to
-change first and the one to copy second.
+makes it exactly the other's size, which may stretch it.  Pick the object to
+change first and the one to copy second.  It works on every kind of object:
+figures, graphic elements, free text and labels — a text changes its size by
+changing the size of its letters.
 
 **矩阵阵列…** lays the selected figures out in a grid of as many rows and
 columns as you ask for.
@@ -499,6 +501,16 @@ A click is not a drag: the cursor has to travel a few pixels before anything
 moves, so picking a figure to select it never nudges it out of a layout you
 have just arranged.
 
+**Dragging snaps.**  The edges of the object you drag are pulled onto the
+edges of the objects around it — left to left, middle to middle, and so on —
+when they come within four points.  A row of figures lines itself up.
+
+### Undo and redo
+
+**Ctrl+Z** takes back the last change, **Ctrl+Y** (or Ctrl+Shift+Z) does it
+again.  Fifty steps are kept.  A drag is one step, and so is a button in
+the toolbar or the properties panel.
+
 ### The page
 
 **纸张** picks the page: A4 横向, A4 纵向, 适应内容 (as large as the content)
@@ -512,7 +524,9 @@ resized around content that stays where it was would leave half of it
 outside the sheet.
 
 The sheet is an object too: its edges and corners carry grips, and dragging
-one makes the page bigger or smaller.
+one makes the page bigger or smaller.  **The edge you grab follows the
+mouse** and the opposite one stays where it was — pulling the top edge up
+makes the page taller, and the content stays where it was.
 
 ### What the output is
 

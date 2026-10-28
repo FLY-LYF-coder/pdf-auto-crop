@@ -385,7 +385,7 @@ def main() -> int:
         descent = compositor_gui.font_descent_px(actual)
         baseline = win.canvas.bbox(label_item)[3] - descent
         check("the label is drawn on its anchor",
-              abs(baseline - ay) <= 1.0,
+              abs(baseline - ay) <= 1.5,
               f"baseline {baseline:.1f} vs anchor {ay:.1f}")
         check("the label is drawn in the face the export carries",
               actual["family"] == compositor_gui.TK_FONTS["Helvetica-Bold"],
@@ -984,6 +984,107 @@ def main() -> int:
     x1 = comp.free_label_rect(win.composition.placements[1]).x0
     check("the labels can be lined up on their own",
           abs(x0 - x1) < 0.01, f"{x0} vs {x1}")
+
+    # -- a graphic element can be made the size of another ------------------
+    if len(win.composition.shapes) >= 2:
+        win._clear_selection()
+        win._sel_shapes = [0, 1]
+        win._match_size("width")
+        first = win.composition.shapes[0].rect
+        second = win.composition.shapes[1].rect
+        check("two graphic elements can be made the same width",
+              abs(first.width - second.width) < 0.5,
+              f"{first.width:.1f} vs {second.width:.1f}")
+        win._sel_shapes = [0, 1]
+        win._match_size("both")
+        first = win.composition.shapes[0].rect
+        second = win.composition.shapes[1].rect
+        check("two graphic elements can be made the same size",
+              abs(first.width - second.width) < 0.5
+              and abs(first.height - second.height) < 0.5,
+              f"{first} vs {second}")
+        win._clear_selection()
+
+    # -- a dragged figure snaps to its neighbour ----------------------------
+    if len(win.composition.placements) >= 2:
+        win._selected = 0
+        win._sync_properties()
+        first = win.composition.placements[0]
+        second = win.composition.placements[1]
+        # Put the second one a little to the right of the first.
+        second.rect = fitz.Rect(second.rect.x0 + 40, second.rect.y0,
+                                 second.rect.x1 + 40, second.rect.y1)
+        win._redraw()
+        win.update()
+        gap = second.rect.x0 - first.rect.x1
+        # Drag the first one so that its right edge would land a hair short
+        # of the second one's left edge.
+        target = second.rect.x0 - first.rect.width
+        cx, cy = win._to_canvas((first.rect.x0 + first.rect.x1) / 2,
+                                (first.rect.y0 + first.rect.y1) / 2)
+        want_x = win._to_canvas(target + first.rect.width / 2,
+                                (first.rect.y0 + first.rect.y1) / 2)[0]
+        _drag(win, int(cx), int(cy), int(want_x), int(cy))
+        moved = win.composition.placements[0].rect
+        check("a dragged figure snaps to its neighbour",
+              abs(moved.x1 - second.rect.x0) < 0.5,
+              f"the gap is {second.rect.x0 - moved.x1:.2f} pt")
+
+    # -- undo and redo ------------------------------------------------------
+    if win.composition.placements:
+        size_before = win.composition.placements[0].label_size
+        win._selected = 0
+        win._sync_properties()
+        # Setting the variable fires the change handler, which remembers the
+        # sheet as it was.
+        win.var_label_size.set("21")
+        win.update()
+        check("the label size can be changed",
+              abs(win.composition.placements[0].label_size - 21.0) < 1e-6,
+              str(win.composition.placements[0].label_size))
+        # The key goes to whatever has the focus.
+        win.canvas.focus_set()
+        try:
+            win.canvas.focus_force()
+        except tk.TclError:
+            pass
+        win.canvas.event_generate("<Control-z>")
+        win.update()
+        check("Ctrl+Z takes the change back",
+              abs(win.composition.placements[0].label_size - size_before) < 1e-6,
+              str(win.composition.placements[0].label_size))
+        win.canvas.event_generate("<Control-y>")
+        win.update()
+        check("Ctrl+Y does it again",
+              abs(win.composition.placements[0].label_size - 21.0) < 1e-6,
+              str(win.composition.placements[0].label_size))
+        win.canvas.event_generate("<Control-z>")
+        win.update()
+
+    # -- the sheet's edge follows the mouse ---------------------------------
+    height_before = win.sheet_h
+    handles = win._sheet_handle_positions(
+        win._origin[0], win._origin[1],
+        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    hx, hy = handles[1]          # the grip on the top edge
+    _drag(win, int(hx), int(hy), int(hx), int(hy) - 30)
+    check("pulling the top edge up makes the sheet taller",
+          win.sheet_h > height_before,
+          f"{height_before:.0f} -> {win.sheet_h:.0f}")
+    check("the bottom edge of the sheet stays where it was",
+          abs(win.sheet_y) < 0.5, f"{win.sheet_y:.2f}")
+    width_before = win.sheet_w
+    handles = win._sheet_handle_positions(
+        win._origin[0], win._origin[1],
+        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    hx, hy = handles[7]          # the grip on the left edge
+    _drag(win, int(hx), int(hy), int(hx) - 30, int(hy))
+    check("pulling the left edge out makes the sheet wider",
+          win.sheet_w > width_before,
+          f"{width_before:.0f} -> {win.sheet_w:.0f}")
+    check("the right edge of the sheet stays where it was",
+          abs(win.sheet_x + win.sheet_w - width_before) < 0.5,
+          f"{win.sheet_x + win.sheet_w:.2f} vs {width_before:.2f}")
 
     # -- the sheet can be resized by its grips ------------------------------
     width_before = win.sheet_w

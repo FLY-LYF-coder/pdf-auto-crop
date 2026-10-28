@@ -1699,7 +1699,7 @@ def test_canvas_box_puts_the_top_edge_on_top() -> None:
     """
     rect = fitz.Rect(100, 200, 300, 500)   # user space, bottom-up
     left, top, right, bottom = compositor_gui.sheet_to_canvas_box(
-        rect, origin=(0.0, 0.0), zoom=1.0, sheet_h=600)
+        rect, origin=(0.0, 0.0), zoom=1.0, sheet_top=600)
     assert left == pytest.approx(100)
     assert right == pytest.approx(300)
     assert top == pytest.approx(100)      # 600 - 500
@@ -1711,7 +1711,7 @@ def test_canvas_box_puts_the_top_edge_on_top() -> None:
 def test_a_handle_drags_the_corner_it_is_drawn_in() -> None:
     rect = fitz.Rect(100, 200, 300, 500)
     left, top, right, bottom = compositor_gui.sheet_to_canvas_box(
-        rect, origin=(0.0, 0.0), zoom=1.0, sheet_h=600)
+        rect, origin=(0.0, 0.0), zoom=1.0, sheet_top=600)
     handles = compositor_gui.HANDLE_POSITIONS(left, top, right, bottom)
     assert handles[0] == (left, top)       # top-left on the canvas
     assert handles[1] == (right, top)      # top-right

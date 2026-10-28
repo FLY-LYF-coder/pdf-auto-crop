@@ -21,7 +21,10 @@ convention the cropping window uses -- see :mod:`pdf_auto_crop.gui_edit`.
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import dataclasses
+import functools
 import math
 import sys
 import tkinter as tk
@@ -61,7 +64,7 @@ def HANDLE_POSITIONS(left: float, top: float, right: float, bottom: float
 
 
 def sheet_to_canvas_box(rect: fitz.Rect, origin: Tuple[float, float],
-                         zoom: float, sheet_h: float
+                         zoom: float, sheet_top: float
                          ) -> Tuple[float, float, float, float]:
     """The canvas rectangle of a sheet rectangle: left, top, right, bottom.
 
@@ -69,12 +72,16 @@ def sheet_to_canvas_box(rect: fitz.Rect, origin: Tuple[float, float],
     of a placement comes from its top edge in user space -- getting that
     backwards puts the picture outside its own frame, and makes the hit test
     miss every click.
+
+    ``sheet_top`` is the height of the sheet's top edge in user space: the
+    sheet can stand anywhere on the canvas, and its edge is what the picture
+    is measured against.
     """
     ox, oy = origin
     left = ox + rect.x0 * zoom
     right = ox + rect.x1 * zoom
-    top = oy + (sheet_h - rect.y1) * zoom
-    bottom = oy + (sheet_h - rect.y0) * zoom
+    top = oy + (sheet_top - rect.y1) * zoom
+    bottom = oy + (sheet_top - rect.y0) * zoom
     return (left, top, right, bottom)
 
 
@@ -88,6 +95,10 @@ SHEET_HANDLE_PX = 4.0
 #: pixels.  A click comes with a pixel or two of travel, and at the sheet's
 #: zoom that is enough to nudge a figure out of the layout.
 CLICK_SLOP_PX = 3.0
+
+#: How close two edges have to be for one to be pulled onto the other, in
+#: points.  A hair's breadth, so the snap is felt rather than seen.
+SNAP_PT = 4.0
 
 #: The smallest the sheet may be dragged to, in points.
 MIN_SHEET_PT = 36.0
@@ -644,6 +655,41 @@ class _CropDialog(tk.Toplevel):
             self.destroy()
 
 
+#: How many steps can be undone.
+UNDO_DEPTH = 50
+
+
+def _signature(composition: comp.Composition) -> Tuple:
+    """A short description of the sheet, to tell one state from another."""
+    return (
+        tuple(tuple(p.rect) + (p.label, p.label_size, p.label_mode,
+                               p.label_offset, p.rotation)
+              for p in composition.placements),
+        tuple((tuple(s.start), tuple(s.end), s.kind) for s in composition.shapes),
+        tuple((tuple(t.position), t.text, t.size, t.bold, t.italic)
+              for t in composition.texts),
+        tuple((tuple(g.figs), tuple(g.shapes), tuple(g.texts))
+              for g in composition.groups),
+    )
+
+
+def _action(func):
+    """Remember the sheet before an action, so it can be undone.
+
+    The decorator is applied when the class is made, so it has to take the
+    panel as its first argument itself.  While the panel is being filled in
+    from the model nothing is remembered: that is the undo bringing the
+    sheet back, and it must not push a step of its own -- nor clear the
+    steps that can be redone.
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        if not self._syncing:
+            self._remember()
+        return func(self, *args, **kwargs)
+    return wrapper
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -660,12 +706,20 @@ class ComposePanel(tk.Frame):
 
         self.cfg = cfg or CropConfig()
         self.sheet_w, self.sheet_h = SHEET_LANDSCAPE
+        #: Where the sheet's bottom-left corner is, in the composition's frame.
+        #: The sheet is an object on the sheet: an edge that is dragged has to
+        #: be able to move, and the content stays where it is.
+        self.sheet_x = 0.0
+        self.sheet_y = 0.0
         self.composition = comp.Composition(width=self.sheet_w, height=self.sheet_h)
 
         #: Figures available to place, keyed by an incrementing id.
         self.palette: List[comp.Figure] = []
         self._thumb_cache: Dict[str, Image.Image] = {}
         self._photo_cache: Dict[str, ImageTk.PhotoImage] = {}
+        #: The states the sheet has been in, so a mistake can be undone.
+        self._undo: List[Tuple[Tuple, Dict[str, Any]]] = []
+        self._redo: List[Tuple[Tuple, Dict[str, Any]]] = []
         #: The floating preview of the palette entry under the cursor.
         self._preview_win: Optional[tk.Toplevel] = None
         self._preview_photo: Optional[ImageTk.PhotoImage] = None
@@ -692,6 +746,8 @@ class ComposePanel(tk.Frame):
         #: Which grip of the sheet is being dragged, and the size it had.
         self._drag_sheet_handle: Optional[int] = None
         self._drag_sheet_size: Tuple[float, float] = (0.0, 0.0)
+        #: Where the sheet's corner was when the drag started.
+        self._drag_sheet_origin: Tuple[float, float] = (0.0, 0.0)
         self._zoom = 1.0
         #: The user's own zoom, on top of the zoom that fits the sheet.
         self._zoom_factor = 1.0
@@ -718,6 +774,81 @@ class ComposePanel(tk.Frame):
         # The margin shown has to be the margin the model uses: a variable
         # that was set before its trace was connected never fires it.
         self._redraw()
+
+    # -- undo and redo ------------------------------------------------------
+
+    def _snapshot(self) -> Dict[str, Any]:
+        """The sheet as it is now, ready to be put back later."""
+        return {
+            "placements": copy.deepcopy(self.composition.placements),
+            "shapes": copy.deepcopy(self.composition.shapes),
+            "texts": copy.deepcopy(self.composition.texts),
+            "groups": copy.deepcopy(self.composition.groups),
+            "width": self.composition.width,
+            "height": self.composition.height,
+            "margin": self.composition.margin_pt,
+            "sheet_x": self.sheet_x,
+            "sheet_y": self.sheet_y,
+            "sheet_w": self.sheet_w,
+            "sheet_h": self.sheet_h,
+        }
+
+    def _restore(self, state: Dict[str, Any]) -> None:
+        """Put the sheet back the way it was."""
+        self.composition.placements = state["placements"]
+        self.composition.shapes = state["shapes"]
+        self.composition.texts = state["texts"]
+        self.composition.groups = state["groups"]
+        self.composition.width = state["width"]
+        self.composition.height = state["height"]
+        self.composition.margin_pt = state["margin"]
+        self.sheet_x = state["sheet_x"]
+        self.sheet_y = state["sheet_y"]
+        self.sheet_w = state["sheet_w"]
+        self.sheet_h = state["sheet_h"]
+        # The selection stays: the objects are the same ones, only further
+        # back, and a panel that has lost its target cannot be used.
+        n_figs = len(self.composition.placements)
+        n_shapes = len(self.composition.shapes)
+        n_texts = len(self.composition.texts)
+        self._sel_figs = [i for i in self._sel_figs if 0 <= i < n_figs]
+        self._sel_shapes = [i for i in self._sel_shapes if 0 <= i < n_shapes]
+        self._sel_texts = [i for i in self._sel_texts if 0 <= i < n_texts]
+        self._sel_labels = [i for i in self._sel_labels if 0 <= i < n_figs]
+        self._sync_properties()
+        self._redraw()
+        self._update_count()
+
+    def _remember(self) -> None:
+        """Remember the sheet as it is, so the change can be undone."""
+        signature = _signature(self.composition)
+        if self._undo and self._undo[-1][0] == signature:
+            # Nothing has changed since the last time: no step to undo.
+            return
+        self._undo.append((signature, self._snapshot()))
+        if len(self._undo) > UNDO_DEPTH:
+            self._undo.pop(0)
+        self._redo.clear()
+
+    def _undo_step(self) -> None:
+        """Take back the last change."""
+        if not self._undo:
+            self._status("没有可撤销的操作。")
+            return
+        _, state = self._undo.pop()
+        self._redo.append((_signature(self.composition), self._snapshot()))
+        self._restore(state)
+        self._status("已撤销一步。")
+
+    def _redo_step(self) -> None:
+        """Do the change again that was taken back."""
+        if not self._redo:
+            self._status("没有可重做的操作。")
+            return
+        _, state = self._redo.pop()
+        self._undo.append((_signature(self.composition), self._snapshot()))
+        self._restore(state)
+        self._status("已重做一步。")
 
     # -- selection ---------------------------------------------------------
 
@@ -912,6 +1043,12 @@ class ComposePanel(tk.Frame):
         self.canvas.bind("<Delete>", self._on_key)
         self.canvas.bind("<BackSpace>", self._on_key)
         self.canvas.bind("<Escape>", self._on_key)
+        self.canvas.bind("<Control-z>", self._on_undo_key)
+        self.canvas.bind("<Control-y>", self._on_redo_key)
+        self.canvas.bind("<Control-Shift-Z>", self._on_redo_key)
+        self.bind("<Control-z>", self._on_undo_key)
+        self.bind("<Control-y>", self._on_redo_key)
+        self.bind("<Control-Shift-Z>", self._on_redo_key)
         for key in ("<Left>", "<Right>", "<Up>", "<Down>"):
             self.canvas.bind(key, self._on_key)
             self.canvas.bind(f"<Shift-{key[1:-1]}>", self._on_key)
@@ -1629,6 +1766,7 @@ class ComposePanel(tk.Frame):
         except Exception:  # noqa: BLE001
             return (0.0, 0.0)
 
+    @_action
     def _remove_from_palette(self) -> None:
         """Take the selected entries out of the palette.
 
@@ -1661,6 +1799,7 @@ class ComposePanel(tk.Frame):
             message += f"画布上的 {removed} 个图也一并移除了。"
         self._status(message)
 
+    @_action
     def _clear_palette(self) -> None:
         """Empty the palette -- and the sheet with it."""
         if not self.palette:
@@ -1684,6 +1823,7 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._status(f"已清空素材栏（{n} 个条目）。")
 
+    @_action
     def _add_selected(self) -> None:
         sel = self.lst_palette.curselection()
         if not sel:
@@ -1697,8 +1837,8 @@ class ComposePanel(tk.Frame):
         max_h = self.sheet_h * 0.4
         scale = min(max_w / w, max_h / h, 1.0)
         pw, ph = w * scale, h * scale
-        cx = self.sheet_w / 2
-        cy = self.sheet_h / 2
+        cx = self.sheet_x + self.sheet_w / 2
+        cy = self.sheet_y + self.sheet_h / 2
         self.composition.placements.append(
             comp.Placement(
                 figure=fig,
@@ -1713,6 +1853,7 @@ class ComposePanel(tk.Frame):
 
     # -- sheet -------------------------------------------------------------
 
+    @_action
     def _on_sheet_changed(self) -> None:
         mode = self.var_sheet.get()
         custom = mode == "自定义"
@@ -1721,8 +1862,10 @@ class ComposePanel(tk.Frame):
             entry.configure(state="normal" if custom else "disabled")
         if mode == "A4 横向":
             self.sheet_w, self.sheet_h = SHEET_LANDSCAPE
+            self.sheet_x = self.sheet_y = 0.0
         elif mode == "A4 纵向":
             self.sheet_w, self.sheet_h = SHEET_PORTRAIT
+            self.sheet_x = self.sheet_y = 0.0
         elif custom:
             try:
                 w = mm_to_pt(float(self.var_sheet_w.get()))
@@ -1732,6 +1875,7 @@ class ComposePanel(tk.Frame):
             if w <= 0 or h <= 0:
                 return
             self.sheet_w, self.sheet_h = w, h
+            self.sheet_x = self.sheet_y = 0.0
         else:
             bounds = self.composition.content_bounds()
             if bounds is not None:
@@ -1741,6 +1885,7 @@ class ComposePanel(tk.Frame):
                 # it back in, which looks like the figure jumping about.
                 self.sheet_w, self.sheet_h = self.composition.fitted_size()
                 margin = self.composition.margin_pt
+                self.sheet_x = self.sheet_y = 0.0
                 self._move_content(-bounds.x0 + margin, -bounds.y0 + margin)
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
@@ -1763,6 +1908,7 @@ class ComposePanel(tk.Frame):
             item.position = fitz.Point(item.position.x + dx,
                                        item.position.y + dy)
 
+    @_action
     def _on_margin_changed(self) -> None:
         try:
             self.composition.margin_pt = mm_to_pt(float(self.var_margin.get()))
@@ -1827,16 +1973,24 @@ class ComposePanel(tk.Frame):
     def _to_canvas(self, x: float, y: float) -> Tuple[float, float]:
         """User space (bottom-up) -> canvas pixels (top-down)."""
         ox, oy = self._origin
-        return (ox + x * self._zoom, oy + (self.sheet_h - y) * self._zoom)
+        return (ox + (x - self.sheet_x) * self._zoom,
+                oy + (self.sheet_y + self.sheet_h - y) * self._zoom)
 
     def _to_user(self, cx: float, cy: float) -> Tuple[float, float]:
         ox, oy = self._origin
-        return ((cx - ox) / self._zoom, self.sheet_h - (cy - oy) / self._zoom)
+        return (self.sheet_x + (cx - ox) / self._zoom,
+                self.sheet_y + self.sheet_h - (cy - oy) / self._zoom)
+
+    def _sheet_rect(self) -> fitz.Rect:
+        """The sheet on the canvas, in the composition's frame."""
+        return fitz.Rect(self.sheet_x, self.sheet_y,
+                         self.sheet_x + self.sheet_w,
+                         self.sheet_y + self.sheet_h)
 
     def _canvas_rect(self, rect: fitz.Rect) -> Tuple[float, float, float, float]:
         """The canvas rectangle of a placement: left, top, right, bottom."""
         return sheet_to_canvas_box(
-            rect, self._origin, self._zoom, self.sheet_h)
+            rect, self._origin, self._zoom, self.sheet_y + self.sheet_h)
 
     # -- drawing -----------------------------------------------------------
 
@@ -2330,8 +2484,9 @@ class ComposePanel(tk.Frame):
         happened.  Pulling it back to the edge keeps it where it can be
         seen.
         """
-        return (min(max(x, 0.0), self.sheet_w),
-                min(max(y, 0.0), self.sheet_h))
+        sheet = self._sheet_rect()
+        return (min(max(x, sheet.x0), sheet.x1),
+                min(max(y, sheet.y0), sheet.y1))
 
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
@@ -2391,6 +2546,7 @@ class ComposePanel(tk.Frame):
             self._drag_start = (event.x, event.y)
             self._drag_sheet_handle = sheet_handle
             self._drag_sheet_size = (self.sheet_w, self.sheet_h)
+            self._drag_sheet_origin = (self.sheet_x, self.sheet_y)
             self._sync_properties()
             self._redraw()
             return
@@ -2457,6 +2613,9 @@ class ComposePanel(tk.Frame):
         self._drag_start = (event.x, event.y)
         self._drag_rect = None
         self._drag_shape = None
+        # The sheet as it was before the drag, so the whole drag is one step
+        # to undo.
+        self._remember()
         # Remember where every selected object was, so the whole group moves
         # by one offset rather than by one offset per motion event.
         self._drag_rects = {
@@ -2486,29 +2645,103 @@ class ComposePanel(tk.Frame):
             return comp.SHAPE_WIDTH_DEFAULT
 
     def _drag_sheet(self, event: tk.Event) -> None:
-        """Resize the sheet by dragging one of its grips."""
+        """Resize the sheet by dragging one of its grips.
+
+        The edge that was grabbed follows the mouse and the opposite one
+        stays where it was.  The canvas counts downwards and the sheet
+        counts upwards, so the movement is taken in the sheet's own frame:
+        pulling the top edge up makes the sheet taller.
+        """
         handle = self._drag_sheet_handle
         start_w, start_h = self._drag_sheet_size
-        sx, sy = self._drag_start
-        dx = (event.x - sx) / self._zoom
-        dy = (event.y - sy) / self._zoom
+        start_x, start_y = self._drag_sheet_origin
+        ux, uy = self._to_user(event.x, event.y)
+        sx, sy = self._to_user(*self._drag_start)
+        dx = ux - sx
+        dy = uy - sy
         # The grips: 0 top-left, 1 top-middle, 2 top-right, 3 right-middle,
         # 4 bottom-right, 5 bottom-middle, 6 bottom-left, 7 left-middle.
+        new_x, new_y = start_x, start_y
         new_w, new_h = start_w, start_h
         if handle in (0, 6, 7):
+            # The left edge follows the mouse; the right one stays.
+            new_x = start_x + dx
             new_w = start_w - dx
-        if handle in (2, 3):
+        elif handle in (2, 3):
             new_w = start_w + dx
         if handle in (0, 1, 2):
+            # The top edge follows the mouse; the bottom one stays.
             new_h = start_h + dy
-        if handle in (4, 5, 6):
+            new_y = start_y
+        elif handle in (4, 5, 6):
+            # The bottom edge follows the mouse; the top one stays.
+            new_y = start_y + dy
             new_h = start_h - dy
         new_w = max(MIN_SHEET_PT, new_w)
         new_h = max(MIN_SHEET_PT, new_h)
+        self.sheet_x, self.sheet_y = new_x, new_y
         self.sheet_w, self.sheet_h = new_w, new_h
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
         self._redraw()
+
+    def _snap_offset(self, rect: fitz.Rect, dx: float, dy: float,
+                     others: Sequence[fitz.Rect]
+                     ) -> Tuple[float, float]:
+        """Nudge a dragged object so that it sits tight against a neighbour.
+
+        The edges are pulled to the edges of the objects around: left to
+        left, right to right, and so on.  The middle edges count too, so a
+        figure can be lined up with the middle of another one.
+        """
+        if not others:
+            return dx, dy
+        best_x = best_y = None
+        for other in others:
+            for edge, target in ((rect.x0 + dx, other.x0),
+                                 (rect.x0 + dx, other.x1),
+                                 (rect.x1 + dx, other.x0),
+                                 (rect.x1 + dx, other.x1),
+                                 ((rect.x0 + rect.x1) / 2 + dx,
+                                  (other.x0 + other.x1) / 2)):
+                distance = abs(target - edge)
+                if distance <= SNAP_PT and (best_x is None
+                                            or distance < best_x[0]):
+                    best_x = (distance, target - edge)
+            for edge, target in ((rect.y0 + dy, other.y0),
+                                 (rect.y0 + dy, other.y1),
+                                 (rect.y1 + dy, other.y0),
+                                 (rect.y1 + dy, other.y1),
+                                 ((rect.y0 + rect.y1) / 2 + dy,
+                                  (other.y0 + other.y1) / 2)):
+                distance = abs(target - edge)
+                if distance <= SNAP_PT and (best_y is None
+                                            or distance < best_y[0]):
+                    best_y = (distance, target - edge)
+        if best_x is not None:
+            dx += best_x[1]
+        if best_y is not None:
+            dy += best_y[1]
+        return dx, dy
+
+    def _other_boxes(self, exclude_figs: Sequence[int],
+                     exclude_shapes: Sequence[int],
+                     exclude_texts: Sequence[int]) -> List[fitz.Rect]:
+        """The boxes of everything that is not being dragged."""
+        out: List[fitz.Rect] = []
+        for i, placement in enumerate(self.composition.placements):
+            if i in exclude_figs:
+                continue
+            out.append(fitz.Rect(placement.rect))
+        for i, shape in enumerate(self.composition.shapes):
+            if i in exclude_shapes:
+                continue
+            out.append(fitz.Rect(shape.rect))
+        for i, item in enumerate(self.composition.texts):
+            if i in exclude_texts:
+                continue
+            out.append(fitz.Rect(item.rect()))
+        return out
 
     def _drag_offset(self, event: tk.Event) -> Optional[Tuple[float, float]]:
         """How far the object has been dragged, in the sheet's own units.
@@ -2548,6 +2781,12 @@ class ComposePanel(tk.Frame):
             if offset is None:
                 return
             dx, dy = offset
+            if self._drag_shapes:
+                first = next(iter(self._drag_shapes.values()))
+                others = self._other_boxes([], list(self._drag_shapes),
+                                          list(self._drag_texts))
+                dx, dy = self._snap_offset(fitz.Rect(first.rect), dx, dy,
+                                           others)
             for i, base in self._drag_shapes.items():
                 self.composition.shapes[i] = dataclasses.replace(
                     base,
@@ -2561,6 +2800,13 @@ class ComposePanel(tk.Frame):
             if offset is None:
                 return
             dx, dy = offset
+            if self._drag_texts:
+                first = next(iter(self._drag_texts.values()))
+                others = self._other_boxes(list(self._drag_rects),
+                                          list(self._drag_shapes),
+                                          list(self._drag_texts))
+                dx, dy = self._snap_offset(fitz.Rect(first.rect()), dx, dy,
+                                           others)
             for i, base in self._drag_texts.items():
                 self.composition.texts[i] = dataclasses.replace(
                     base,
@@ -2595,6 +2841,11 @@ class ComposePanel(tk.Frame):
             # The figure moves by the *total* offset from where the press
             # happened -- adding the offset to the current rectangle would
             # make every motion event add to the last one.
+            first = next(iter(self._drag_rects.values()))
+            others = self._other_boxes(list(self._drag_rects),
+                                      list(self._drag_shapes),
+                                      list(self._drag_texts))
+            dx, dy = self._snap_offset(fitz.Rect(first), dx, dy, others)
             for i, base in self._drag_rects.items():
                 new = fitz.Rect(
                     base.x0 + dx, base.y0 + dy, base.x1 + dx, base.y1 + dy
@@ -2654,10 +2905,12 @@ class ComposePanel(tk.Frame):
         return fitz.Rect(x0, y0, x1, y1)
 
     def _clamp_to_sheet(self, rect: fitz.Rect) -> fitz.Rect:
+        """A rectangle pulled back onto the sheet, without changing its size."""
+        sheet = self._sheet_rect()
         w = rect.width
         h = rect.height
-        x0 = min(max(rect.x0, 0.0), max(self.sheet_w - w, 0.0))
-        y0 = min(max(rect.y0, 0.0), max(self.sheet_h - h, 0.0))
+        x0 = min(max(rect.x0, sheet.x0), max(sheet.x0, sheet.x1 - w))
+        y0 = min(max(rect.y0, sheet.y0), max(sheet.y0, sheet.y1 - h))
         return fitz.Rect(x0, y0, x0 + w, y0 + h)
 
     def _default_shape_size(self) -> Tuple[float, float]:
@@ -2765,6 +3018,7 @@ class ComposePanel(tk.Frame):
         n = len(edits)
         self._status(f"已修改图中的 {n} 处文字。" if n else "已恢复图中文字。")
 
+    @_action
     def _group_selected(self) -> None:
         """Make the selection one object that travels together."""
         if not (self._sel_figs or self._sel_shapes or self._sel_texts):
@@ -2797,6 +3051,7 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._status("已组合：组内的元素会一起移动。")
 
+    @_action
     def _ungroup_selected(self) -> None:
         """Let the objects of a group go their own ways again."""
         removed = 0
@@ -2818,6 +3073,16 @@ class ComposePanel(tk.Frame):
         if group is None:
             return [index]
         return group.members(kind)
+
+    def _on_undo_key(self, event: tk.Event) -> None:
+        """Ctrl+Z: take back the last change."""
+        self._undo_step()
+        return "break"
+
+    def _on_redo_key(self, event: tk.Event) -> None:
+        """Ctrl+Y (or Ctrl+Shift+Z): do it again."""
+        self._redo_step()
+        return "break"
 
     def _on_key(self, event: tk.Event) -> None:
         key = event.keysym
@@ -3053,12 +3318,16 @@ class ComposePanel(tk.Frame):
         self.var_shape_fill_color.set(hexv)
         self._on_shape_changed()
 
+    @_action
     def _on_shape_changed(self, event=None) -> None:
         """Apply the style panel to every selected graphic element.
 
         The event is accepted because Tk hands one to a callback bound to
         ``<<ComboboxSelected>>``.
         """
+        if self._syncing:
+            # The panel is being filled in from the model.
+            return
         if not self._sel_shapes:
             return
         color = hex_to_rgb(self.var_shape_color.get())
@@ -3194,20 +3463,101 @@ class ComposePanel(tk.Frame):
 
     # -- alignment ---------------------------------------------------------
 
-    def _match_size(self, how: str) -> None:
-        """Make the first selected figure the size of the second.
+    def _selected_boxes(self) -> List[Tuple[str, int, fitz.Rect]]:
+        """The selected objects, with the box each one occupies.
 
-        "width" and "height" keep the figure's aspect ratio; "both" makes
+        Every kind of object -- figures, graphic elements, free text and the
+        labels -- has a box, so the tools that work on boxes can work on all
+        of them.
+        """
+        items: List[Tuple[str, int, fitz.Rect]] = []
+        for i in self._sel_figs:
+            if 0 <= i < len(self.composition.placements):
+                items.append(("figure", i,
+                              fitz.Rect(self.composition.placements[i].rect)))
+        for i in self._sel_shapes:
+            if 0 <= i < len(self.composition.shapes):
+                items.append(("shape", i,
+                              fitz.Rect(self.composition.shapes[i].rect)))
+        for i in self._sel_texts:
+            if 0 <= i < len(self.composition.texts):
+                items.append(("text", i,
+                              fitz.Rect(self.composition.texts[i].rect())))
+        for i in self._sel_labels:
+            if 0 <= i < len(self.composition.placements):
+                placement = self.composition.placements[i]
+                if placement.label:
+                    items.append(("label", i, comp.free_label_rect(placement)))
+        return items
+
+    def _set_box(self, kind: str, index: int, rect: fitz.Rect,
+                 resize: bool = False) -> None:
+        """Put an object where its box says it is.
+
+        With ``resize`` the object also takes the box's size; without it the
+        object keeps its size and only moves -- which is what lining up
+        means.
+        """
+        if kind == "figure":
+            self.composition.placements[index].rect = self._clamp_to_sheet(rect)
+        elif kind == "label":
+            # A label is moved by its anchor, which is the baseline it is
+            # written on.
+            placement = self.composition.placements[index]
+            if resize:
+                size = placement.label_size
+                width = comp.text_width(placement.label, "tiro", size)
+                if width > 0:
+                    placement.label_size = max(
+                        4.0, min(48.0, size * rect.width / width))
+            placement.set_label_anchor(fitz.Point(rect.x0, rect.y0))
+        elif kind == "shape":
+            shape = self.composition.shapes[index]
+            if resize:
+                # The shape keeps the direction it was drawn in: an arrow
+                # that was drawn to the left still points to the left.
+                if shape.end.x >= shape.start.x:
+                    x0, x1 = rect.x0, rect.x1
+                else:
+                    x0, x1 = rect.x1, rect.x0
+                if shape.end.y >= shape.start.y:
+                    y0, y1 = rect.y0, rect.y1
+                else:
+                    y0, y1 = rect.y1, rect.y0
+                self.composition.shapes[index] = dataclasses.replace(
+                    shape,
+                    start=fitz.Point(x0, y0), end=fitz.Point(x1, y1),
+                )
+            else:
+                dx = rect.x0 - shape.rect.x0
+                dy = rect.y0 - shape.rect.y0
+                self.composition.shapes[index] = dataclasses.replace(
+                    shape,
+                    start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+                    end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                )
+        else:
+            item = self.composition.texts[index]
+            if resize:
+                width, _ = item.text_size()
+                if width > 0:
+                    item.size = max(1.0, item.size * rect.width / width)
+            item.position = fitz.Point(rect.x0, rect.y0)
+
+    @_action
+    def _match_size(self, how: str) -> None:
+        """Make the first selected object the size of the second.
+
+        "width" and "height" keep the object's own proportions; "both" makes
         it exactly the other's size, which may stretch it.
         """
-        if len(self._sel_figs) < 2:
-            self._status("选中两个图：先选的要改，后选的是参照。")
+        items = self._selected_boxes()
+        if len(items) < 2:
+            self._status("选中两个元素：先选的要改，后选的是参照。")
             return
-        first, second = self._sel_figs[0], self._sel_figs[1]
-        a = self.composition.placements[first]
-        b = self.composition.placements[second]
-        source = fitz.Rect(b.rect)
-        target = fitz.Rect(a.rect)
+        (kind_a, index_a, box_a), (kind_b, index_b, box_b) = items[0], items[1]
+        source = box_b
+        target = box_a
         if how == "width":
             scale = source.width / target.width if target.width else 1.0
             new = fitz.Rect(target.x0, target.y0,
@@ -3221,10 +3571,12 @@ class ComposePanel(tk.Frame):
             new = fitz.Rect(target.x0, target.y0,
                             target.x0 + source.width,
                             target.y0 + source.height)
-        a.rect = self._clamp_to_sheet(new)
+        self._set_box(kind_a, index_a, new, resize=True)
         self._redraw()
         name = {"width": "同宽", "height": "同高", "both": "等大"}[how]
-        self._status(f"已把图改为与参照图{name}。")
+        kind_name = {"figure": "图", "shape": "图形", "text": "文字",
+                     "label": "标签"}[kind_a]
+        self._status(f"已把{kind_name}改为与参照元素{name}。")
 
     def _array_dialog(self) -> None:
         """Ask how many rows and columns the array should have."""
@@ -3249,8 +3601,8 @@ class ComposePanel(tk.Frame):
         gap = mm_to_pt(4.0)
         total_w = columns * cell_w + (columns - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
-        x0 = (self.sheet_w - total_w) / 2
-        y0 = (self.sheet_h - total_h) / 2
+        x0 = self.sheet_x + (self.sheet_w - total_w) / 2
+        y0 = self.sheet_y + (self.sheet_h - total_h) / 2
         for n, i in enumerate(items):
             r, c = divmod(n, columns)
             p = self.composition.placements[i]
@@ -3261,73 +3613,39 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._status(f"已排成 {columns}×{rows} 的阵列。")
 
+    @_action
     def _align(self, mode: str) -> None:
         """Line the selection up.
 
         With several objects selected they are lined up against each other;
         with a single one it is pushed against the edge of the sheet.
         """
-        items: List[Tuple[str, int, fitz.Rect]] = []
-        for i in self._sel_figs:
-            if 0 <= i < len(self.composition.placements):
-                items.append(("figure", i,
-                              fitz.Rect(self.composition.placements[i].rect)))
-        for i in self._sel_shapes:
-            if 0 <= i < len(self.composition.shapes):
-                items.append(("shape", i,
-                              fitz.Rect(self.composition.shapes[i].rect)))
-        for i in self._sel_texts:
-            if 0 <= i < len(self.composition.texts):
-                items.append(("text", i,
-                              fitz.Rect(self.composition.texts[i].rect())))
-        for i in self._sel_labels:
-            if 0 <= i < len(self.composition.placements):
-                placement = self.composition.placements[i]
-                if placement.label:
-                    items.append(("label", i, comp.free_label_rect(placement)))
+        items = self._selected_boxes()
         if not items:
             self._status("先选中要对齐的元素（Ctrl+点击 可多选）。")
             return
-        bounds = fitz.Rect(0.0, 0.0, self.sheet_w, self.sheet_h)
+        bounds = self._sheet_rect()
         target = comp.align_target([r for _, _, r in items], mode, bounds)
         for kind, index, rect in items:
             new = comp.aligned_rect(rect, mode, target)
-            dx = new.x0 - rect.x0
-            dy = new.y0 - rect.y0
-            if kind == "figure":
-                self.composition.placements[index].rect = \
-                    self._clamp_to_sheet(new)
-            elif kind == "label":
-                # A label is moved by its anchor, which is the baseline it
-                # is written on.
-                placement = self.composition.placements[index]
-                placement.set_label_anchor(
-                    fitz.Point(new.x0, new.y0))
-            elif kind == "shape":
-                shape = self.composition.shapes[index]
-                self.composition.shapes[index] = dataclasses.replace(
-                    shape,
-                    start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
-                    end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
-                )
-            else:
-                item = self.composition.texts[index]
-                self.composition.texts[index] = dataclasses.replace(
-                    item,
-                    position=fitz.Point(item.position.x + dx,
-                                        item.position.y + dy),
-                )
+            self._set_box(kind, index, new)
         self._redraw()
         names = {"left": "左对齐", "hcenter": "水平居中", "right": "右对齐",
                  "top": "顶对齐", "vcenter": "垂直居中", "bottom": "底对齐"}
         self._status(f"已{ names.get(mode, mode) } {len(items)} 个元素。")
 
+    @_action
     def _on_label_changed(self, event=None) -> None:
         """Apply the label panel to the selected figure.
 
         The event is accepted because Tk hands one to a callback bound to
         ``<<ComboboxSelected>>``.
         """
+        if self._syncing:
+            # The panel is being filled in from the model: the widgets still
+            # hold the values of the object that was shown before, and
+            # writing them back would change the object being shown.
+            return
         if self._selected is None or not (0 <= self._selected < len(self.composition.placements)):
             return
         p = self.composition.placements[self._selected]
@@ -3356,6 +3674,7 @@ class ComposePanel(tk.Frame):
         self.txt_text.insert("1.0", text)
         self.txt_text.edit_modified(False)
 
+    @_action
     def _on_text_changed(self, event=None) -> None:
         """Apply the text tab to every selected piece of text."""
         if self._syncing:
@@ -3480,6 +3799,7 @@ class ComposePanel(tk.Frame):
         self.composition.placements[index].label_mode = self.var_label_mode.get()
         self._redraw()
 
+    @_action
     def _restack(self, direction: int) -> None:
         if self._selected is None:
             return
@@ -3494,6 +3814,7 @@ class ComposePanel(tk.Frame):
                           for k in self._sel_figs]
         self._redraw()
 
+    @_action
     def _delete_selected(self) -> None:
         """Remove everything that is selected."""
         if self._sel_texts:
@@ -3545,6 +3866,7 @@ class ComposePanel(tk.Frame):
 
     # -- bulk operations ----------------------------------------------------
 
+    @_action
     def _auto_label(self) -> None:
         style = "letter"
         for i, p in enumerate(self.composition.placements, start=1):
@@ -3553,6 +3875,7 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._status("已按顺序重新编号。")
 
+    @_action
     def _arrange(self, mode: str) -> None:
         items = self.composition.placements
         if not items:
@@ -3586,12 +3909,12 @@ class ComposePanel(tk.Frame):
         gap *= scale
         total_w = cols * cell_w + (cols - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
-        x0 = (self.sheet_w - total_w) / 2
-        y0 = (self.sheet_h - label_room - total_h) / 2
+        x0 = self.sheet_x + (self.sheet_w - total_w) / 2
+        y0 = self.sheet_y + (self.sheet_h - label_room - total_h) / 2
         for i, p in enumerate(items):
             r, c = divmod(i, cols)
             # Rows are laid out from the top of the sheet downwards.
-            top = self.sheet_h - (y0 + r * (cell_h + gap))
+            top = self.sheet_y + self.sheet_h - (y0 + r * (cell_h + gap))
             p.rect = fitz.Rect(
                 x0 + c * (cell_w + gap), top - cell_h,
                 x0 + c * (cell_w + gap) + cell_w, top,
@@ -3621,6 +3944,7 @@ class ComposePanel(tk.Frame):
                 comp.export_composition(
                     self.composition, Path(path), fit_to_content=False,
                     page_size=(self.sheet_w, self.sheet_h),
+                    offset=(self.sheet_x, self.sheet_y),
                 )
         except Exception as exc:  # noqa: BLE001
             self._status(f"导出失败：{exc}")
