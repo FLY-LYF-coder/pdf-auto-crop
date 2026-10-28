@@ -81,6 +81,15 @@ def sheet_to_canvas_box(rect: fitz.Rect, origin: Tuple[float, float],
 #: How close the cursor has to be to grab a graphic element, in pixels.
 SHAPE_HIT_PX = 6.0
 
+#: How big the grips on the sheet's edges are, in pixels.
+SHEET_HANDLE_PX = 4.0
+
+#: The smallest the sheet may be dragged to, in points.
+MIN_SHEET_PT = 36.0
+
+#: How finely the page is shown in the crop dialog.
+CROP_PREVIEW_DPI = 96
+
 #: The tools that drop a piece of text on the sheet.
 TOOL_TEXT = "text"
 TOOL_TEXTBOX = "textbox"
@@ -431,6 +440,138 @@ class _ArrayDialog(tk.Toplevel):
             self.destroy()
 
 
+class _CropDialog(tk.Toplevel):
+    """Choose the part of the source that becomes the figure.
+
+    The page is shown as it is, with the region that is currently taken
+    marked out.  Drag a new box over the part you want and it takes its
+    place; the rest of the page is left alone.
+    """
+
+    def __init__(self, master: tk.Misc, figure: comp.Figure,
+                 on_ok: Callable[[fitz.Rect], None]) -> None:
+        super().__init__(master)
+        self.title("取图范围")
+        self.transient(master)
+        self.geometry("720x620")
+        self._figure = figure
+        self._on_ok = on_ok
+        self._drag_from: Optional[Tuple[float, float]] = None
+        self._new_rect: Optional[fitz.Rect] = None
+
+        body = ttk.Frame(self, padding=8)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(body, background="#606060", highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        # The canvas is only the right size once the dialog is shown.
+        self.canvas.bind("<Configure>", lambda _e: self._render())
+
+        buttons = ttk.Frame(self, padding=(8, 0, 8, 8))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="确定", command=self._apply).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Label(
+            buttons,
+            text="在页面上拖出一个框 = 新的取图范围",
+            style="Hint.TLabel",
+        ).pack(side=tk.LEFT, padx=6)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+        self._render()
+
+    def _render(self) -> None:
+        """Draw the page and the region that is currently taken."""
+        self.canvas.delete("all")
+        doc = fitz.open(str(self._figure.path))
+        try:
+            page = doc[self._figure.page_index]
+            visible = comp.source_visible_rect(doc, self._figure.page_index)
+            pix = page.get_pixmap(dpi=CROP_PREVIEW_DPI)
+            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+        finally:
+            doc.close()
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        scale = min(cw / img.width, ch / img.height)
+        if scale <= 0:
+            scale = 1.0
+        self._scale = scale
+        self._img_size = (img.width, img.height)
+        self._photo = ImageTk.PhotoImage(img)
+        self._origin = ((cw - img.width * scale) / 2, (ch - img.height * scale) / 2)
+        self.canvas.create_image(self._origin[0], self._origin[1],
+                                image=self._photo, anchor=tk.NW)
+        # The region, in the page's own coordinates.
+        region = self._figure.region
+        box = self._page_box_to_canvas(region, visible)
+        self.canvas.create_rectangle(
+            box.x0, box.y0, box.x1, box.y1, outline="#ff7f0e", width=2)
+        if self._new_rect is not None:
+            self.canvas.create_rectangle(
+                self._new_rect.x0, self._new_rect.y0,
+                self._new_rect.x1, self._new_rect.y1,
+                outline="#4dabf7", width=2, dash=(4, 2))
+
+    def _page_box_to_canvas(self, rect: fitz.Rect, visible: fitz.Rect) -> fitz.Rect:
+        """A rectangle on the page, in canvas pixels."""
+        ox, oy = self._origin
+        s = self._scale
+        # The page is shown top-down; a region is measured from the bottom.
+        return fitz.Rect(
+            ox + rect.x0 * s,
+            oy + (visible.height - rect.y1) * s,
+            ox + rect.x1 * s,
+            oy + (visible.height - rect.y0) * s,
+        )
+
+    def _on_press(self, event: tk.Event) -> None:
+        self._drag_from = (event.x, event.y)
+
+    def _on_drag(self, event: tk.Event) -> None:
+        if self._drag_from is None:
+            return
+        x0, y0 = self._drag_from
+        self._new_rect = fitz.Rect(
+            min(x0, event.x), min(y0, event.y),
+            max(x0, event.x), max(y0, event.y))
+        self._render()
+
+    def _on_release(self, event: tk.Event) -> None:
+        self._drag_from = None
+
+    def _apply(self) -> None:
+        if self._new_rect is None or self._new_rect.is_empty:
+            self.destroy()
+            return
+        doc = fitz.open(str(self._figure.path))
+        try:
+            visible = comp.source_visible_rect(doc, self._figure.page_index)
+        finally:
+            doc.close()
+        ox, oy = self._origin
+        s = self._scale
+        # Back to the page's own coordinates, from the top down.
+        region = fitz.Rect(
+            (self._new_rect.x0 - ox) / s,
+            visible.height - (self._new_rect.y1 - oy) / s,
+            (self._new_rect.x1 - ox) / s,
+            visible.height - (self._new_rect.y0 - oy) / s,
+        )
+        region = region & visible
+        if region.is_empty:
+            self.destroy()
+            return
+        try:
+            self._on_ok(region)
+        finally:
+            self.destroy()
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -472,6 +613,9 @@ class ComposePanel(tk.Frame):
         self._drag_texts: Dict[int, comp.TextItem] = {}
         #: Where on the label the cursor grabbed it, so it does not jump.
         self._drag_label_grab: Tuple[float, float] = (0.0, 0.0)
+        #: Which grip of the sheet is being dragged, and the size it had.
+        self._drag_sheet_handle: Optional[int] = None
+        self._drag_sheet_size: Tuple[float, float] = (0.0, 0.0)
         self._zoom = 1.0
         #: The user's own zoom, on top of the zoom that fits the sheet.
         self._zoom_factor = 1.0
@@ -837,11 +981,15 @@ class ComposePanel(tk.Frame):
         ttk.Button(tab, text="编辑图中的文字…", width=16,
                    command=self._edit_figure_text).grid(
             row=7, column=0, columnspan=3, sticky="w", pady=(8, 3))
+        ttk.Button(tab, text="取图范围…", width=16,
+                   command=self._edit_figure_region).grid(
+            row=8, column=0, columnspan=3, sticky="w", pady=(3, 3))
         ttk.Label(
             tab,
-            text="识别并改写导入图里的文字\n（矢量保留，留空即删除）",
+            text="识别并改写导入图里的文字\n（矢量保留，留空即删除）\n"
+                 "取图范围：只保留框住的部分",
             style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
-        ).grid(row=8, column=0, columnspan=3, sticky="w")
+        ).grid(row=9, column=0, columnspan=3, sticky="w")
 
     # -- the free text tab --------------------------------------------------
 
@@ -1044,21 +1192,21 @@ class ComposePanel(tk.Frame):
 
         ttk.Label(tab, text="一样大").grid(row=2, column=0, sticky="w", pady=3)
         same = ttk.Frame(tab)
-        same.grid(row=2, column=1, columnspan=2, sticky="w", pady=3)
-        ttk.Button(same, text="同宽", width=5,
+        same.grid(row=3, column=0, columnspan=3, sticky="w", pady=3)
+        ttk.Button(same, text="同宽", width=7,
                    command=lambda: self._match_size("width")).pack(side=tk.LEFT,
-                                                                   padx=1)
-        ttk.Button(same, text="同高", width=5,
-                   command=lambda: self._match_size("height")).pack(side=tk.LEFT,
                                                                     padx=1)
-        ttk.Button(same, text="等大", width=5,
+        ttk.Button(same, text="同高", width=7,
+                   command=lambda: self._match_size("height")).pack(side=tk.LEFT,
+                                                                     padx=1)
+        ttk.Button(same, text="等大", width=7,
                    command=lambda: self._match_size("both")).pack(side=tk.LEFT,
-                                                                  padx=1)
+                                                                   padx=1)
 
-        ttk.Label(tab, text="阵列").grid(row=3, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="阵列").grid(row=4, column=0, sticky="w", pady=3)
         ttk.Button(tab, text="矩阵阵列…", width=12,
                    command=self._array_dialog).grid(
-            row=3, column=1, columnspan=2, sticky="w", pady=3)
+            row=4, column=1, columnspan=2, sticky="w", pady=3)
 
         ttk.Label(
             tab,
@@ -1068,7 +1216,7 @@ class ComposePanel(tk.Frame):
                  "一样大 = 第一个跟第二个（先选的改）\n"
                  "编号也能单独选中一起对齐",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
         ttk.Label(
             tab,
@@ -1538,6 +1686,7 @@ class ComposePanel(tk.Frame):
             self._origin[0] + pw, self._origin[1] + ph,
             fill="white", outline="#303030", width=1, tags=("sheet",),
         )
+        self._draw_sheet_handles(self._origin[0], self._origin[1], pw, ph)
         for idx, placement in enumerate(self.composition.placements):
             self._draw_placement(idx, placement)
         # The graphic elements sit on top of the figures, the free text on
@@ -1568,6 +1717,44 @@ class ComposePanel(tk.Frame):
             return None
         self._thumb_cache[fig.key] = img
         return img
+
+    def _sheet_handle_positions(self, left: float, top: float,
+                                width: float, height: float
+                                ) -> List[Tuple[float, float]]:
+        """Where the sheet's edges and corners are, on the canvas.
+
+        The order is: top-left, top-middle, top-right, right-middle,
+        bottom-right, bottom-middle, bottom-left, left-middle -- so a
+        handle's position says which edge it moves.
+        """
+        cx = left + width / 2
+        cy = top + height / 2
+        return [
+            (left, top), (cx, top), (left + width, top), (left + width, cy),
+            (left + width, top + height), (cx, top + height),
+            (left, top + height), (left, cy),
+        ]
+
+    def _draw_sheet_handles(self, left: float, top: float,
+                             width: float, height: float) -> None:
+        """The grips that make the sheet bigger or smaller."""
+        for hx, hy in self._sheet_handle_positions(left, top, width, height):
+            self.canvas.create_rectangle(
+                hx - SHEET_HANDLE_PX, hy - SHEET_HANDLE_PX,
+                hx + SHEET_HANDLE_PX, hy + SHEET_HANDLE_PX,
+                fill="#606060", outline="#d0d0d0", width=1, tags=("sheet",),
+            )
+
+    def _hit_sheet_handle(self, cx: float, cy: float) -> Optional[int]:
+        """Which grip of the sheet the cursor is on."""
+        pw = self.sheet_w * self._zoom
+        ph = self.sheet_h * self._zoom
+        for i, (hx, hy) in enumerate(self._sheet_handle_positions(
+                self._origin[0], self._origin[1], pw, ph)):
+            if abs(cx - hx) <= SHEET_HANDLE_PX + 2 and \
+                    abs(cy - hy) <= SHEET_HANDLE_PX + 2:
+                return i
+        return None
 
     def _draw_placement(self, idx: int, placement: comp.Placement) -> None:
         left, top, right, bottom = self._canvas_rect(placement.rect)
@@ -1967,8 +2154,21 @@ class ComposePanel(tk.Frame):
         label_idx = self._hit_label(event.x, event.y)
         text_idx = self._hit_text(event.x, event.y)
         shape_idx = self._hit_shape(event.x, event.y)
+        sheet_handle = self._hit_sheet_handle(event.x, event.y)
         idx, part = self._hit(event.x, event.y)
         fig_hit, shape_hit, part = resolve_pick(shape_idx, idx, part)
+
+        if sheet_handle is not None and self.tool == "select":
+            # A grip of the sheet itself: the page is resized, not its
+            # contents.
+            self._clear_selection()
+            self._drag_mode = "sheet"
+            self._drag_start = (event.x, event.y)
+            self._drag_sheet_handle = sheet_handle
+            self._drag_sheet_size = (self.sheet_w, self.sheet_h)
+            self._sync_properties()
+            self._redraw()
+            return
 
         if label_idx is not None:
             # A label is an object of its own: it can be picked, dragged
@@ -2060,8 +2260,36 @@ class ComposePanel(tk.Frame):
         except ValueError:
             return comp.SHAPE_WIDTH_DEFAULT
 
+    def _drag_sheet(self, event: tk.Event) -> None:
+        """Resize the sheet by dragging one of its grips."""
+        handle = self._drag_sheet_handle
+        start_w, start_h = self._drag_sheet_size
+        sx, sy = self._drag_start
+        dx = (event.x - sx) / self._zoom
+        dy = (event.y - sy) / self._zoom
+        # The grips: 0 top-left, 1 top-middle, 2 top-right, 3 right-middle,
+        # 4 bottom-right, 5 bottom-middle, 6 bottom-left, 7 left-middle.
+        new_w, new_h = start_w, start_h
+        if handle in (0, 6, 7):
+            new_w = start_w - dx
+        if handle in (2, 3):
+            new_w = start_w + dx
+        if handle in (0, 1, 2):
+            new_h = start_h + dy
+        if handle in (4, 5, 6):
+            new_h = start_h - dy
+        new_w = max(MIN_SHEET_PT, new_w)
+        new_h = max(MIN_SHEET_PT, new_h)
+        self.sheet_w, self.sheet_h = new_w, new_h
+        self.composition.width = self.sheet_w
+        self.composition.height = self.sheet_h
+        self._redraw()
+
     def _on_drag(self, event: tk.Event) -> None:
         if self._drag_mode is None:
+            return
+        if self._drag_mode == "sheet":
+            self._drag_sheet(event)
             return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
@@ -2228,6 +2456,30 @@ class ComposePanel(tk.Frame):
         self._drag_rects = {}
         self._drag_shapes = {}
         self._update_count()
+
+    def _edit_figure_region(self) -> None:
+        """Choose the part of the source that becomes the figure.
+
+        The figure gets a copy of the source with a new region, so the
+        palette keeps the original and other placements of it are not
+        changed behind the user's back.
+        """
+        i = self._selected
+        if i is None:
+            i = self._selected_label
+        if i is None or not (0 <= i < len(self.composition.placements)):
+            self._status("先选中一个图。")
+            return
+        placement = self.composition.placements[i]
+        _CropDialog(self, placement.figure,
+                    lambda region: self._apply_figure_region(i, region))
+
+    def _apply_figure_region(self, index: int, region: fitz.Rect) -> None:
+        """Give the figure a new region, as a copy of its own."""
+        placement = self.composition.placements[index]
+        placement.figure = dataclasses.replace(placement.figure, region=region)
+        self._redraw()
+        self._status("已改取图范围。")
 
     def _edit_figure_text(self) -> None:
         """Let the user change the text inside an imported figure.

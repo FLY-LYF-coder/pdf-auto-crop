@@ -1402,6 +1402,96 @@ def test_the_detection_keeps_a_margin_around_the_figure(tmp_path) -> None:
 
 
 @needs_tk
+def test_the_sheet_can_be_resized_by_its_grips() -> None:
+    """The page itself is an object: its edges and corners are grips."""
+    import tkinter as tk
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        panel.update()
+        panel._redraw()
+        panel.update()
+
+        width = panel.sheet_w
+        height = panel.sheet_h
+        # The grip on the right-hand edge.
+        handles = panel._sheet_handle_positions(
+            panel._origin[0], panel._origin[1],
+            panel.sheet_w * panel._zoom, panel.sheet_h * panel._zoom)
+        hx, hy = handles[3]
+        panel._drag_sheet_handle = 3
+        panel._drag_sheet_size = (width, height)
+        panel._drag_start = (hx, hy)
+
+        class _Event:
+            x = int(hx + 40)
+            y = int(hy)
+
+        panel._drag_sheet(_Event())
+        assert panel.sheet_w > width
+        assert abs(panel.sheet_h - height) < 0.01
+        # The composition keeps the page size.
+        assert abs(panel.composition.width - panel.sheet_w) < 0.01
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
+@needs_tk
+def test_a_figure_can_be_cropped_to_a_new_region(tmp_path) -> None:
+    """The region that becomes the figure can be chosen by hand."""
+    import tkinter as tk
+
+    src, region = _build_source(tmp_path)
+    figure = comp.Figure(path=src, page_index=0, region=region)
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        panel.composition.placements.append(comp.Placement(
+            figure=figure, rect=fitz.Rect(0, 0, 100, 100)))
+        # The crop dialog turns a rectangle on the page into a region.
+        picked = {}
+        dialog = compositor_gui._CropDialog(
+            panel, figure, lambda r: picked.update({"region": r}))
+        dialog.update()
+        dialog._render()
+        doc = fitz.open(str(src))
+        try:
+            visible = comp.source_visible_rect(doc, 0)
+        finally:
+            doc.close()
+        # The region the dialog starts with is the figure's own.
+        assert dialog._figure.region == region
+        # A box drawn on the page comes back as a region of the page.
+        ox, oy = dialog._origin
+        s = dialog._scale
+        top_down = fitz.Rect(20, 30, 120, 130)
+        dialog._new_rect = fitz.Rect(
+            ox + top_down.x0 * s, oy + top_down.y0 * s,
+            ox + top_down.x1 * s, oy + top_down.y1 * s)
+        dialog._apply()
+        # The region is measured from the bottom of the page.
+        assert "region" in picked
+        assert picked["region"].x0 == pytest.approx(20, abs=1)
+        assert picked["region"].y1 == pytest.approx(visible.height - 30, abs=1)
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
+@needs_tk
 def test_a_palette_entry_can_be_removed(tmp_path) -> None:
     """Taking a figure out of the palette takes it off the sheet too."""
     import tkinter as tk

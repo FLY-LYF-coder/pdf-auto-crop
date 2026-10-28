@@ -481,6 +481,9 @@ or **自定义**, where the width and height are given in millimetres.  The
 arrangements (横向/网格) shrink their cells to fit the page, and keep room
 under the bottom row for the labels.
 
+The sheet is an object too: its edges and corners carry grips, and dragging
+one makes the page bigger or smaller.
+
 ### What the output is
 
 The sheet is written with the same vector-preserving mechanism as the
@@ -513,6 +516,12 @@ figure stays vector and the artwork around the text is untouched.
 
 The rewritten line keeps the look of the original as far as possible: a line
 that was in Times is written in Times, one in Helvetica in Helvetica.
+
+**取图范围…** chooses the part of the source that becomes the figure: the
+page is shown, the region that is currently taken is marked out, and
+dragging a new box over the page replaces it.  The figure gets a copy of the
+source with the new region, so the palette keeps the original and other
+placements of it are not changed behind your back.
 
 ### The two windows
 

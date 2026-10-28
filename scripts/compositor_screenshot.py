@@ -918,6 +918,17 @@ def main() -> int:
     check("the labels can be lined up on their own",
           abs(x0 - x1) < 0.01, f"{x0} vs {x1}")
 
+    # -- the sheet can be resized by its grips ------------------------------
+    width_before = win.sheet_w
+    handles = win._sheet_handle_positions(
+        win._origin[0], win._origin[1],
+        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    hx, hy = handles[3]          # the grip on the right-hand edge
+    _drag(win, int(hx), int(hy), int(hx) + 40, int(hy))
+    check("the sheet can be made wider by its grips",
+          win.sheet_w > width_before,
+          f"{width_before:.0f} -> {win.sheet_w:.0f}")
+
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
     n_palette = len(win.palette)
