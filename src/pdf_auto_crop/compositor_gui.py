@@ -95,6 +95,14 @@ MIN_SHEET_PT = 36.0
 #: How finely the page is shown in the crop dialog.
 CROP_PREVIEW_DPI = 96
 
+#: How big the floating preview of a palette entry may get, in logical
+#: pixels.
+PREVIEW_MAX_W = 360
+PREVIEW_MAX_H = 280
+
+#: How far the floating preview keeps from the cursor, in pixels.
+PREVIEW_OFFSET_PX = 16
+
 #: The tools that drop a piece of text on the sheet.
 TOOL_TEXT = "text"
 TOOL_TEXTBOX = "textbox"
@@ -658,6 +666,10 @@ class ComposePanel(tk.Frame):
         self.palette: List[comp.Figure] = []
         self._thumb_cache: Dict[str, Image.Image] = {}
         self._photo_cache: Dict[str, ImageTk.PhotoImage] = {}
+        #: The floating preview of the palette entry under the cursor.
+        self._preview_win: Optional[tk.Toplevel] = None
+        self._preview_photo: Optional[ImageTk.PhotoImage] = None
+        self._preview_index = -1
 
         self._sel_figs: List[int] = []
         self._sel_shapes: List[int] = []
@@ -841,6 +853,9 @@ class ComposePanel(tk.Frame):
                                       exportselection=False)
         self.lst_palette.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.lst_palette.bind("<Double-Button-1>", lambda _e: self._add_selected())
+        # The cursor over an entry shows what the figure looks like.
+        self.lst_palette.bind("<Motion>", self._on_palette_motion)
+        self.lst_palette.bind("<Leave>", lambda _e: self._hide_palette_preview())
         # Delete takes the selected entry out of the palette.
         self.lst_palette.bind("<Delete>", lambda _e: self._remove_from_palette())
         self.lst_palette.bind("<BackSpace>", lambda _e: self._remove_from_palette())
@@ -1530,12 +1545,83 @@ class ComposePanel(tk.Frame):
             self._status("没有文件能读进来。")
 
     def _refresh_palette(self) -> None:
+        self._hide_palette_preview()
         self.lst_palette.delete(0, tk.END)
         for fig in self.palette:
             size = self._figure_size(fig)
             self.lst_palette.insert(
                 tk.END, f"{fig.name}  {size[0]:.0f}×{size[1]:.0f}pt"
             )
+
+    # -- the floating preview of a palette entry ---------------------------
+
+    def _on_palette_motion(self, event: tk.Event) -> None:
+        """Show what the figure under the cursor looks like.
+
+        The name of a file says nothing about the picture in it, so the
+        figure is shown floating over the palette while the cursor rests on
+        its entry.
+        """
+        index = self.lst_palette.nearest(event.y)
+        box = self.lst_palette.bbox(index) if index >= 0 else None
+        if not box or not (box[1] <= event.y <= box[1] + box[3]):
+            # The cursor is between the entries.
+            self._hide_palette_preview()
+            return
+        if index == self._preview_index and self._preview_win is not None:
+            return
+        self._show_palette_preview(index, event)
+
+    def _show_palette_preview(self, index: int, event: tk.Event) -> None:
+        """Put the figure of a palette entry in a little floating window."""
+        if not (0 <= index < len(self.palette)):
+            self._hide_palette_preview()
+            return
+        image = self._figure_image(self.palette[index])
+        if image is None:
+            self._hide_palette_preview()
+            return
+        scale = dpi.scale_factor(self)
+        limit_w = int(PREVIEW_MAX_W * scale)
+        limit_h = int(PREVIEW_MAX_H * scale)
+        if image.width > limit_w or image.height > limit_h:
+            factor = min(limit_w / image.width, limit_h / image.height)
+            image = image.resize(
+                (max(1, int(image.width * factor)),
+                 max(1, int(image.height * factor))),
+                Image.LANCZOS)
+        photo = ImageTk.PhotoImage(image)
+        self._hide_palette_preview()
+        win = tk.Toplevel(self)
+        win.overrideredirect(True)
+        try:
+            win.attributes("-topmost", True)
+        except tk.TclError:  # pragma: no cover -- a window without a manager
+            pass
+        tk.Label(win, image=photo, borderwidth=1, relief="solid").pack()
+        # Beside the cursor, but on the screen.
+        x = event.x_root + PREVIEW_OFFSET_PX
+        y = event.y_root + PREVIEW_OFFSET_PX
+        if x + image.width > win.winfo_screenwidth():
+            x = max(0, event.x_root - image.width - PREVIEW_OFFSET_PX)
+        if y + image.height > win.winfo_screenheight():
+            y = max(0, event.y_root - image.height - PREVIEW_OFFSET_PX)
+        win.geometry("+%d+%d" % (x, y))
+        self._preview_win = win
+        self._preview_photo = photo
+        self._preview_index = index
+
+    def _hide_palette_preview(self) -> None:
+        """Take the floating preview away."""
+        win = self._preview_win
+        self._preview_win = None
+        self._preview_photo = None
+        self._preview_index = -1
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:  # pragma: no cover -- already gone
+                pass
 
     def _figure_size(self, fig: comp.Figure) -> Tuple[float, float]:
         try:

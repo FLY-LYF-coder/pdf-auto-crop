@@ -292,6 +292,8 @@ Open it with the **组合…** button in the main window's toolbar.
    from the list.  **删除选中** takes an entry back out of the palette —
    and the figure it had on the sheet goes with it, because it is the same
    picture.  **清空素材** empties the palette altogether.
+   The name of a file says nothing about the picture in it, so **resting the
+   cursor on an entry shows the figure**, floating over the palette.
 3. **Drag** a figure to move it, drag an orange corner handle to resize it.
 4. **Type a label** in the properties panel — `(a)`, `(b)`, … — or let
    **自动编号** number them in order.  The label's font, size and colour are

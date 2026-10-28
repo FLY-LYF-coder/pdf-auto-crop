@@ -211,6 +211,29 @@ def main() -> int:
     check("palette lists them",
           win.lst_palette.size() == 3, str(win.lst_palette.size()))
 
+    # -- hovering over a palette entry shows the figure -------------------
+    # The name of a file says nothing about the picture in it.
+    box = win.lst_palette.bbox(0)
+    hover_y = box[1] + box[3] // 2
+    win.lst_palette.event_generate("<Motion>", x=10, y=hover_y)
+    win.update()
+    preview = win._preview_win
+    check("hovering over a palette entry shows a preview",
+          preview is not None and win._preview_index == 0,
+          str(win._preview_index))
+    if preview is not None:
+        shown = preview.winfo_width(), preview.winfo_height()
+        check("the preview shows the picture",
+              shown[0] > 10 and shown[1] > 10, str(shown))
+        preview.destroy()
+        win._preview_win = None
+        win._preview_photo = None
+        win._preview_index = -1
+    win.lst_palette.event_generate("<Leave>", x=10, y=hover_y)
+    win.update()
+    check("the preview goes when the cursor leaves",
+          win._preview_win is None, str(win._preview_win))
+
     # -- place them -----------------------------------------------------
     for i in range(3):
         win.lst_palette.selection_clear(0, "end")
