@@ -502,20 +502,34 @@ class _CropDialog(tk.Toplevel):
             scale = 1.0
         self._scale = scale
         self._img_size = (img.width, img.height)
+        self._visible = visible
         self._photo = ImageTk.PhotoImage(img)
         self._origin = ((cw - img.width * scale) / 2, (ch - img.height * scale) / 2)
         self.canvas.create_image(self._origin[0], self._origin[1],
                                 image=self._photo, anchor=tk.NW)
-        # The region, in the page's own coordinates.
-        region = self._figure.region
-        box = self._page_box_to_canvas(region, visible)
-        self.canvas.create_rectangle(
-            box.x0, box.y0, box.x1, box.y1, outline="#ff7f0e", width=2)
-        if self._new_rect is not None:
+        self._draw_boxes()
+
+    def _draw_boxes(self) -> None:
+        """The region that is taken, and the box being dragged.
+
+        Only these are redrawn while the mouse moves: the page itself is
+        drawn once, because rendering it again on every pixel of a drag
+        makes the box lag behind the cursor.
+        """
+        self.canvas.delete("cropbox")
+        if self._new_rect is None:
+            # The region as it stands.
+            box = self._page_box_to_canvas(self._figure.region, self._visible)
+            self.canvas.create_rectangle(
+                box.x0, box.y0, box.x1, box.y1, outline="#ff7f0e", width=2,
+                tags=("cropbox",))
+        else:
+            # The new box takes the old one's place, so there is only ever
+            # one frame to look at.
             self.canvas.create_rectangle(
                 self._new_rect.x0, self._new_rect.y0,
                 self._new_rect.x1, self._new_rect.y1,
-                outline="#4dabf7", width=2, dash=(4, 2))
+                outline="#4dabf7", width=2, dash=(4, 2), tags=("cropbox",))
 
     def _page_box_to_canvas(self, rect: fitz.Rect, visible: fitz.Rect) -> fitz.Rect:
         """A rectangle on the page, in canvas pixels."""
@@ -539,7 +553,8 @@ class _CropDialog(tk.Toplevel):
         self._new_rect = fitz.Rect(
             min(x0, event.x), min(y0, event.y),
             max(x0, event.x), max(y0, event.y))
-        self._render()
+        # Only the frames are redrawn; the page is drawn once.
+        self._draw_boxes()
 
     def _on_release(self, event: tk.Event) -> None:
         self._drag_from = None

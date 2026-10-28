@@ -1492,6 +1492,53 @@ def test_a_figure_can_be_cropped_to_a_new_region(tmp_path) -> None:
 
 
 @needs_tk
+def test_the_crop_dialog_draws_one_box_and_one_page(tmp_path) -> None:
+    """The old frame must go when a new one is dragged.
+
+    And the page must not be rendered again on every pixel of the drag:
+    that made the box lag behind the cursor, which looked as if the drag
+    did nothing at all.
+    """
+    import tkinter as tk
+
+    src, region = _build_source(tmp_path)
+    figure = comp.Figure(path=src, page_index=0, region=region)
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:  # pragma: no cover -- headless box
+        pytest.skip("no display")
+    panel = None
+    try:
+        panel = compositor_gui.ComposePanel(root)
+        dialog = compositor_gui._CropDialog(panel, figure, lambda r: None)
+        dialog.update()
+        dialog._render()
+        # Before the drag: the region that is taken.
+        assert len(dialog.canvas.find_withtag("cropbox")) == 1
+
+        renders = []
+        original = dialog._render
+
+        def counting_render():
+            renders.append(1)
+            original()
+
+        dialog._render = counting_render
+        dialog._on_press(type("E", (), {"x": 40, "y": 40})())
+        dialog._on_drag(type("E", (), {"x": 90, "y": 100})())
+        # The page was not rendered again -- only the frames.
+        assert not renders
+        # And the new frame replaced the old one.
+        assert len(dialog.canvas.find_withtag("cropbox")) == 1
+        dialog.destroy()
+    finally:
+        if panel is not None:
+            panel.destroy()
+        root.destroy()
+
+
+@needs_tk
 def test_a_palette_entry_can_be_removed(tmp_path) -> None:
     """Taking a figure out of the palette takes it off the sheet too."""
     import tkinter as tk
