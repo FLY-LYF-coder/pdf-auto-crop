@@ -483,12 +483,21 @@ anywhere in the composition.
 | − / + in the footer | Zoom in or out |
 | 适应窗口 in the footer | Back to the view that fits the sheet |
 
+A click is not a drag: the cursor has to travel a few pixels before anything
+moves, so picking a figure to select it never nudges it out of a layout you
+have just arranged.
+
 ### The page
 
 **纸张** picks the page: A4 横向, A4 纵向, 适应内容 (as large as the content)
 or **自定义**, where the width and height are given in millimetres.  The
 arrangements (横向/网格) shrink their cells to fit the page, and keep room
 under the bottom row for the labels.
+
+**适应内容** takes the size of the content *and brings the content with it*:
+the figures move to the margin of the new page, because a page that is
+resized around content that stays where it was would leave half of it
+outside the sheet.
 
 The sheet is an object too: its edges and corners carry grips, and dragging
 one makes the page bigger or smaller.

@@ -31,6 +31,7 @@ except AttributeError:  # pragma: no cover
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 import pymupdf as fitz  # noqa: E402
+import tkinter as tk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
 from PIL import ImageGrab  # noqa: E402
 
@@ -270,6 +271,13 @@ def main() -> int:
     # -- keyboard nudge --------------------------------------------------
     win._selected = 1
     win.canvas.focus_set()
+    # The key event goes to whatever has the focus, and a screenshot in
+    # between can take it away from the canvas -- so the focus is forced
+    # onto the canvas itself.
+    try:
+        win.canvas.focus_force()
+    except tk.TclError:
+        pass
     before_y = win.composition.placements[1].rect.y0
     win.canvas.event_generate("<Up>", when="now")
     win.update()
@@ -964,6 +972,51 @@ def main() -> int:
     check("the sheet can be made wider by its grips",
           win.sheet_w > width_before,
           f"{width_before:.0f} -> {win.sheet_w:.0f}")
+
+    # -- a click is not a drag ---------------------------------------------
+    # A hand does not hold still: a click comes with a pixel or two of
+    # travel, and at the sheet's zoom that is enough to nudge a figure out
+    # of the layout the user has just arranged.
+    win._selected = 0
+    win._sync_properties()
+    placement = win.composition.placements[0]
+    before = fitz.Rect(placement.rect)
+    cx, cy = win._to_canvas((before.x0 + before.x1) / 2,
+                            (before.y0 + before.y1) / 2)
+    canvas = win.canvas
+    canvas.event_generate("<Button-1>", x=int(cx), y=int(cy))
+    win.update()
+    canvas.event_generate("<B1-Motion>", x=int(cx) + 1, y=int(cy))
+    win.update()
+    canvas.event_generate("<ButtonRelease-1>", x=int(cx) + 1, y=int(cy))
+    win.update()
+    check("a click does not move the figure",
+          fitz.Rect(placement.rect) == before,
+          f"{tuple(round(v, 2) for v in before)} -> "
+          f"{tuple(round(v, 2) for v in placement.rect)}")
+
+    # -- the sheet takes the size of the content, and the content comes with
+    # it: left where it was, it would end up outside the page, and the first
+    # click on a figure would pull it back in.
+    win.var_sheet.set("适应内容")
+    win._on_sheet_changed()
+    win.update()
+    bounds = win.composition.content_bounds()
+    margin = win.composition.margin_pt
+    check("the sheet takes the size of the content",
+          bounds is not None
+          and abs(win.sheet_w - bounds.width - 2 * margin) < 1.0
+          and abs(win.sheet_h - bounds.height - 2 * margin) < 1.0,
+          f"{win.sheet_w:.1f}x{win.sheet_h:.1f}")
+    check("the content comes with the sheet",
+          all(0 <= p.rect.x0 and p.rect.x1 <= win.sheet_w + 1
+              and 0 <= p.rect.y0 and p.rect.y1 <= win.sheet_h + 1
+              for p in win.composition.placements),
+          str([tuple(round(v, 1) for v in p.rect)
+               for p in win.composition.placements]))
+    win.var_sheet.set("A4 横向")
+    win._on_sheet_changed()
+    win.update()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.

@@ -25,6 +25,7 @@ except AttributeError:  # pragma: no cover
     pass
 
 import pymupdf as fitz  # noqa: E402
+import tkinter as tk  # noqa: E402
 from PIL import ImageGrab  # noqa: E402
 
 from pdf_auto_crop import gui, gui_edit  # noqa: E402
@@ -241,6 +242,13 @@ def main() -> int:
     app._refresh_boxes()
     base = app._boxes[0]
     app.canvas.focus_set()
+    # The key event goes to whatever has the focus, and a screenshot in
+    # between can take it away from the canvas -- so the focus is forced
+    # onto the canvas itself.
+    try:
+        app.canvas.focus_force()
+    except tk.TclError:
+        pass
     app.canvas.event_generate("<Right>")
     app.update()
     nudged = app._boxes[0]

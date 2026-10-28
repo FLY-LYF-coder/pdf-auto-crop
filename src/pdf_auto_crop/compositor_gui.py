@@ -84,6 +84,11 @@ SHAPE_HIT_PX = 6.0
 #: How big the grips on the sheet's edges are, in pixels.
 SHEET_HANDLE_PX = 4.0
 
+#: How far the cursor has to travel before a press counts as a drag, in
+#: pixels.  A click comes with a pixel or two of travel, and at the sheet's
+#: zoom that is enough to nudge a figure out of the layout.
+CLICK_SLOP_PX = 3.0
+
 #: The smallest the sheet may be dragged to, in points.
 MIN_SHEET_PT = 36.0
 
@@ -698,6 +703,8 @@ class ComposePanel(tk.Frame):
         self._build_toolbar()
         self._build_body()
         self._build_footer()
+        # The margin shown has to be the margin the model uses: a variable
+        # that was set before its trace was connected never fires it.
         self._redraw()
 
     # -- selection ---------------------------------------------------------
@@ -1642,11 +1649,33 @@ class ComposePanel(tk.Frame):
         else:
             bounds = self.composition.content_bounds()
             if bounds is not None:
-                self.sheet_w = max(bounds.width, 10.0)
-                self.sheet_h = max(bounds.height, 10.0)
+                # The sheet takes the size of the content, and the content
+                # comes with it: left where it was, it would end up outside
+                # the page -- and the first click on a figure would then pull
+                # it back in, which looks like the figure jumping about.
+                self.sheet_w, self.sheet_h = self.composition.fitted_size()
+                margin = self.composition.margin_pt
+                self._move_content(-bounds.x0 + margin, -bounds.y0 + margin)
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
         self._redraw()
+
+    def _move_content(self, dx: float, dy: float) -> None:
+        """Move everything on the sheet by an offset.
+
+        The labels are placed relative to their figure, so they travel with
+        it and need no adjusting of their own.
+        """
+        for placement in self.composition.placements:
+            rect = placement.rect
+            placement.rect = fitz.Rect(rect.x0 + dx, rect.y0 + dy,
+                                       rect.x1 + dx, rect.y1 + dy)
+        for shape in self.composition.shapes:
+            shape.start = fitz.Point(shape.start.x + dx, shape.start.y + dy)
+            shape.end = fitz.Point(shape.end.x + dx, shape.end.y + dy)
+        for item in self.composition.texts:
+            item.position = fitz.Point(item.position.x + dx,
+                                       item.position.y + dy)
 
     def _on_margin_changed(self) -> None:
         try:
@@ -2395,6 +2424,26 @@ class ComposePanel(tk.Frame):
         self.composition.height = self.sheet_h
         self._redraw()
 
+    def _drag_offset(self, event: tk.Event) -> Optional[Tuple[float, float]]:
+        """How far the object has been dragged, in the sheet's own units.
+
+        The first few pixels are the wobble of the hand: a click comes with
+        a pixel or two of travel, and at the sheet's zoom that is a visible
+        nudge -- enough to break a layout the user has just arranged.  So
+        nothing moves until the cursor has really travelled; a drag then
+        goes the whole way, exactly as the cursor does.
+        """
+        if self._drag_start is None:
+            return None
+        dx_px = event.x - self._drag_start[0]
+        dy_px = event.y - self._drag_start[1]
+        if (abs(dx_px) < CLICK_SLOP_PX
+                and abs(dy_px) < CLICK_SLOP_PX):
+            return None
+        ux, uy = self._to_user(event.x, event.y)
+        sx, sy = self._to_user(*self._drag_start)
+        return ux - sx, uy - sy
+
     def _on_drag(self, event: tk.Event) -> None:
         if self._drag_mode is None:
             return
@@ -2409,9 +2458,10 @@ class ComposePanel(tk.Frame):
                 self._redraw()
             return
         if self._drag_mode == "shape-body":
-            ux, uy = self._to_user(event.x, event.y)
-            sx, sy = self._to_user(*self._drag_start)
-            dx, dy = ux - sx, uy - sy
+            offset = self._drag_offset(event)
+            if offset is None:
+                return
+            dx, dy = offset
             for i, base in self._drag_shapes.items():
                 self.composition.shapes[i] = dataclasses.replace(
                     base,
@@ -2421,9 +2471,10 @@ class ComposePanel(tk.Frame):
             self._redraw()
             return
         if self._drag_mode == "text-body":
-            ux, uy = self._to_user(event.x, event.y)
-            sx, sy = self._to_user(*self._drag_start)
-            dx, dy = ux - sx, uy - sy
+            offset = self._drag_offset(event)
+            if offset is None:
+                return
+            dx, dy = offset
             for i, base in self._drag_texts.items():
                 self.composition.texts[i] = dataclasses.replace(
                     base,
@@ -2438,6 +2489,8 @@ class ComposePanel(tk.Frame):
             i = self._selected_label
             if i is None:
                 return
+            if self._drag_offset(event) is None:
+                return
             ux, uy = self._to_user(event.x, event.y)
             anchor = fitz.Point(ux - self._drag_label_grab[0],
                                 uy - self._drag_label_grab[1])
@@ -2448,9 +2501,11 @@ class ComposePanel(tk.Frame):
         if not self._drag_rects:
             return
         if self._drag_mode == "body":
-            ux, uy = self._to_user(event.x, event.y)
-            sx, sy = self._to_user(*self._drag_start)
-            dx, dy = ux - sx, uy - sy
+            offset = self._drag_offset(event)
+            if offset is None:
+                # Still a press: nothing moves yet.
+                return
+            dx, dy = offset
             # The figure moves by the *total* offset from where the press
             # happened -- adding the offset to the current rectangle would
             # make every motion event add to the last one.
