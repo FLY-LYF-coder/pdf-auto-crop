@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
 
@@ -228,6 +228,105 @@ def rewrite_labels(doc: fitz.Document) -> Tuple[int, List[str], Dict[str, str]]:
     return count, problems, written
 
 
+@dataclass
+class InvisibleLabel:
+    """A label that was written but cannot be seen.
+
+    The text is in the file, but every character is .notdef -- the font that
+    was asked to write it could not carry it.  The characters themselves are
+    lost with the glyphs, so the text has to be given again.
+    """
+
+    #: The start of the baseline, in the page's top-down frame.
+    origin: fitz.Point
+    size: float
+    color: Tuple[float, float, float]
+    #: The content stream it lives in.
+    stream: int
+    #: Its place in the order the labels were written.
+    index: int
+    #: The page it is on.
+    page_index: int = 0
+
+
+def find_invisible_labels(doc: fitz.Document) -> List[InvisibleLabel]:
+    """The labels that came out empty."""
+    out: List[InvisibleLabel] = []
+    index = 0
+    for pno, page in enumerate(doc):
+        for xref in page.get_contents():
+            try:
+                data = doc.xref_stream(xref)
+            except Exception:  # noqa: BLE001 -- no stream, no label
+                continue
+            text = data.decode("latin-1", "replace")
+            if "TJ" not in text or "Tf" not in text:
+                continue
+            codes = re.findall(r"<([0-9a-fA-F]+)>", text)
+            if not codes or not any(set(c) == {"0"} for c in codes):
+                # .notdef means the font could not write the character.
+                continue
+            matrix = _PLAIN_MATRIX.search(text.encode("latin-1"))
+            font = re.search(r"/(\S+)\s+([\d.]+)\s+Tf", text)
+            if not (matrix and font):
+                continue
+            colour = re.search(r"([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg", text)
+            rgb: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+            if colour:
+                rgb = (float(colour.group(1)), float(colour.group(2)),
+                       float(colour.group(3)))
+            origin = _to_page_space(page, float(matrix.group(1)),
+                                    float(matrix.group(2)))
+            out.append(InvisibleLabel(
+                origin=origin, size=float(font.group(2)), color=rgb,
+                stream=xref, index=index, page_index=pno))
+            index += 1
+    return out
+
+
+def repair_invisible_labels(doc: fitz.Document,
+                            texts: Optional[Sequence[str]] = None
+                            ) -> Tuple[int, List[str]]:
+    """Write the empty labels again, in a face that can carry them.
+
+    Args:
+        doc: The document to repair.
+        texts: The text of each label, in the order they were written.  The
+            characters are lost with the glyphs, so they have to be given
+            again; by default the labels are numbered (a), (b), ...
+
+    Returns:
+        The number of labels that were written again, and the ones that could
+        not be, with the reason.
+    """
+    labels = find_invisible_labels(doc)
+    if not labels:
+        return 0, []
+    written = 0
+    problems: List[str] = []
+    for label in labels:
+        text = ""
+        if texts is not None and label.index < len(texts):
+            text = texts[label.index]
+        else:
+            letter = chr(ord("a") + label.index % 26)
+            text = "(%s)" % letter
+        path = fonts.cjk_file()
+        name = ""
+        if path and fonts.can_write(path, text):
+            name = re.sub(r"[^A-Za-z0-9]", "", fitz.Font(fontfile=path).name)
+        else:
+            problems.append("no face can write %r" % text)
+            continue
+        # The old, empty label goes; the new one takes its place.
+        doc.update_stream(label.stream, b"")
+        doc[label.page_index].insert_text(
+            label.origin, text, fontsize=label.size,
+            fontname=name, fontfile=path, color=label.color)
+        written += 1
+    return written, problems
+
+
 def migrate_file(src: Path, dst: Path) -> Tuple[int, List[str]]:
     """Write a copy of ``src`` whose labels carry the real font.
 
@@ -273,9 +372,12 @@ def migrate_tree(root: Path, suffix: str = "_tnr"
 
 
 __all__ = [
+    "InvisibleLabel",
     "Label",
+    "find_invisible_labels",
     "find_labels",
     "migrate_file",
     "migrate_tree",
+    "repair_invisible_labels",
     "rewrite_labels",
 ]

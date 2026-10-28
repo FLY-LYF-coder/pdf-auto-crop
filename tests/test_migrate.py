@@ -276,3 +276,65 @@ def test_a_file_without_old_labels_is_not_written(tmp_path) -> None:
     count, problems = migrate.migrate_file(path, dst)
     assert count == 0
     assert not dst.exists()
+
+
+def _sheet_with_an_empty_label(path: Path, label: str = "（一）") -> Path:
+    """A sheet whose label came out empty: the font could not write it."""
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=300)
+    page.insert_text((60, 90), label, fontsize=11, fontname="empty",
+                     fontfile=r"C:\Windows\Fonts\timesbd.ttf")
+    doc.save(str(path))
+    doc.close()
+    return path
+
+
+def test_an_empty_label_is_found(tmp_path) -> None:
+    path = _sheet_with_an_empty_label(tmp_path / "empty.pdf")
+    doc = fitz.open(str(path))
+    try:
+        labels = migrate.find_invisible_labels(doc)
+    finally:
+        doc.close()
+    assert len(labels) == 1
+    assert labels[0].size == pytest.approx(11.0)
+    assert labels[0].origin.x == pytest.approx(60.0, abs=1.0)
+
+
+def test_an_empty_label_is_put_back(tmp_path) -> None:
+    """The label comes back, and it can be seen."""
+    path = _sheet_with_an_empty_label(tmp_path / "empty.pdf")
+    dst = tmp_path / "empty_fixed.pdf"
+    doc = fitz.open(str(path))
+    try:
+        count, problems = migrate.repair_invisible_labels(doc)
+        assert count == 1
+        assert problems == []
+        doc.save(str(dst), garbage=4, deflate=True)
+    finally:
+        doc.close()
+
+    doc = fitz.open(str(dst))
+    try:
+        text = doc[0].get_text()
+        pix = doc[0].get_pixmap(dpi=200, clip=fitz.Rect(50, 60, 160, 100))
+    finally:
+        doc.close()
+    assert "(a)" in text, repr(text)
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    grey = image.convert("L")
+    ink = ImageChops.difference(grey, Image.new("L", grey.size, 255))
+    assert sum(1 for p in ink.getdata() if p > 40) > 20
+
+
+def test_the_text_of_the_empty_label_can_be_given(tmp_path) -> None:
+    """The characters are lost with the glyphs, so they are given again."""
+    path = _sheet_with_an_empty_label(tmp_path / "empty.pdf")
+    doc = fitz.open(str(path))
+    try:
+        count, _ = migrate.repair_invisible_labels(doc, ["(a)"])
+        assert count == 1
+        text = doc[0].get_text()
+    finally:
+        doc.close()
+    assert "(a)" in text, repr(text)
