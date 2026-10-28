@@ -512,6 +512,23 @@ The exported page is either the sheet you arranged (A4 landscape or
 portrait) or, with **适应内容**, exactly as large as the content — which is
 what you want for a figure going into a manuscript.
 
+### Giving an old export the new face
+
+The labels of an export made **before** the font fix carry the PDF base-14
+faces: the reader draws those with whatever Times it has, which is not the
+Times New Roman the canvas showed.  `scripts/migrate_label_font.py` writes
+those labels again in the face the canvas draws with — the very file,
+embedded — and leaves the original alone:
+
+```bash
+python scripts/migrate_label_font.py path/to/figures
+```
+
+The labels are the page's own text; the figures are Form XObjects, and their
+text lives inside them.  Each label of the old build sits in a content
+stream of its own, so the safest way to take it away is to empty that stream:
+the artwork is not touched, and a cropped page keeps its crop.
+
 ### Editing the text inside a figure
 
 An imported figure is an embedded PDF page, so its text comes with it: the

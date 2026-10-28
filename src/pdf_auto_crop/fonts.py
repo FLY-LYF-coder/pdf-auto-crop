@@ -163,6 +163,46 @@ def cjk_file() -> Optional[str]:
     return face_file(CJK_FACE)
 
 
+#: Which file holds each of the built-in faces.
+BASE14_TIMES: Dict[str, str] = {
+    "Times-Roman": "times.ttf",
+    "Times-Bold": "timesbd.ttf",
+    "Times-Italic": "timesi.ttf",
+    "Times-BoldItalic": "timesbi.ttf",
+}
+
+#: The file that holds each of the built-in faces.
+BASE14_FILES: Dict[str, str] = {
+    "Times-Roman": "times.ttf",
+    "Times-Bold": "timesbd.ttf",
+    "Times-Italic": "timesi.ttf",
+    "Times-BoldItalic": "timesbi.ttf",
+    "Helvetica": "arial.ttf",
+    "Helvetica-Bold": "arialbd.ttf",
+    "Helvetica-Oblique": "ariali.ttf",
+    "Helvetica-BoldOblique": "arialbi.ttf",
+    "Courier": "cour.ttf",
+    "Courier-Bold": "courbd.ttf",
+    "Courier-Oblique": "couri.ttf",
+    "Courier-BoldOblique": "courbi.ttf",
+    "Symbol": "symbol.ttf",
+    "ZapfDingbats": "webdings.ttf",
+}
+
+
+def file_for_base14(basefont: str) -> Optional[str]:
+    """The file that holds a built-in face, or ``None``.
+
+    The built-in faces have no file of their own -- they are the ones the
+    PDF reader draws with whatever Times it has.  This maps them onto the
+    Windows file that holds the same face.
+    """
+    file_name = BASE14_FILES.get(basefont or "")
+    if not file_name:
+        return None
+    return _find(file_name)
+
+
 def has_glyphs(path: str, text: str) -> bool:
     """Whether a font file can render every character of ``text``."""
     if not path:
@@ -177,11 +217,14 @@ def has_glyphs(path: str, text: str) -> bool:
 
 
 __all__ = [
+    "BASE14_FILES",
+    "BASE14_TIMES",
     "CJK_FACE",
     "FACE_OF",
     "FONT_FILES",
     "cjk_file",
     "face_file",
+    "file_for_base14",
     "font_dirs",
     "has_glyphs",
     "style_of",
