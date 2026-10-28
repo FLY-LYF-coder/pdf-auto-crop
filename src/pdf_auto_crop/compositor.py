@@ -1966,17 +1966,20 @@ def export_composition(
         dx = dy = 0.0
     w, h = max(w, 1.0), max(h, 1.0)
 
-    _write_composition(comp, out_path, w, h, dx, dy)
+    _write_composition(comp, out_path, w, h, dx, dy, subset=True)
     if not _labels_survived(out_path, comp):
-        # A label that cannot be written is an invisible label.  The built-in
-        # faces always write, so the sheet is written again with them.
+        # The fonts were mangled on the way in -- the subsetting can lose a
+        # label -- so the sheet is written again with the fonts whole.
+        _write_composition(comp, out_path, w, h, dx, dy, subset=False)
+    if not _labels_survived(out_path, comp):
+        # The face itself cannot write the text: the built-in faces can.
         with builtin_faces():
-            _write_composition(comp, out_path, w, h, dx, dy)
+            _write_composition(comp, out_path, w, h, dx, dy, subset=False)
     return out_path
 
 
 def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
-                       dx: float, dy: float) -> Path:
+                       dx: float, dy: float, subset: bool = True) -> Path:
     """Write the sheet itself."""
     out = fitz.open()
     try:
@@ -2049,7 +2052,8 @@ def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
                 color=placement.label_color,
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        subset_fonts(out)
+        if subset:
+            subset_fonts(out)
         repair_spaces(out, written)
         out.save(str(out_path), garbage=4, deflate=True)
     finally:

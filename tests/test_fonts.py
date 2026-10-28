@@ -298,9 +298,9 @@ def test_the_export_checks_that_the_labels_survived(tmp_path,
     c = comp.Composition(width=400, height=300)
     c.placements.append(comp.Placement(
         comp.Figure(path=src, page_index=0, region=region),
-        fitz.Rect(40, 120, 340, 280), label="（a）", label_size=12.0))
+        fitz.Rect(40, 120, 340, 280), label="(a)", label_size=12.0))
 
-    path = fonts.face_file("Times-Bold")
+    path = fonts.face_file("Times-Roman")
     if path is None:
         pytest.skip("this machine has no Times New Roman file")
     real = comp.resolve_label_font
@@ -321,7 +321,46 @@ def test_the_export_checks_that_the_labels_survived(tmp_path,
         text = doc[0].get_text()
     finally:
         doc.close()
-    assert "（a）" in text, repr(text)
+    assert "(a)" in text, repr(text)
+
+
+def test_the_sheet_is_written_again_when_the_fonts_are_mangled(tmp_path,
+                                                               monkeypatch) -> None:
+    """The subsetting can lose a label; the export has to notice.
+
+    The face that carries the label is kept: the fonts are simply written
+    whole, which costs a few kilobytes and keeps the letters the user
+    arranged.
+    """
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=300)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(40, 120, 340, 280), label="(a)", label_size=12.0))
+
+    def mangle(doc):
+        """Stand in for a subsetting that loses the label."""
+        for page in doc:
+            for xref in page.get_contents():
+                data = doc.xref_stream(xref)
+                if b"TJ" not in data or b"times" not in data:
+                    continue
+                doc.update_stream(xref, data.replace(b"<000b0044000c>",
+                                                     b"<000000000000>"))
+
+    monkeypatch.setattr(comp, "subset_fonts", mangle)
+
+    out = comp.export_composition(c, tmp_path / "out.pdf", fit_to_content=False,
+                                  page_size=(400, 300))
+    doc = fitz.open(str(out))
+    try:
+        text = doc[0].get_text()
+        names = [f[3] for f in doc[0].get_fonts(full=True)]
+    finally:
+        doc.close()
+    assert "(a)" in text, repr(text)
+    # The face that carries the label is still the one the canvas shows.
+    assert any("Times New Roman" in name for name in names), names
 
 
 def test_a_font_without_the_glyphs_is_not_used(tmp_path) -> None:
