@@ -213,6 +213,50 @@ def tk_font(label_font: str, size_px: int, style: str = "normal"
     return (family, -max(1, int(size_px)), style)
 
 
+#: How far each line of text drops below its baseline, in pixels.
+_DESCENTS: Dict[Tuple[str, int], float] = {}
+
+
+def label_style(bold: bool, italic: bool) -> str:
+    """The Tk style a label's bold and italic switches amount to."""
+    if bold and italic:
+        return "bold italic"
+    if bold:
+        return "bold"
+    if italic:
+        return "italic"
+    return "normal"
+
+
+def font_descent_px(font) -> float:
+    """How far a line of text drops below its baseline, in pixels.
+
+    The exporter writes the text **on** its baseline, so the preview has to
+    put the baseline on the anchor as well.  Tk's "sw" anchor is the bottom of
+    the line box, which sits a descender lower.
+
+    ``font`` is a Tk font tuple, or the dictionary :meth:`Font.actual` returns.
+    """
+    if isinstance(font, dict):
+        family = font.get("family", "")
+        size = int(font.get("size", 0))
+    else:
+        family, size = font[0], int(font[1])
+    key = (family, size)
+    if key in _DESCENTS:
+        return _DESCENTS[key]
+    descent = 0.0
+    try:
+        import tkinter.font as tkfont
+
+        descent = float(
+            tkfont.Font(family=family, size=size).metrics("descent"))
+    except Exception:  # noqa: BLE001 -- no display, no font, no descent
+        descent = 0.0
+    _DESCENTS[key] = descent
+    return descent
+
+
 def resolve_pick(shape_hit: Optional[int], figure_hit: Optional[int],
                  part: Optional[str]) -> Tuple[Optional[int], Optional[int],
                                               Optional[str]]:
@@ -1828,19 +1872,50 @@ class ComposePanel(tk.Frame):
         anchor = placement.label_anchor()
         x, y = self._to_canvas(anchor.x, anchor.y)
         r, g, b = placement.label_color
-        style = "normal"
-        if placement.label_bold and placement.label_italic:
-            style = "bold italic"
-        elif placement.label_bold:
-            style = "bold"
-        elif placement.label_italic:
-            style = "italic"
+        style = label_style(placement.label_bold, placement.label_italic)
+        size_px = placement.label_size * self._zoom
+        # A font file the user picked: Tk cannot load a file, so the text is
+        # drawn with Pillow -- from the very file the export embeds.
+        if placement.label_fontfile and Path(placement.label_fontfile).is_file():
+            self._draw_text_from_file(
+                f"label{idx}", placement.label, placement.label_fontfile,
+                size_px, "#%02x%02x%02x" % (int(r * 255), int(g * 255),
+                                            int(b * 255)),
+                x, y, ("fig", str(idx)))
+            return
+        font = tk_font(family, size_px, style)
         self.canvas.create_text(
-            x, y, text=placement.label, fill="#%02x%02x%02x" % (
-                int(r * 255), int(g * 255), int(b * 255)),
-            font=tk_font(family, placement.label_size * self._zoom, style),
+            x, y + font_descent_px(font), text=placement.label,
+            fill="#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255)),
+            font=font,
             anchor=tk.SW, tags=("fig", str(idx)),
         )
+
+    def _draw_text_from_file(self, key: str, text: str, fontfile: str,
+                             size_px: float, colour: str, x: float, y: float,
+                             tags: Tuple[str, ...]) -> bool:
+        """Draw a piece of text with a font file, the way the export writes it.
+
+        The baseline goes on ``(x, y)``, exactly where the exporter puts it.
+        """
+        from PIL import ImageDraw, ImageFont
+
+        try:
+            font = ImageFont.truetype(fontfile, max(1, int(round(size_px))))
+        except OSError:
+            return False
+        ascent, descent = font.getmetrics()
+        width = max(1, int(math.ceil(font.getlength(text))))
+        pad = 2
+        img = Image.new("RGBA", (width + 2 * pad, ascent + descent + 2 * pad),
+                        (255, 255, 255, 0))
+        ImageDraw.Draw(img).text((pad, pad + ascent), text, font=font,
+                                 fill=colour, anchor="ls")
+        photo = ImageTk.PhotoImage(img)
+        self._photo_cache[key] = photo
+        self.canvas.create_image(x - pad, y - (pad + ascent), image=photo,
+                                 anchor=tk.NW, tags=tags)
+        return True
 
     def _draw_text(self, idx: int, item: comp.TextItem) -> None:
         """Draw a piece of free-standing text on the canvas."""
@@ -1862,23 +1937,25 @@ class ComposePanel(tk.Frame):
             return
         r, g, b = item.color
         family = item.font or comp.LABEL_FONT_DEFAULT
-        style = "normal"
-        if item.bold and item.italic:
-            style = "bold italic"
-        elif item.bold:
-            style = "bold"
-        elif item.italic:
-            style = "italic"
+        style = label_style(item.bold, item.italic)
         if item.box:
             self.canvas.create_rectangle(
                 x, y - h, x + w, y, outline="#%02x%02x%02x" % (
                     int(r * 255), int(g * 255), int(b * 255)),
                 width=1, tags=("text", str(idx)))
-        self.canvas.create_text(
-            x, y, text=item.text, fill="#%02x%02x%02x" % (
-                int(r * 255), int(g * 255), int(b * 255)),
-            font=tk_font(family, item.size * self._zoom, style),
-            anchor=tk.SW, tags=("text", str(idx)))
+        colour = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+        size_px = item.size * self._zoom
+        # A font file the user picked: Tk cannot load a file, so the text is
+        # drawn with Pillow -- from the very file the export embeds.
+        if item.fontfile and Path(item.fontfile).is_file():
+            self._draw_text_from_file(f"text{idx}", item.text, item.fontfile,
+                                      size_px, colour, x, y, ("text", str(idx)))
+        else:
+            font = tk_font(family, size_px, style)
+            self.canvas.create_text(
+                x, y + font_descent_px(font), text=item.text, fill=colour,
+                font=font,
+                anchor=tk.SW, tags=("text", str(idx)))
         if selected:
             for hx, hy in ((x, y - h), (x + w, y - h), (x + w, y), (x, y)):
                 self.canvas.create_rectangle(
@@ -2083,10 +2160,25 @@ class ComposePanel(tk.Frame):
         for i in range(len(self.composition.texts) - 1, -1, -1):
             item = self.composition.texts[i]
             r = item.rect()
+            r.y0 -= self._text_descent_pt(item)
             left, top, right, bottom = self._canvas_rect(r)
             if left - 2 <= cx <= right + 2 and top - 2 <= cy <= bottom + 2:
                 return i
         return None
+
+    def _text_descent_pt(self, item: comp.TextItem) -> float:
+        """How far a text drops below its baseline, in points."""
+        family = item.font or comp.LABEL_FONT_DEFAULT
+        font = tk_font(family, item.size * self._zoom,
+                       label_style(item.bold, item.italic))
+        return font_descent_px(font) / max(self._zoom, 1e-6)
+
+    def _label_descent_pt(self, placement: comp.Placement) -> float:
+        """How far a label drops below its baseline, in points."""
+        family = placement.label_font or comp.LABEL_FONT_DEFAULT
+        font = tk_font(family, placement.label_size * self._zoom,
+                       label_style(placement.label_bold, placement.label_italic))
+        return font_descent_px(font) / max(self._zoom, 1e-6)
 
     def _hit_label(self, cx: float, cy: float) -> Optional[int]:
         """Which figure's label the cursor is on.
@@ -2099,6 +2191,9 @@ class ComposePanel(tk.Frame):
             if not placement.label:
                 continue
             r = comp.free_label_rect(placement)
+            # The ink drops below the baseline; the grab area has to hold it,
+            # or a click aimed at the tail of a "g" would miss.
+            r.y0 -= self._label_descent_pt(placement)
             left, top, right, bottom = self._canvas_rect(r)
             if left - 2 <= cx <= right + 2 and top - 2 <= cy <= bottom + 2:
                 return i

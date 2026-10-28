@@ -81,6 +81,7 @@ import pymupdf as fitz
 
 from .config import CropConfig
 from .geometry import mm_to_pt
+from . import fonts
 
 #: Label placement modes.
 LABEL_BELOW = "below"      # centred under the figure -- the journal convention
@@ -257,22 +258,55 @@ def resolve_label_font(text: str, font: str = "", fontfile: str = "",
     """Which font to write a label with.
 
     Returns ``(fontname, fontfile)``.  A font file is embedded in the output;
-    a base-14 name is not.  When the chosen face cannot render the text -- an
-    ASCII face asked for Chinese, say -- the Chinese face is used instead,
-    because a label that shows nothing is worse than a label in another
-    typeface.
+    a base-14 name is not.
+
+    The **file** comes first, and it is the file the canvas draws with.  A
+    built-in "Times-Roman" is drawn by the reader with whatever Times it
+    happens to have, which is not the Times New Roman the canvas showed -- and
+    a paper set in Times New Roman then gets captions in another face.  So the
+    file is embedded, and the reader is bound to show the letters the user
+    arranged.  The built-in face is the fallback, for a machine that has no
+    such file.
+
+    When the chosen face cannot render the text -- an ASCII face asked for
+    Chinese, say -- the Chinese face is used instead, because a label that
+    shows nothing is worse than a label in another typeface.
     """
     if fontfile:
         path = Path(fontfile)
         if path.is_file():
             return _safe_font_name(path.stem), str(path)
-    name = LABEL_FONTS.get(font) or LABEL_FONTS[LABEL_FONT_DEFAULT]
-    name = apply_style(name, bold, italic)
+    key = font or LABEL_FONT_DEFAULT
+    if key not in LABEL_FONTS:
+        # A name nobody knows is the default face, file and all.
+        key = LABEL_FONT_DEFAULT
+    name = apply_style(LABEL_FONTS[key], bold, italic)
+    # The very file the canvas draws with.
+    path = fonts.face_file(key, bold, italic)
+    if path and fonts.has_glyphs(path, text):
+        return _safe_font_name(Path(path).stem), path
     if _font_has_text(name, text):
         return name, ""
+    # Chinese in a Latin face: the face the canvas falls back to.
+    path = fonts.cjk_file()
+    if path and fonts.has_glyphs(path, text):
+        return _safe_font_name(Path(path).stem), path
     if _font_has_text(FONT_CJK, text):
         return FONT_CJK, ""
     return name, ""
+
+
+def font_renders(text: str, fontname: str, fontfile: str = "") -> bool:
+    """Whether the font a label is written with can draw the text.
+
+    Args:
+        text: The text to draw.
+        fontname: The name of the font.
+        fontfile: The file that holds it, if there is one.
+    """
+    if fontfile:
+        return fonts.has_glyphs(fontfile, text)
+    return _font_has_text(fontname, text)
 
 
 def text_width(text: str, fontname: str, fontsize: float,
@@ -288,6 +322,58 @@ def text_width(text: str, fontname: str, fontsize: float,
         return fitz.get_text_length(text, fontname=fontname, fontsize=fontsize)
     except Exception:  # noqa: BLE001
         return len(text) * fontsize * 0.5
+
+
+def subset_fonts(doc: fitz.Document) -> None:
+    """Shrink the embedded fonts to the glyphs the document actually uses.
+
+    An embedded Times New Roman is a third of a megabyte; the dozen glyphs a
+    caption needs are a few kilobytes.  The figures' own fonts live in the
+    PDF they came from and are not touched.
+    """
+    try:
+        doc.subset_fonts()
+    except Exception:  # noqa: BLE001 -- a font that cannot be subset stays whole
+        pass
+
+
+def repair_spaces(doc: fitz.Document, written: Dict[str, str]) -> None:
+    """Put the space back into the ToUnicode map of the fonts we wrote.
+
+    A font file can map the space and the no-break space onto one glyph.  The
+    reverse table can then keep only one of them, and it keeps the no-break
+    space -- so the text comes out of the PDF with U+00A0 where a space was
+    written.  LaTeX refuses that character, and a search for a phrase fails.
+
+    Only the fonts this document wrote are touched: the figures' own fonts
+    keep their own spelling.
+    """
+    for page in doc:
+        for font in page.get_fonts(full=True):
+            # (xref, extension, type, basefont, resource name, encoding, ...)
+            xref = font[0]
+            refname = font[4] if len(font) > 4 else ""
+            text = written.get(refname, "")
+            if " " not in text:
+                continue
+            obj = doc.xref_object(xref)
+            match = re.search(r"/ToUnicode\s+(\d+)\s+0\s+R", obj)
+            if not match:
+                continue
+            stream_xref = int(match.group(1))
+            stream = doc.xref_stream(stream_xref)
+            fixed = re.sub(rb"(<[0-9a-fA-F]{4}>\s*)<00a0>", rb"\g<1><0020>",
+                           stream)
+            if fixed != stream:
+                doc.update_stream(stream_xref, fixed)
+
+
+def _note_font(written: Optional[Dict[str, str]], fontname: str,
+               text: str) -> None:
+    """Remember what was written with which font."""
+    if written is None or not text:
+        return
+    written[fontname] = written.get(fontname, "") + text
 
 
 # ---------------------------------------------------------------------------
@@ -1561,11 +1647,15 @@ def shape_outline(kind: str, rect: fitz.Rect) -> List[fitz.Point]:
     return []
 
 
-def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
+def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
+              written: Optional[Dict[str, str]] = None) -> None:
     """Draw one graphic element on a page.
 
     The shape's points are in user space; the page counts downwards, so they
     are flipped here -- the one place the two conventions meet.
+
+    ``written`` collects the text that was put on the page, by the font it was
+    written with, so that the fonts can be repaired afterwards.
     """
     p0 = fitz.Point(shape.start.x, page_height - shape.start.y)
     p1 = fitz.Point(shape.end.x, page_height - shape.end.y)
@@ -1612,11 +1702,12 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float) -> None:
                                fill_opacity=fill_opacity)
 
     if shape.text:
-        _draw_shape_caption(page, shape, box, page_height)
+        _draw_shape_caption(page, shape, box, page_height, written)
 
 
 def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
-                        page_height: float) -> None:
+                        page_height: float,
+                        written: Optional[Dict[str, str]] = None) -> None:
     """Write a caption in the middle of a shape, as PowerPoint does."""
     fontname, fontfile = resolve_label_font(shape.text, "", "")
     width = text_width(shape.text, fontname, shape.text_size, fontfile)
@@ -1624,6 +1715,7 @@ def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
         (box.x0 + box.x1) / 2 - width / 2,
         (box.y0 + box.y1) / 2 + shape.text_size * 0.35,
     )
+    _note_font(written, fontname, shape.text)
     page.insert_text(baseline, shape.text, fontsize=shape.text_size,
                      fontname=fontname, fontfile=fontfile or None,
                      color=shape.caption_rgb)
@@ -1706,13 +1798,16 @@ def render_text_pdf(item: "TextItem") -> Optional[Path]:
             fontsize=item.size, fontname=fontname,
             fontfile=fontfile or None, color=item.color,
         )
+        subset_fonts(doc)
+        repair_spaces(doc, {fontname: item.text})
         doc.save(str(out_path), garbage=4, deflate=True)
     finally:
         doc.close()
     return out_path if out_path.exists() else None
 
 
-def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
+def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
+                  written: Optional[Dict[str, str]] = None) -> None:
     """Draw one piece of free-standing text on a page.
 
     A formula is drawn from its rendered PDF, so it keeps its mathematics;
@@ -1741,6 +1836,7 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float) -> None:
             return
 
     fontname, fontfile = item.font_info()
+    _note_font(written, fontname, item.text)
     page.insert_text(
         anchor, item.text, fontsize=item.size,
         fontname=fontname, fontfile=fontfile or None,
@@ -1817,6 +1913,8 @@ def export_composition(
     out = fitz.open()
     try:
         page = out.new_page(width=w, height=h)
+        #: What was written, by the font it was written with.
+        written: Dict[str, str] = {}
 
         # 1. the figures
         for placement in comp.placements:
@@ -1848,7 +1946,7 @@ def export_composition(
                 start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
                 end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
             )
-            draw_shape(page, moved, h)
+            draw_shape(page, moved, h, written=written)
 
         # 3. the free-standing text, on top of the graphic elements
         for item in comp.texts:
@@ -1857,7 +1955,7 @@ def export_composition(
                 position=fitz.Point(item.position.x + dx,
                                     item.position.y + dy),
             )
-            draw_text_item(page, moved, h)
+            draw_text_item(page, moved, h, written=written)
 
         # 4. the labels, on top of everything
         for placement in comp.placements:
@@ -1876,12 +1974,15 @@ def export_composition(
                     continue
             # The anchor is in user space; MuPDF wants top-down.
             baseline = fitz.Point(anchor.x, h - anchor.y)
+            _note_font(written, fontname, placement.label)
             page.insert_text(
                 baseline, placement.label, fontsize=placement.label_size,
                 fontname=fontname, fontfile=fontfile or None,
                 color=placement.label_color,
             )
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        subset_fonts(out)
+        repair_spaces(out, written)
         out.save(str(out_path), garbage=4, deflate=True)
     finally:
         out.close()
@@ -1949,6 +2050,7 @@ __all__ = [
     "export_composition",
     "figure_display_size",
     "fit_rect",
+    "font_renders",
     "from_mupdf_rect",
     "label_rect",
     "load_composition",
@@ -1956,6 +2058,7 @@ __all__ = [
     "resolve_label_font",
     "save_composition",
     "source_visible_rect",
+    "subset_fonts",
     "text_width",
     "to_mupdf_rect",
 ]

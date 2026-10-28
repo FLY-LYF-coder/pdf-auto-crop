@@ -385,14 +385,23 @@ journal's typeface while the rest stay in the default.
 | 加粗 / 斜体 | Bold and italic, on top of the face itself |
 | LaTeX 公式 | Write the label as mathematics (see [Free text and formulas](#free-text-and-formulas)) |
 
-The built-in faces are the PDF base-14 fonts, so nothing is embedded and the
-output stays small and free of licensing questions.  A font file you pick is
-embedded, which does grow the file.
+The built-in faces are the ones Windows has — Times New Roman, Arial,
+Courier New, Symbol, SimSun — and the file that holds them is **embedded** in
+the output, as a subset of the glyphs used.  That is what makes the exported
+page show the letters you arranged: a built-in "Times-Roman" is drawn by the
+reader with whatever Times it has, which is a different face from the one on
+the canvas and a different one from the body of a thesis set in Times New
+Roman.  The subset costs a few kilobytes.
+
+A font file you pick is embedded as well, in the same way.
 
 If the chosen face has no glyph for a character — an ASCII face asked to
 write 中文, say — the label falls back to a Chinese face automatically.  A
 missing glyph is worse than a different typeface, so the fallback is silent
 rather than a row of empty boxes.
+
+On a machine that has none of these font files the export falls back to the
+PDF base-14 faces, which every reader has.
 
 **位置** puts the label where you want it:
 
@@ -543,13 +552,10 @@ takes a PDF that is already one figure per page.
 - The output is large: MuPDF keeps the embedded source page's resources, so
   a figure lifted out of a dense, image-heavy paper carries the images with
   it.  Cropping the source page first (this tool's job) keeps the figure
-  small.
+  small.  The label fonts add a few kilobytes: they are embedded as subsets
+  of the glyphs the sheet actually uses.
 - The sheet holds one copy of each figure.  The same figure cannot be placed
   twice — import it twice if you need it twice.
-- A label written with an **embedded** font file comes out of a copy-paste
-  with a non-breaking space instead of a plain one — that is how PyMuPDF maps
-  the space glyph for a subset font.  Searching the PDF for the text still
-  finds it.
 - A **figure** cannot be mirrored: it is an embedded PDF page, and turning
   one inside out would mean rasterising it.  Turning it — rotating it — is
   fine.

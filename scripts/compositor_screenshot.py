@@ -31,6 +31,7 @@ except AttributeError:  # pragma: no cover
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 import pymupdf as fitz  # noqa: E402
+import tkinter.font as tkfont  # noqa: E402
 from PIL import ImageGrab  # noqa: E402
 
 from pdf_auto_crop import compositor as comp  # noqa: E402
@@ -332,6 +333,32 @@ def main() -> int:
     check("the label colour can be changed",
           placement.label_color == pytest.approx((0.8, 0.0, 0.0), abs=0.01),
           str(placement.label_color))
+
+    # The label on the canvas has to sit where the exporter puts it: the
+    # baseline on the anchor.  A label drawn a descender too high is a
+    # label the reader will not find where the user left it.
+    anchor = placement.label_anchor()
+    ax, ay = win._to_canvas(anchor.x, anchor.y)
+    label_item = None
+    for item in win.canvas.find_withtag("fig"):
+        if win.canvas.type(item) != "text":
+            continue
+        if abs(win.canvas.bbox(item)[0] - ax) <= 4:
+            label_item = item
+            break
+    if label_item is None:
+        check("the label is drawn on its anchor", False, "no text item found")
+    else:
+        spec = win.canvas.itemcget(label_item, "font")
+        actual = tkfont.Font(root=win, font=spec).actual()
+        descent = compositor_gui.font_descent_px(actual)
+        baseline = win.canvas.bbox(label_item)[3] - descent
+        check("the label is drawn on its anchor",
+              abs(baseline - ay) <= 1.0,
+              f"baseline {baseline:.1f} vs anchor {ay:.1f}")
+        check("the label is drawn in the face the export carries",
+              actual["family"] == compositor_gui.TK_FONTS["Helvetica-Bold"],
+              f"{actual['family']}")
     _shot(win, "06_label_style.png")
 
     # -- every callback has to take what Tk hands it ------------------------
@@ -796,8 +823,17 @@ def main() -> int:
         spans = [s for b in page.get_text("dict")["blocks"]
                  for line in b.get("lines", []) for s in line["spans"]]
         a_span = [s for s in spans if s["text"] == "(a)"]
+        # The face in the export has to be the face the canvas shows: the
+        # file that holds "Helvetica-Bold" here is the Windows Arial Bold.
+        expected_font = ""
+        from pdf_auto_crop import fonts as font_files
+
+        face_file = font_files.face_file("Helvetica-Bold")
+        if face_file:
+            expected_font = fitz.Font(fontfile=face_file).name
         check("the exported label uses the chosen font",
-              a_span and "Helvetica" in a_span[0]["font"],
+              a_span and (expected_font in a_span[0]["font"]
+                          if expected_font else "Helvetica" in a_span[0]["font"]),
               a_span[0]["font"] if a_span else "no span")
         check("the exported label uses the chosen size",
               a_span and abs(a_span[0]["size"] - 14.0) < 0.2,

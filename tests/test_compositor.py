@@ -458,21 +458,35 @@ def test_export_of_a_cjk_label_uses_a_cjk_font(tmp_path) -> None:
 
 def test_label_font_falls_back_to_chinese_when_needed() -> None:
     """An ASCII face cannot draw Chinese, so the Chinese face is used."""
-    name, fontfile = comp.resolve_label_font("(a)", "Helvetica")
-    assert name == "helv"
-    assert fontfile == ""
+    from pdf_auto_crop import fonts
 
+    name, fontfile = comp.resolve_label_font("(a)", "Helvetica")
+    # The face the canvas shows, when the system has the file for it.
+    if fonts.face_file("Helvetica"):
+        assert fontfile.endswith("arial.ttf")
+        assert name == "arial"
+    else:
+        assert name == "helv"
+        assert fontfile == ""
+
+    # Whatever was chosen, it has to be able to draw the Chinese.
     name, fontfile = comp.resolve_label_font("图一", "Helvetica")
-    assert name == comp.FONT_CJK
+    assert comp.font_renders("图一", name, fontfile)
 
     # A face that *can* draw it is left alone.
-    name, _ = comp.resolve_label_font("图一", "宋体 (中文)")
-    assert name == comp.FONT_CJK
+    name, fontfile = comp.resolve_label_font("图一", "宋体 (中文)")
+    assert comp.font_renders("图一", name, fontfile)
+    assert name != "helv"
 
 
 def test_an_unknown_font_name_falls_back_to_the_default() -> None:
-    name, _ = comp.resolve_label_font("(a)", "No Such Face")
-    assert name == comp.LABEL_FONTS[comp.LABEL_FONT_DEFAULT]
+    from pdf_auto_crop import fonts
+
+    name, fontfile = comp.resolve_label_font("(a)", "No Such Face")
+    if fonts.face_file(comp.LABEL_FONT_DEFAULT):
+        assert fontfile.endswith(".ttf")
+    else:
+        assert name == comp.LABEL_FONTS[comp.LABEL_FONT_DEFAULT]
 
 
 def test_text_width_grows_with_the_size() -> None:
@@ -597,7 +611,15 @@ def test_the_label_is_written_in_the_chosen_font_and_colour(tmp_path) -> None:
         assert len(spans) == 1
         span = spans[0]
         assert span["text"] == "(a)"
-        assert "Helvetica" in span["font"]
+        # The face in the file is the one the canvas shows.
+        from pdf_auto_crop import fonts
+
+        file_path = fonts.face_file("Helvetica-Bold")
+        if file_path:
+            expected = fitz.Font(fontfile=file_path).name
+            assert expected in span["font"]
+        else:
+            assert "Helvetica" in span["font"]
         assert span["size"] == pytest.approx(13.0, abs=0.2)
         assert span["color"] == 0xCC1A1A, hex(span["color"])
     finally:
