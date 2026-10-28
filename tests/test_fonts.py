@@ -14,6 +14,7 @@ from the built-in face.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pymupdf as fitz  # noqa: E402
+from PIL import Image, ImageChops  # noqa: E402
 
 from pdf_auto_crop import compositor as comp  # noqa: E402
 from pdf_auto_crop import fonts  # noqa: E402
@@ -228,7 +230,107 @@ def test_a_font_file_the_user_picked_is_used_as_it_is(tmp_path) -> None:
         doc.close()
 
 
-def test_the_canvas_and_the_export_agree_on_the_face() -> None:
+def test_a_font_that_cannot_write_the_text_is_not_used(tmp_path) -> None:
+    """A label written with .notdef is an invisible label.
+
+    A font can *hold* a character and still be unable to write it -- the
+    full-width brackets are in Times New Roman's map, but the encoder puts
+    .notdef in the file for them.  The face has to be asked, not consulted.
+    """
+    path = fonts.face_file("Times-Bold")
+    if path is None:
+        pytest.skip("this machine has no Times New Roman file")
+    assert fonts.has_glyphs(path, "（a）") or not fonts.can_write(path, "（a）")
+    assert not fonts.can_write(path, "（a）")
+    assert not fonts.can_write(path, "自然")
+
+    # So the label is written in a face that can carry it.
+    name, file = comp.resolve_label_font("（a）", "Times-Bold")
+    assert file != path
+    assert comp.font_renders("（a）", name, file)
+
+
+def test_the_font_file_the_user_picked_is_checked_too(tmp_path) -> None:
+    """A file of their own is no excuse for an empty label."""
+    path = fonts.face_file("Times-Bold")
+    if path is None:
+        pytest.skip("this machine has no Times New Roman file")
+    name, file = comp.resolve_label_font("自然", "", path)
+    assert file != path, "a font that cannot write the text was used"
+    assert comp.font_renders("自然", name, file)
+
+
+def test_the_label_is_there_in_the_export(tmp_path) -> None:
+    """A label the face cannot write must still be on the page."""
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=300)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(40, 120, 340, 280), label="（a）", label_size=12.0))
+    out = comp.export_composition(c, tmp_path / "out.pdf", fit_to_content=False,
+                                  page_size=(400, 300))
+    doc = fitz.open(str(out))
+    try:
+        text = doc[0].get_text()
+    finally:
+        doc.close()
+    assert "（a）" in text, repr(text)
+    # And there has to be ink where the label is.
+    doc = fitz.open(str(out))
+    try:
+        pix = doc[0].get_pixmap(dpi=200, clip=fitz.Rect(100, 155, 260, 185))
+    finally:
+        doc.close()
+    image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+    grey = image.convert("L")
+    ink = ImageChops.difference(grey, Image.new("L", grey.size, 255))
+    assert sum(1 for p in ink.getdata() if p > 40) > 20
+
+
+def test_the_export_checks_that_the_labels_survived(tmp_path,
+                                                     monkeypatch) -> None:
+    """If the labels do not come out, the sheet is written again.
+
+    The built-in faces are the last resort: every reader has them, and they
+    always write the text.
+    """
+    src, region = _build_source(tmp_path)
+    c = comp.Composition(width=400, height=300)
+    c.placements.append(comp.Placement(
+        comp.Figure(path=src, page_index=0, region=region),
+        fitz.Rect(40, 120, 340, 280), label="（a）", label_size=12.0))
+
+    path = fonts.face_file("Times-Bold")
+    if path is None:
+        pytest.skip("this machine has no Times New Roman file")
+    real = comp.resolve_label_font
+
+    def broken(text, font="", fontfile="", bold=False, italic=False):
+        # The first export writes the label with a face that cannot carry
+        # it; the second one falls back to the built-in faces.
+        if comp._BUILTIN_FACES:
+            return real(text, font, fontfile, bold, italic)
+        return ("brokenfont", path)
+
+    monkeypatch.setattr(comp, "resolve_label_font", broken)
+
+    out = comp.export_composition(c, tmp_path / "out.pdf", fit_to_content=False,
+                                  page_size=(400, 300))
+    doc = fitz.open(str(out))
+    try:
+        text = doc[0].get_text()
+    finally:
+        doc.close()
+    assert "（a）" in text, repr(text)
+
+
+def test_a_font_without_the_glyphs_is_not_used(tmp_path) -> None:
+    """The check is the encoder's answer, not the font's character map."""
+    path = fonts.face_file("Times-Roman")
+    if path is None:
+        pytest.skip("this machine has no Times New Roman file")
+    assert fonts.can_write(path, "(a) Sample")
+    assert not fonts.can_write(path, "（a）")
     """The family Tk draws with has to be the family the file holds.
 
     Otherwise the canvas shows one face and the export carries another, and

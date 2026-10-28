@@ -204,7 +204,14 @@ def file_for_base14(basefont: str) -> Optional[str]:
 
 
 def has_glyphs(path: str, text: str) -> bool:
-    """Whether a font file can render every character of ``text``."""
+    """Whether a font file can render every character of ``text``.
+
+    This asks the font's own character map.  It is not the same question as
+    :func:`can_write`: a font can *have* a character and still be unable to
+    write it -- the full-width brackets are in Times New Roman's map, but
+    the encoder puts .notdef in the file for them, and a label written that
+    way is invisible.
+    """
     if not path:
         return False
     try:
@@ -216,12 +223,52 @@ def has_glyphs(path: str, text: str) -> bool:
     return all(font.has_glyph(ord(ch)) for ch in text)
 
 
+#: What a font wrote, by the file and the text.
+_CAN_WRITE: Dict[Tuple[str, str], bool] = {}
+
+
+def can_write(path: str, text: str) -> bool:
+    """Whether the font file really writes the text.
+
+    The question is put to the same machinery the exporter uses: the text is
+    written into a scratch page and read back.  A character that comes out
+    as .notdef -- which is how a font says "I cannot write this" -- makes
+    the answer false.
+
+    The answer is remembered, because the same label is asked about again
+    and again.
+    """
+    if not path or not text:
+        return False
+    key = (path, text)
+    if key in _CAN_WRITE:
+        return _CAN_WRITE[key]
+    answer = False
+    try:
+        import pymupdf as fitz
+
+        doc = fitz.open()
+        try:
+            page = doc.new_page(width=200, height=60)
+            page.insert_text((10, 30), text, fontsize=11, fontname="chk",
+                             fontfile=path)
+            written = page.get_text().replace("\xa0", " ").strip()
+            answer = written == text.strip()
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001 -- a font that cannot be used at all
+        answer = False
+    _CAN_WRITE[key] = answer
+    return answer
+
+
 __all__ = [
     "BASE14_FILES",
     "BASE14_TIMES",
     "CJK_FACE",
     "FACE_OF",
     "FONT_FILES",
+    "can_write",
     "cjk_file",
     "face_file",
     "file_for_base14",

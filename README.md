@@ -402,6 +402,16 @@ write 中文, say — the label falls back to a Chinese face automatically.  A
 missing glyph is worse than a different typeface, so the fallback is silent
 rather than a row of empty boxes.
 
+The question is put to the *encoder*, not to the font's character map: a font
+can hold a character and still be unable to write it — the full-width
+brackets are in Times New Roman's map, but the encoder puts .notdef in the
+file for them, and a label written that way is invisible.  A file you pick
+yourself is asked the same question.
+
+And the export checks itself: the written file is read back, and if a label
+did not survive it, the sheet is written again with the built-in faces,
+which every reader has and which always write the text.
+
 On a machine that has none of these font files the export falls back to the
 PDF base-14 faces, which every reader has.
 

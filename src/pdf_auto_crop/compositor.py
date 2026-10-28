@@ -67,6 +67,7 @@ page with a centred figure:
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import math
@@ -252,6 +253,50 @@ def apply_style(fontname: str, bold: bool = False, italic: bool = False
     return fontname
 
 
+#: While this is on, the labels are written with the built-in faces, even
+#: where a font file could be used.  The export falls back to it when the
+#: file cannot carry the text.
+_BUILTIN_FACES = False
+
+
+@contextlib.contextmanager
+def builtin_faces():
+    """Inside this block the labels are written with the built-in faces.
+
+    Every reader has them, and they always write the text -- a built-in
+    face cannot leave an empty label behind.
+    """
+    global _BUILTIN_FACES
+    old = _BUILTIN_FACES
+    _BUILTIN_FACES = True
+    try:
+        yield
+    finally:
+        _BUILTIN_FACES = old
+
+
+def _labels_survived(path: Path, comp: "Composition") -> bool:
+    """Whether every label is really in the written file.
+
+    A font that cannot write a character leaves .notdef in the file, and a
+    label written that way is invisible: the text is in the file, but there
+    is nothing to see.  The written file is read back to find out.
+    """
+    try:
+        doc = fitz.open(str(path))
+    except Exception:  # noqa: BLE001 -- a file that cannot be read is a failure
+        return False
+    try:
+        text = " ".join("".join(page.get_text() for page in doc).split())
+    finally:
+        doc.close()
+    for placement in comp.placements:
+        label = " ".join((placement.label or "").split())
+        if label and label not in text:
+            return False
+    return True
+
+
 def resolve_label_font(text: str, font: str = "", fontfile: str = "",
                        bold: bool = False, italic: bool = False
                        ) -> Tuple[str, str]:
@@ -271,25 +316,36 @@ def resolve_label_font(text: str, font: str = "", fontfile: str = "",
     When the chosen face cannot render the text -- an ASCII face asked for
     Chinese, say -- the Chinese face is used instead, because a label that
     shows nothing is worse than a label in another typeface.
+
+    Whether a face can render the text is asked of the *encoder*, not of the
+    font's character map: a font can hold a character and still be unable to
+    write it, and a label written that way comes out empty.
     """
     if fontfile:
         path = Path(fontfile)
-        if path.is_file():
+        if path.is_file() and fonts.can_write(str(path), text):
             return _safe_font_name(path.stem), str(path)
     key = font or LABEL_FONT_DEFAULT
     if key not in LABEL_FONTS:
         # A name nobody knows is the default face, file and all.
         key = LABEL_FONT_DEFAULT
     name = apply_style(LABEL_FONTS[key], bold, italic)
+    if _BUILTIN_FACES:
+        # The built-in faces: every reader has them, and they always write.
+        if _font_has_text(name, text):
+            return name, ""
+        if _font_has_text(FONT_CJK, text):
+            return FONT_CJK, ""
+        return name, ""
     # The very file the canvas draws with.
     path = fonts.face_file(key, bold, italic)
-    if path and fonts.has_glyphs(path, text):
+    if path and fonts.can_write(path, text):
         return _safe_font_name(Path(path).stem), path
     if _font_has_text(name, text):
         return name, ""
     # Chinese in a Latin face: the face the canvas falls back to.
     path = fonts.cjk_file()
-    if path and fonts.has_glyphs(path, text):
+    if path and fonts.can_write(path, text):
         return _safe_font_name(Path(path).stem), path
     if _font_has_text(FONT_CJK, text):
         return FONT_CJK, ""
@@ -1910,6 +1966,18 @@ def export_composition(
         dx = dy = 0.0
     w, h = max(w, 1.0), max(h, 1.0)
 
+    _write_composition(comp, out_path, w, h, dx, dy)
+    if not _labels_survived(out_path, comp):
+        # A label that cannot be written is an invisible label.  The built-in
+        # faces always write, so the sheet is written again with them.
+        with builtin_faces():
+            _write_composition(comp, out_path, w, h, dx, dy)
+    return out_path
+
+
+def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
+                       dx: float, dy: float) -> Path:
+    """Write the sheet itself."""
     out = fitz.open()
     try:
         page = out.new_page(width=w, height=h)
