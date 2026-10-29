@@ -501,14 +501,15 @@ A click is not a drag: the cursor has to travel a few pixels before anything
 moves, so picking a figure to select it never nudges it out of a layout you
 have just arranged.
 
-**Dragging snaps.**  The edges of the object you drag are pulled onto the
-edges of the objects around it — left to left, right to right, and so on —
-when they come within four points (about 1.4 mm).  The middle counts too,
-so a wide figure can be lined up with the middle of a narrow one.  The two
-directions snap on their own: a figure can be lined up sideways without its
-height changing.  **Hold Alt** and the object lands exactly where you drop
-it.  Figures, graphic elements and free text all snap; a label and the
-handles of a figure do not.
+**吸附** in the toolbar is the snapping: a dragged object is pulled onto the
+edges of the objects around it when they come within four points (about
+1.4 mm).  The edge you drag against matches the edge, the centre or the
+middle of the neighbour, and the two directions snap on their own — a figure
+can be lined up sideways without its height changing.  The **line it was
+pulled to is drawn**, so the snap can be seen.  Turn the button off and
+nothing snaps; hold **Alt** and the object lands exactly where you drop it.
+Figures, graphic elements and free text all snap; a label and the handles of
+a figure do not.
 
 ### Undo and redo
 

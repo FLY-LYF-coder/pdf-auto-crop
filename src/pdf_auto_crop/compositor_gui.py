@@ -732,6 +732,8 @@ class ComposePanel(tk.Frame):
         self._sel_labels: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
+        #: The lines the object was snapped to, so they can be shown.
+        self._snap_guides: List[Tuple[str, float]] = []
         self._drag_rect: Optional[fitz.Rect] = None
         self._drag_shape: Optional[comp.Shape] = None
         #: Which half of the property panel to show: the kind picked last.
@@ -951,12 +953,20 @@ class ComposePanel(tk.Frame):
         ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=16, padx=6, sticky="w")
 
+        # The snapping: a dragged object is pulled onto its neighbour.  It is
+        # on by default, and the button says so.
+        self.var_snap = tk.BooleanVar(value=True)
+        self.chk_snap = ttk.Checkbutton(
+            bar, text="吸附", variable=self.var_snap,
+            command=self._on_snap_changed)
+        self.chk_snap.grid(row=0, column=17, padx=(10, 6), sticky="w")
+
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=17, padx=12, sticky="e")
+            row=0, column=18, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=18, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=19, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         self.cmb_tool = ttk.Combobox(
@@ -1918,6 +1928,32 @@ class ComposePanel(tk.Frame):
 
     # -- the view: zoom and pan --------------------------------------------
 
+    def _draw_snap_guides(self) -> None:
+        """Show the lines the object was snapped to.
+
+        A line where the object was pulled to says why it is where it is,
+        the way a drawing program shows an alignment guide.
+        """
+        if not self._snap_guides:
+            return
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        for axis, where in self._snap_guides:
+            if axis == "x":
+                x = self._to_canvas(where, self.sheet_y)[0]
+                self.canvas.create_line(
+                    x, 0, x, ch, fill="#e0407a", dash=(4, 3), width=1,
+                    tags=("guide",))
+            else:
+                y = self._to_canvas(self.sheet_x, where)[1]
+                self.canvas.create_line(
+                    0, y, cw, y, fill="#e0407a", dash=(4, 3), width=1,
+                    tags=("guide",))
+
+    def _on_snap_changed(self) -> None:
+        """The 吸附 button: the snapping is on or off."""
+        self._status("吸附已%s。" % ("打开" if self.var_snap.get() else "关闭"))
+
     def _on_wheel(self, event: tk.Event) -> None:
         """The wheel zooms the view around the cursor."""
         step = 1.15 if event.delta > 0 else 1.0 / 1.15
@@ -2015,6 +2051,7 @@ class ComposePanel(tk.Frame):
             fill="white", outline="#303030", width=1, tags=("sheet",),
         )
         self._draw_sheet_handles(self._origin[0], self._origin[1], pw, ph)
+        self._draw_snap_guides()
         for idx, placement in enumerate(self.composition.placements):
             self._draw_placement(idx, placement)
         # The graphic elements sit on top of the figures, the free text on
@@ -2695,12 +2732,16 @@ class ComposePanel(tk.Frame):
         figure can be lined up with the middle of another one.
 
         Holding Alt switches the snapping off, for the times when the
-        object should land exactly where it was dropped.
+        object should land exactly where it was dropped.  The **吸附** button
+        in the toolbar switches it off altogether.
         """
+        self._snap_guides = []
         if not others or state & (0x0008 | 0x0400):
             # Alt is held: the object lands exactly where it was dropped.
             # The state carries the modifier bit and the virtual key bit,
             # and which of them is set depends on the platform.
+            return dx, dy
+        if not getattr(self, "var_snap", None) or not self.var_snap.get():
             return dx, dy
         best_x = best_y = None
         for other in others:
@@ -2726,8 +2767,10 @@ class ComposePanel(tk.Frame):
                     best_y = (distance, target - edge)
         if best_x is not None:
             dx += best_x[1]
+            self._snap_guides.append(("x", rect.x0 + dx))
         if best_y is not None:
             dy += best_y[1]
+            self._snap_guides.append(("y", rect.y0 + dy))
         return dx, dy
 
     def _other_boxes(self, exclude_figs: Sequence[int],
@@ -2962,6 +3005,7 @@ class ComposePanel(tk.Frame):
             return
         self._drag_mode = None
         self._drag_start = None
+        self._snap_guides = []
         self._drag_rect = None
         self._drag_shape = None
         self._drag_rects = {}

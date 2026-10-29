@@ -1043,6 +1043,35 @@ def main() -> int:
               abs(held[0] - 200.0) < 1e-6,
               f"the offset became {held[0]:.1f}")
 
+        # The button in the toolbar says whether the snapping is on.
+        texts = []
+        for w in win.chk_snap.master.winfo_children():
+            try:
+                texts.append(str(w.cget("text")))
+            except Exception:  # noqa: BLE001 -- a widget without text
+                pass
+        check("there is a 吸附 button in the toolbar",
+              "吸附" in texts, str(texts))
+        win.var_snap.set(False)
+        win._on_snap_changed()
+        win.update()
+        off = win._snap_offset(box, 197.0, 0.0, [neighbour], 0)
+        check("turning the button off stops the snapping",
+              abs(off[0] - 197.0) < 1e-6,
+              f"the offset stayed {off[0]:.1f}")
+        win.var_snap.set(True)
+        win._on_snap_changed()
+        win.update()
+
+        # The line the object was pulled to is shown, so the snap can be seen.
+        win._snap_offset(box, 197.0, 0.0, [neighbour], 0)
+        win._redraw()
+        win.update()
+        guides = [i for i in win.canvas.find_withtag("guide")]
+        check("the line the object snapped to is shown",
+              len(guides) >= 1, f"{len(guides)} guide(s)")
+        win._snap_guides = []
+
     # -- undo and redo ------------------------------------------------------
     if win.composition.placements:
         size_before = win.composition.placements[0].label_size
