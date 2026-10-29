@@ -2686,15 +2686,21 @@ class ComposePanel(tk.Frame):
         self._redraw()
 
     def _snap_offset(self, rect: fitz.Rect, dx: float, dy: float,
-                     others: Sequence[fitz.Rect]
+                     others: Sequence[fitz.Rect], state: int = 0
                      ) -> Tuple[float, float]:
         """Nudge a dragged object so that it sits tight against a neighbour.
 
         The edges are pulled to the edges of the objects around: left to
         left, right to right, and so on.  The middle edges count too, so a
         figure can be lined up with the middle of another one.
+
+        Holding Alt switches the snapping off, for the times when the
+        object should land exactly where it was dropped.
         """
-        if not others:
+        if not others or state & (0x0008 | 0x0400):
+            # Alt is held: the object lands exactly where it was dropped.
+            # The state carries the modifier bit and the virtual key bit,
+            # and which of them is set depends on the platform.
             return dx, dy
         best_x = best_y = None
         for other in others:
@@ -2786,7 +2792,7 @@ class ComposePanel(tk.Frame):
                 others = self._other_boxes([], list(self._drag_shapes),
                                           list(self._drag_texts))
                 dx, dy = self._snap_offset(fitz.Rect(first.rect), dx, dy,
-                                           others)
+                                           others, event.state)
             for i, base in self._drag_shapes.items():
                 self.composition.shapes[i] = dataclasses.replace(
                     base,
@@ -2806,7 +2812,7 @@ class ComposePanel(tk.Frame):
                                           list(self._drag_shapes),
                                           list(self._drag_texts))
                 dx, dy = self._snap_offset(fitz.Rect(first.rect()), dx, dy,
-                                           others)
+                                           others, event.state)
             for i, base in self._drag_texts.items():
                 self.composition.texts[i] = dataclasses.replace(
                     base,
@@ -2845,7 +2851,8 @@ class ComposePanel(tk.Frame):
             others = self._other_boxes(list(self._drag_rects),
                                       list(self._drag_shapes),
                                       list(self._drag_texts))
-            dx, dy = self._snap_offset(fitz.Rect(first), dx, dy, others)
+            dx, dy = self._snap_offset(fitz.Rect(first), dx, dy, others,
+                                       event.state)
             for i, base in self._drag_rects.items():
                 new = fitz.Rect(
                     base.x0 + dx, base.y0 + dy, base.x1 + dx, base.y1 + dy

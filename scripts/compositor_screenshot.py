@@ -1030,6 +1030,19 @@ def main() -> int:
               abs(moved.x1 - second.rect.x0) < 0.5,
               f"the gap is {second.rect.x0 - moved.x1:.2f} pt")
 
+        # Alt switches the snapping off.  The key event carries the modifier
+        # bit of the keyboard, so the rule is checked where the state is read.
+        box = fitz.Rect(0, 0, 100, 50)
+        neighbour = fitz.Rect(200, 0, 300, 50)
+        free = win._snap_offset(box, 197.0, 0.0, [neighbour], 0x0008)
+        check("holding Alt lets the object land where it is dropped",
+              abs(free[0] - 197.0) < 1e-6,
+              f"the offset stayed {free[0]:.1f}")
+        held = win._snap_offset(box, 197.0, 0.0, [neighbour], 0)
+        check("without it the object snaps",
+              abs(held[0] - 200.0) < 1e-6,
+              f"the offset became {held[0]:.1f}")
+
     # -- undo and redo ------------------------------------------------------
     if win.composition.placements:
         size_before = win.composition.placements[0].label_size
