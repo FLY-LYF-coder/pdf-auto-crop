@@ -1978,7 +1978,54 @@ def export_composition(
         # The face itself cannot write the text: the built-in faces can.
         with builtin_faces():
             _write_composition(comp, out_path, w, h, dx, dy, subset=False)
+    if not _content_on_the_page(out_path, comp):
+        # The content did not land on the page -- an empty sheet is worse
+        # than one in the wrong place -- so it is written again, put where
+        # it belongs.
+        _write_composition(comp, out_path, w, h, 0.0, 0.0, subset=False)
     return out_path
+
+
+def _content_on_the_page(path: Path, comp: "Composition") -> bool:
+    """Whether the content of the sheet is really on the page.
+
+    The page is the sheet, and the sheet can stand anywhere on the canvas.
+    If the content is written off the page, the file comes out blank -- so
+    the written file is read back and looked at.
+
+    The look is cheap on purpose: the text says where the labels went, and
+    a tiny render says whether anything at all was drawn.  Asking for the
+    drawings of a vector figure would take minutes.
+    """
+    try:
+        doc = fitz.open(str(path))
+    except Exception:  # noqa: BLE001 -- a file that cannot be read is no good
+        return False
+    try:
+        page = doc[0]
+        for span in _spans_on_page(page):
+            if not page.rect.contains(fitz.Rect(span["bbox"])):
+                return False
+        if page.get_text().strip():
+            return True
+        pix = page.get_pixmap(dpi=18)
+        samples = pix.samples
+        return any(samples[i] < 250 for i in range(0, len(samples), 3))
+    finally:
+        doc.close()
+
+
+def _spans_on_page(page: fitz.Page) -> List[Dict[str, Any]]:
+    """The text spans of a page."""
+    out: List[Dict[str, Any]] = []
+    for block in page.get_text("dict")["blocks"]:
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if span["text"].strip():
+                    out.append(span)
+    return out
 
 
 def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,

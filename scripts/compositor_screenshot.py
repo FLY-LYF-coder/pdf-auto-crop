@@ -15,6 +15,7 @@ Run:  python scripts/compositor_screenshot.py
 from __future__ import annotations
 
 import ctypes
+import os
 import sys
 import time
 from pathlib import Path
@@ -112,6 +113,10 @@ def _physical_rect(win) -> Optional[Tuple[int, int, int, int]]:
 
 
 def _shot(win, name: str) -> Optional[Path]:
+    if os.environ.get("PDF_AUTO_CROP_NO_SHOTS"):
+        # The pictures are a nicety; on a machine without a desktop to grab
+        # they cost a long wait each.
+        return None
     win.update()
     # The screen grab takes whatever is on top, and the user's own window
     # may well be -- so the compositor comes forward for the picture.
@@ -1127,6 +1132,41 @@ def main() -> int:
     check("the right edge of the sheet stays where it was",
           abs(win.sheet_x + win.sheet_w - width_before) < 0.5,
           f"{win.sheet_x + win.sheet_w:.2f} vs {width_before:.2f}")
+
+    # -- the sheet that has moved still exports what it holds --------------
+    # The page is the sheet, and the sheet can stand anywhere on the canvas:
+    # the content has to be moved by the same amount, or it lands off the
+    # page and the file comes out blank.
+    win.var_sheet.set("A4 横向")
+    win._on_sheet_changed()
+    win.update()
+    win.sheet_x, win.sheet_y = 60.0, 30.0
+    win._redraw()
+    win.update()
+    exported = WORK / "moved_sheet.pdf"
+    comp.export_composition(
+        win.composition, exported, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h),
+        offset=(-win.sheet_x, -win.sheet_y))
+    doc = fitz.open(str(exported))
+    try:
+        page = doc[0]
+        pix = page.get_pixmap(dpi=100)
+        ink = sum(1 for i in range(0, len(pix.samples), 3)
+                  if pix.samples[i] < 200)
+        check("a sheet that has moved still exports its content",
+              ink > 100, f"{ink} ink pixels")
+        spans = [s for b in page.get_text("dict")["blocks"]
+                 if b.get("type") == 0 for l in b.get("lines", [])
+                 for s in l["spans"] if s["text"].strip()]
+        check("the labels land on the page",
+              all(page.rect.contains(fitz.Rect(s["bbox"])) for s in spans),
+              str([s["text"] for s in spans]))
+    finally:
+        doc.close()
+    win.sheet_x, win.sheet_y = 0.0, 0.0
+    win._redraw()
+    win.update()
 
     # -- the sheet can be resized by its grips ------------------------------
     width_before = win.sheet_w

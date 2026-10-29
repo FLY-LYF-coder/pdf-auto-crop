@@ -2720,6 +2720,14 @@ class ComposePanel(tk.Frame):
         self.sheet_w, self.sheet_h = new_w, new_h
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
+        # The content goes with the edge that was dragged: the sheet is the
+        # frame the figures stand in, and a frame that moves must carry
+        # them -- otherwise they end up outside the page and the export
+        # comes out blank.
+        moved_x = new_x - start_x
+        moved_y = new_y - start_y
+        if moved_x or moved_y:
+            self._move_content(moved_x, moved_y)
         self._redraw()
 
     def _snap_offset(self, rect: fitz.Rect, dx: float, dy: float,
@@ -3995,7 +4003,10 @@ class ComposePanel(tk.Frame):
                 comp.export_composition(
                     self.composition, Path(path), fit_to_content=False,
                     page_size=(self.sheet_w, self.sheet_h),
-                    offset=(self.sheet_x, self.sheet_y),
+                    # The page is the sheet, and the sheet's bottom left
+                    # corner can stand anywhere on the canvas: the content
+                    # is moved by how far the sheet stands from the origin.
+                    offset=(-self.sheet_x, -self.sheet_y),
                 )
         except Exception as exc:  # noqa: BLE001
             self._status(f"导出失败：{exc}")
