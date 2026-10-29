@@ -920,6 +920,15 @@ a box or an ellipse is the rectangle spanned by the two points.  The drawing
 order is figures, then graphic elements, then labels — a label under an arrow
 is unreadable.
 
+The page is the sheet, and the sheet is a rectangle in the composition's
+frame.  Dragging one of the sheet's grips moves that edge and nothing else:
+the figures keep their place and the page grows around them, so a page made
+wider on the left only widens the margin on that side.  An edge that is
+pulled inwards stops at the content — the page can never cut a figure off,
+and it never grows because of the drag either.  The export writes the
+content where the page says it is, which is why it takes
+`offset=(-sheet_x, -sheet_y)`.
+
 ### Aligning objects
 
 ```python
