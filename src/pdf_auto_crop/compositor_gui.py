@@ -690,6 +690,54 @@ def _action(func):
     return wrapper
 
 
+def resized_sheet(sheet_x: float, sheet_y: float, sheet_w: float,
+                  sheet_h: float, handle: int, dx: float, dy: float,
+                  bounds: Optional[fitz.Rect] = None
+                  ) -> Tuple[float, float, float, float]:
+    """The sheet after one of its grips has been dragged.
+
+    The edge that was grabbed follows the mouse and the opposite one stays
+    where it was.  An edge that is pulled inwards stops at the content: a
+    page that cuts the figures off would come out of the export with a part
+    of them missing.  An edge that is pulled outwards is free -- the page
+    may grow as much as the user wants, and the content does not move.
+
+    Returns ``(x, y, width, height)``.
+    """
+    left, right = sheet_x, sheet_x + sheet_w
+    bottom, top = sheet_y, sheet_y + sheet_h
+    # The grips: 0 top-left, 1 top-middle, 2 top-right, 3 right-middle,
+    # 4 bottom-right, 5 bottom-middle, 6 bottom-left, 7 left-middle.
+    if handle in (0, 6, 7):
+        left = sheet_x + dx
+    elif handle in (2, 3):
+        right = sheet_x + sheet_w + dx
+    if handle in (0, 1, 2):
+        top = sheet_y + sheet_h + dy
+    elif handle in (4, 5, 6):
+        bottom = sheet_y + dy
+    if bounds is not None:
+        # An edge that is pulled inwards stops at the content.  It may not
+        # go past it -- and it may not make the page bigger either, so a
+        # label that hangs over the page does not make the page grow when
+        # the user pulls the other way.
+        if handle in (0, 6, 7):
+            if left > sheet_x:
+                left = max(min(left, bounds.x0), sheet_x)
+        elif handle in (2, 3):
+            if right < sheet_x + sheet_w:
+                right = min(max(right, bounds.x1), sheet_x + sheet_w)
+        if handle in (0, 1, 2):
+            if top < sheet_y + sheet_h:
+                top = min(max(top, bounds.y1), sheet_y + sheet_h)
+        elif handle in (4, 5, 6):
+            if bottom > sheet_y:
+                bottom = max(min(bottom, bounds.y0), sheet_y)
+    return (left, bottom,
+            max(MIN_SHEET_PT, right - left),
+            max(MIN_SHEET_PT, top - bottom))
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -711,6 +759,14 @@ class ComposePanel(tk.Frame):
         #: be able to move, and the content stays where it is.
         self.sheet_x = 0.0
         self.sheet_y = 0.0
+        #: The frame the view is measured against: it does not follow the
+        #: sheet, so that resizing the page neither moves the figures nor
+        #: rescales them under the user's eyes.  **适应窗口** puts the sheet
+        #: back into it.
+        self._view_x = 0.0
+        self._view_y = 0.0
+        self._view_w = SHEET_LANDSCAPE[0]
+        self._view_h = SHEET_LANDSCAPE[1]
         self.composition = comp.Composition(width=self.sheet_w, height=self.sheet_h)
 
         #: Figures available to place, keyed by an incrementing id.
@@ -821,9 +877,18 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._update_count()
 
+    def _state_signature(self) -> Tuple:
+        """A short description of the sheet, to tell one state from another.
+
+        The page belongs to the state: making the page bigger is a change
+        the user may well want to take back.
+        """
+        return _signature(self.composition) + (
+            self.sheet_x, self.sheet_y, self.sheet_w, self.sheet_h)
+
     def _remember(self) -> None:
         """Remember the sheet as it is, so the change can be undone."""
-        signature = _signature(self.composition)
+        signature = self._state_signature()
         if self._undo and self._undo[-1][0] == signature:
             # Nothing has changed since the last time: no step to undo.
             return
@@ -838,7 +903,7 @@ class ComposePanel(tk.Frame):
             self._status("没有可撤销的操作。")
             return
         _, state = self._undo.pop()
-        self._redo.append((_signature(self.composition), self._snapshot()))
+        self._redo.append((self._state_signature(), self._snapshot()))
         self._restore(state)
         self._status("已撤销一步。")
 
@@ -848,7 +913,7 @@ class ComposePanel(tk.Frame):
             self._status("没有可重做的操作。")
             return
         _, state = self._redo.pop()
-        self._undo.append((_signature(self.composition), self._snapshot()))
+        self._undo.append((self._state_signature(), self._snapshot()))
         self._restore(state)
         self._status("已重做一步。")
 
@@ -1900,6 +1965,8 @@ class ComposePanel(tk.Frame):
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
         self._redraw()
+        self._tell_if_the_page_left_the_window()
+        self._tell_if_a_figure_is_outside_the_page()
 
     def _move_content(self, dx: float, dy: float) -> None:
         """Move everything on the sheet by an offset.
@@ -2000,7 +2067,16 @@ class ComposePanel(tk.Frame):
         self._redraw()
 
     def _zoom_fit(self) -> None:
-        """Back to the view that fits the whole sheet."""
+        """Back to the view that fits the whole sheet.
+
+        The view is measured against its own frame, and this puts the sheet
+        back into it.
+        """
+        sheet = self._sheet_rect()
+        self._view_x = sheet.x0
+        self._view_y = sheet.y0
+        self._view_w = sheet.width
+        self._view_h = sheet.height
         self._zoom_factor = 1.0
         self._redraw()
 
@@ -2009,13 +2085,13 @@ class ComposePanel(tk.Frame):
     def _to_canvas(self, x: float, y: float) -> Tuple[float, float]:
         """User space (bottom-up) -> canvas pixels (top-down)."""
         ox, oy = self._origin
-        return (ox + (x - self.sheet_x) * self._zoom,
-                oy + (self.sheet_y + self.sheet_h - y) * self._zoom)
+        return (ox + (x - self._view_x) * self._zoom,
+                oy + (self._view_y + self._view_h - y) * self._zoom)
 
     def _to_user(self, cx: float, cy: float) -> Tuple[float, float]:
         ox, oy = self._origin
-        return (self.sheet_x + (cx - ox) / self._zoom,
-                self.sheet_y + self.sheet_h - (cy - oy) / self._zoom)
+        return (self._view_x + (cx - ox) / self._zoom,
+                self._view_y + self._view_h - (cy - oy) / self._zoom)
 
     def _sheet_rect(self) -> fitz.Rect:
         """The sheet on the canvas, in the composition's frame."""
@@ -2026,7 +2102,7 @@ class ComposePanel(tk.Frame):
     def _canvas_rect(self, rect: fitz.Rect) -> Tuple[float, float, float, float]:
         """The canvas rectangle of a placement: left, top, right, bottom."""
         return sheet_to_canvas_box(
-            rect, self._origin, self._zoom, self.sheet_y + self.sheet_h)
+            rect, self._origin, self._zoom, self._view_y + self._view_h)
 
     # -- drawing -----------------------------------------------------------
 
@@ -2035,22 +2111,26 @@ class ComposePanel(tk.Frame):
         ch = max(1, self.canvas.winfo_height())
         # A point of the sheet is this many pixels on this display.
         pp = dpi.pixels_per_point(self)
-        # The zoom that fits the sheet, and the user's own factor on top of
-        # it -- the wheel changes the factor, so the view stays where the
-        # user put it.
-        self._fit_zoom = min(cw / (self.sheet_w * pp), ch / (self.sheet_h * pp), pp)
+        # The zoom that fits the view's frame, and the user's own factor on
+        # top of it -- the wheel changes the factor, so the view stays where
+        # the user put it.  The frame is not the sheet: a page that is
+        # resized must not move the figures under the user's eyes.
+        self._fit_zoom = min(cw / (self._view_w * pp),
+                             ch / (self._view_h * pp), pp)
         self._zoom = self._fit_zoom * self._zoom_factor
-        pw = max(1, self.sheet_w * self._zoom)
-        ph = max(1, self.sheet_h * self._zoom)
+        pw = max(1, self._view_w * self._zoom)
+        ph = max(1, self._view_h * self._zoom)
         self._origin = (cw / 2 - pw / 2, ch / 2 - ph / 2)
 
         self.canvas.delete("all")
+        # The sheet is a rectangle in the composition's frame; the view is
+        # measured against its own frame, so the two can move apart.
+        left, top, right, bottom = self._canvas_rect(self._sheet_rect())
         self.canvas.create_rectangle(
-            self._origin[0], self._origin[1],
-            self._origin[0] + pw, self._origin[1] + ph,
+            left, top, right, bottom,
             fill="white", outline="#303030", width=1, tags=("sheet",),
         )
-        self._draw_sheet_handles(self._origin[0], self._origin[1], pw, ph)
+        self._draw_sheet_handles(left, top, right - left, bottom - top)
         self._draw_snap_guides()
         for idx, placement in enumerate(self.composition.placements):
             self._draw_placement(idx, placement)
@@ -2111,11 +2191,15 @@ class ComposePanel(tk.Frame):
             )
 
     def _hit_sheet_handle(self, cx: float, cy: float) -> Optional[int]:
-        """Which grip of the sheet the cursor is on."""
-        pw = self.sheet_w * self._zoom
-        ph = self.sheet_h * self._zoom
+        """Which grip of the sheet the cursor is on.
+
+        The grips are looked for where they are drawn: the sheet does not
+        necessarily sit in the view's frame any more, because the page may
+        have been made bigger than the frame.
+        """
+        left, top, right, bottom = self._canvas_rect(self._sheet_rect())
         for i, (hx, hy) in enumerate(self._sheet_handle_positions(
-                self._origin[0], self._origin[1], pw, ph)):
+                left, top, right - left, bottom - top)):
             if abs(cx - hx) <= SHEET_HANDLE_PX + 2 and \
                     abs(cy - hy) <= SHEET_HANDLE_PX + 2:
                 return i
@@ -2584,6 +2668,9 @@ class ComposePanel(tk.Frame):
             self._drag_sheet_handle = sheet_handle
             self._drag_sheet_size = (self.sheet_w, self.sheet_h)
             self._drag_sheet_origin = (self.sheet_x, self.sheet_y)
+            # The page as it was before the drag, so that the whole resize
+            # is one step to undo.
+            self._remember()
             self._sync_properties()
             self._redraw()
             return
@@ -2686,8 +2773,11 @@ class ComposePanel(tk.Frame):
 
         The edge that was grabbed follows the mouse and the opposite one
         stays where it was.  The canvas counts downwards and the sheet
-        counts upwards, so the movement is taken in the sheet's own frame:
-        pulling the top edge up makes the sheet taller.
+        counts upwards, so the movement is taken in the sheet's own frame.
+
+        The figures do not move: the sheet is the frame they stand in, and
+        the frame is not allowed to lose them either -- a page that no
+        longer holds them would come out of the export blank.
         """
         handle = self._drag_sheet_handle
         start_w, start_h = self._drag_sheet_size
@@ -2696,38 +2786,11 @@ class ComposePanel(tk.Frame):
         sx, sy = self._to_user(*self._drag_start)
         dx = ux - sx
         dy = uy - sy
-        # The grips: 0 top-left, 1 top-middle, 2 top-right, 3 right-middle,
-        # 4 bottom-right, 5 bottom-middle, 6 bottom-left, 7 left-middle.
-        new_x, new_y = start_x, start_y
-        new_w, new_h = start_w, start_h
-        if handle in (0, 6, 7):
-            # The left edge follows the mouse; the right one stays.
-            new_x = start_x + dx
-            new_w = start_w - dx
-        elif handle in (2, 3):
-            new_w = start_w + dx
-        if handle in (0, 1, 2):
-            # The top edge follows the mouse; the bottom one stays.
-            new_h = start_h + dy
-            new_y = start_y
-        elif handle in (4, 5, 6):
-            # The bottom edge follows the mouse; the top one stays.
-            new_y = start_y + dy
-            new_h = start_h - dy
-        new_w = max(MIN_SHEET_PT, new_w)
-        new_h = max(MIN_SHEET_PT, new_h)
-        self.sheet_x, self.sheet_y = new_x, new_y
-        self.sheet_w, self.sheet_h = new_w, new_h
+        self.sheet_x, self.sheet_y, self.sheet_w, self.sheet_h = resized_sheet(
+            start_x, start_y, start_w, start_h, handle, dx, dy,
+            self.composition.content_bounds())
         self.composition.width = self.sheet_w
         self.composition.height = self.sheet_h
-        # The content goes with the edge that was dragged: the sheet is the
-        # frame the figures stand in, and a frame that moves must carry
-        # them -- otherwise they end up outside the page and the export
-        # comes out blank.
-        moved_x = new_x - start_x
-        moved_y = new_y - start_y
-        if moved_x or moved_y:
-            self._move_content(moved_x, moved_y)
         self._redraw()
 
     def _snap_offset(self, rect: fitz.Rect, dx: float, dy: float,
@@ -3011,6 +3074,7 @@ class ComposePanel(tk.Frame):
             self._sync_properties()
             self._redraw()
             return
+        was_sheet = self._drag_mode == "sheet"
         self._drag_mode = None
         self._drag_start = None
         self._snap_guides = []
@@ -3019,6 +3083,35 @@ class ComposePanel(tk.Frame):
         self._drag_rects = {}
         self._drag_shapes = {}
         self._update_count()
+        if was_sheet:
+            self._tell_if_the_page_left_the_window()
+
+    def _tell_if_the_page_left_the_window(self) -> None:
+        """Say so when the page has grown out of the window.
+
+        The view does not follow the page: the figures must not move under
+        the user's eyes while the page is being made bigger.  A page that
+        no longer fits the window therefore has to be brought back into it
+        by hand.
+        """
+        left, top, right, bottom = self._canvas_rect(self._sheet_rect())
+        cw = max(1, self.canvas.winfo_width())
+        ch = max(1, self.canvas.winfo_height())
+        if left < 0 or top < 0 or right > cw or bottom > ch:
+            self._status("页面已超出窗口，点『适应窗口』看整页。")
+
+    def _tell_if_a_figure_is_outside_the_page(self) -> None:
+        """Say so when a figure stands outside the page.
+
+        The page is what the export writes on.  A figure that is not on it
+        is not in the file -- and a file without the figure is worse than a
+        page that is a little too small.
+        """
+        page = self._sheet_rect()
+        for placement in self.composition.placements:
+            if not page.contains(fitz.Rect(placement.rect)):
+                self._status("有图在页面之外，导出时会被裁掉。")
+                return
 
     def _edit_figure_region(self) -> None:
         """Choose the part of the source that becomes the figure.

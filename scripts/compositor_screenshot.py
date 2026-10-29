@@ -1109,10 +1109,21 @@ def main() -> int:
         win.update()
 
     # -- the sheet's edge follows the mouse ---------------------------------
+    def sheet_handles() -> list:
+        """Where the grips of the sheet really stand on the canvas.
+
+        The sheet is drawn where it is, not where the view's frame is: a
+        page that has been made bigger no longer sits in the frame it was
+        measured against, so the grips have to be looked up on the sheet
+        itself.
+        """
+        left, top, right, bottom = win._canvas_rect(win._sheet_rect())
+        return win._sheet_handle_positions(left, top,
+                                           right - left, bottom - top)
+
+    placed = [fitz.Rect(p.rect) for p in win.composition.placements]
     height_before = win.sheet_h
-    handles = win._sheet_handle_positions(
-        win._origin[0], win._origin[1],
-        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    handles = sheet_handles()
     hx, hy = handles[1]          # the grip on the top edge
     _drag(win, int(hx), int(hy), int(hx), int(hy) - 30)
     check("pulling the top edge up makes the sheet taller",
@@ -1121,9 +1132,7 @@ def main() -> int:
     check("the bottom edge of the sheet stays where it was",
           abs(win.sheet_y) < 0.5, f"{win.sheet_y:.2f}")
     width_before = win.sheet_w
-    handles = win._sheet_handle_positions(
-        win._origin[0], win._origin[1],
-        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    handles = sheet_handles()
     hx, hy = handles[7]          # the grip on the left edge
     _drag(win, int(hx), int(hy), int(hx) - 30, int(hy))
     check("pulling the left edge out makes the sheet wider",
@@ -1133,17 +1142,19 @@ def main() -> int:
           abs(win.sheet_x + win.sheet_w - width_before) < 0.5,
           f"{win.sheet_x + win.sheet_w:.2f} vs {width_before:.2f}")
 
-    # -- the sheet that has moved still exports what it holds --------------
-    # The page is the sheet, and the sheet can stand anywhere on the canvas:
-    # the content has to be moved by the same amount, or it lands off the
-    # page and the file comes out blank.
-    win.var_sheet.set("A4 横向")
-    win._on_sheet_changed()
-    win.update()
-    win.sheet_x, win.sheet_y = 60.0, 30.0
-    win._redraw()
-    win.update()
-    exported = WORK / "moved_sheet.pdf"
+    # -- the page that has been resized still holds what it held ------------
+    # The page is the sheet.  Its edges follow the mouse, the figures do
+    # not: they stand where the user put them, and an edge stops at them
+    # rather than cutting them off.  So the file that comes out is never
+    # blank, and the figures are where they were arranged.
+    check("the figures did not move when the page was resized",
+          all(abs(a.x0 - b.x0) < 0.01 and abs(a.x1 - b.x1) < 0.01
+              and abs(a.y0 - b.y0) < 0.01 and abs(a.y1 - b.y1) < 0.01
+              for a, b in zip(placed,
+                              [fitz.Rect(p.rect)
+                               for p in win.composition.placements])),
+          str([p.rect for p in win.composition.placements]))
+    exported = WORK / "resized_sheet.pdf"
     comp.export_composition(
         win.composition, exported, fit_to_content=False,
         page_size=(win.sheet_w, win.sheet_h),
@@ -1152,9 +1163,13 @@ def main() -> int:
     try:
         page = doc[0]
         pix = page.get_pixmap(dpi=100)
-        ink = sum(1 for i in range(0, len(pix.samples), 3)
-                  if pix.samples[i] < 200)
-        check("a sheet that has moved still exports its content",
+        # The samples are fetched once: PyMuPDF copies the whole buffer every
+        # time the property is read, and a loop over a million pixels would
+        # copy it a million times.
+        samples = pix.samples
+        ink = sum(1 for i in range(0, len(samples), 3)
+                  if samples[i] < 200)
+        check("a page that has been resized still exports its content",
               ink > 100, f"{ink} ink pixels")
         spans = [s for b in page.get_text("dict")["blocks"]
                  if b.get("type") == 0 for l in b.get("lines", [])
@@ -1164,20 +1179,42 @@ def main() -> int:
               str([s["text"] for s in spans]))
     finally:
         doc.close()
-    win.sheet_x, win.sheet_y = 0.0, 0.0
-    win._redraw()
-    win.update()
 
     # -- the sheet can be resized by its grips ------------------------------
     width_before = win.sheet_w
-    handles = win._sheet_handle_positions(
-        win._origin[0], win._origin[1],
-        win.sheet_w * win._zoom, win.sheet_h * win._zoom)
+    handles = sheet_handles()
     hx, hy = handles[3]          # the grip on the right-hand edge
     _drag(win, int(hx), int(hy), int(hx) + 40, int(hy))
     check("the sheet can be made wider by its grips",
           win.sheet_w > width_before,
           f"{width_before:.0f} -> {win.sheet_w:.0f}")
+
+    # -- the page can be taken back ----------------------------------------
+    # Making the page bigger is a change like any other: it can be undone.
+    win.canvas.event_generate("<Control-z>")
+    win.update()
+    check("the new size of the page can be taken back",
+          abs(win.sheet_w - width_before) < 0.5,
+          f"{width_before:.0f} -> {win.sheet_w:.0f}")
+
+    # -- an edge may not cut the figures off --------------------------------
+    # The page can be made bigger than it is, but not smaller than what
+    # stands on it: the file would come out with a part of it missing.
+    handles = sheet_handles()
+    hx, hy = handles[3]          # the grip on the right-hand edge
+    _drag(win, int(hx), int(hy), int(max(0, hx - 400)), int(hy))
+    bounds = win.composition.content_bounds()
+    check("the edge of the page stops at the figures",
+          bounds is not None
+          and win.sheet_x <= bounds.x0 + 0.5
+          and win.sheet_x + win.sheet_w >= bounds.x1 - 0.5,
+          f"page {win.sheet_x:.0f}..{win.sheet_x + win.sheet_w:.0f} vs "
+          f"figures {bounds.x0:.0f}..{bounds.x1:.0f}")
+    check("the page still holds every figure",
+          all(win.sheet_x <= fitz.Rect(p.rect).x0 + 0.5
+              and fitz.Rect(p.rect).x1 <= win.sheet_x + win.sheet_w + 0.5
+              for p in win.composition.placements),
+          str([p.rect for p in win.composition.placements]))
 
     # -- a click is not a drag ---------------------------------------------
     # A hand does not hold still: a click comes with a pixel or two of
