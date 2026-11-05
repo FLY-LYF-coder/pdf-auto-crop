@@ -1132,12 +1132,29 @@ class TextItem:
         return self.color
 
     def text_size(self) -> Tuple[float, float]:
-        """How wide and how tall the text is, in points."""
+        """How wide and how tall the text is, in points.
+
+        A text that holds mathematics is as wide as the formula is set:
+        the source of a formula says nothing about how wide it comes out.
+        """
         fontname, fontfile = self.font_info()
         width = text_width(self.text, fontname, self.size, fontfile)
         # A text line is a little taller than its point size: ascenders and
         # descenders have to fit.
-        return width, self.size * 1.25
+        height = self.size * 1.25
+        if self.formula:
+            from .tex import math_parts, render_math
+            parts = math_parts(self.text, self.size)
+            if parts:
+                width = 0.0
+                for body, is_math in parts:
+                    if not is_math:
+                        width += text_width(body, fontname, self.size, fontfile)
+                        continue
+                    rendered = render_math(body, self.size)
+                    if rendered is not None:
+                        width += formula_width(rendered)
+        return width, height
 
     def rect(self) -> fitz.Rect:
         """The box the text occupies, in composition user space."""
@@ -3374,9 +3391,11 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
     )
     if item.box:
         width, height = item.text_size()
+        # The frame reaches up from the baseline by the height of a line:
+        # the text stands on the baseline, and the frame is around it.
         page.draw_rect(
-            fitz.Rect(item.position.x, anchor.y,
-                       item.position.x + width, anchor.y + height),
+            fitz.Rect(item.position.x, anchor.y - height,
+                      item.position.x + width, anchor.y),
             color=item.box_rgb, width=item.box_width,
         )
 
@@ -3413,26 +3432,31 @@ def _draw_text_with_math(page: fitz.Page, item: TextItem,
         x += formula_width(rendered)
     if item.box:
         width, height = item.text_size()
+        # The frame reaches up from the baseline by the height of a line.
         page.draw_rect(
-            fitz.Rect(item.position.x, baseline,
-                      item.position.x + width, baseline + height),
+            fitz.Rect(item.position.x, baseline - height,
+                      item.position.x + width, baseline),
             color=item.box_rgb, width=item.box_width,
         )
 
 
 def _draw_text_frame(page: fitz.Page, item: TextItem, anchor: fitz.Point,
                      page_height: float) -> None:
-    """Draw the frame around a turned text, turned with it."""
+    """Draw the frame around a text, the way the canvas shows it.
+
+    The frame reaches up from the baseline by the height of a line: the
+    text stands on the baseline, and the frame is around it.
+    """
     if not item.box:
         return
     width, height = item.text_size()
     corners = [
-        fitz.Point(item.position.x, anchor.y),
+        fitz.Point(item.position.x, anchor.y - height),
+        fitz.Point(item.position.x + width, anchor.y - height),
         fitz.Point(item.position.x + width, anchor.y),
-        fitz.Point(item.position.x + width, anchor.y + height),
-        fitz.Point(item.position.x, anchor.y + height),
+        fitz.Point(item.position.x, anchor.y),
     ]
-    centre = fitz.Point(item.position.x + width / 2, anchor.y + height / 2)
+    centre = fitz.Point(item.position.x + width / 2, anchor.y - height / 2)
     turned = [rotate_point(p, centre, item.rotation) for p in corners]
     page.draw_polyline(turned + [turned[0]], color=item.box_rgb,
                        width=item.box_width)

@@ -121,6 +121,35 @@ def test_the_delimiters_never_reach_the_file(text, tmp_path) -> None:
         doc.close()
 
 
+@pytest.mark.parametrize("text", ["$E = mc^2$", "\\[E = mc^2\\]", "$$E = mc^2$$"])
+def test_the_frame_of_a_text_box_is_around_the_formula(text, tmp_path) -> None:
+    """The frame stands where the text is, and is as wide as it is."""
+    sheet = comp.Composition(width=300.0, height=200.0)
+    sheet.texts.append(comp.TextItem(text=text, position=fitz.Point(40, 60),
+                                     size=14.0, formula=True, box=True))
+    out = tmp_path / "box.pdf"
+    comp.export_composition(sheet, out, fit_to_content=False,
+                            page_size=(300.0, 200.0))
+    doc = fitz.open(str(out))
+    try:
+        page = doc[0]
+        spans = [s for b in page.get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        frames = [d for d in page.get_drawings() if d["type"] == "s"]
+        assert spans and frames, "the text or its frame is missing"
+        # The formula is written in several pieces: the ink is all of them.
+        ink = fitz.Rect(spans[0]["bbox"])
+        for span in spans[1:]:
+            ink |= fitz.Rect(span["bbox"])
+        frame = fitz.Rect(frames[0]["rect"])
+        # The frame reaches up from the baseline and is as wide as the ink.
+        assert frame.y1 == pytest.approx(140.0, abs=1.0), frame
+        assert frame.y0 <= ink.y0 + 0.5, f"{frame} vs {ink}"
+        assert frame.width == pytest.approx(ink.width, abs=3.0), f"{frame} vs {ink}"
+    finally:
+        doc.close()
+
+
 def test_the_two_dollar_signs_are_one_formula() -> None:
     """``$$...$$`` is a formula, not two empty ones."""
     parts = tex.split_math("$$E = mc^2$$")

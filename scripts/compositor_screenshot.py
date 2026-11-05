@@ -1915,6 +1915,35 @@ def main() -> int:
                   f"{len(win.composition.placements)} figures")
             check("the material list comes back too",
                   len(win.palette) > 0, f"{len(win.palette)} entries")
+            check("the tool goes back to moving things",
+                  win.tool == "select", win.tool)
+            # What came back can be worked on again.
+            if win.composition.shapes:
+                win._clear_selection()
+                win._sel_shapes = [0]
+                win._last_kind = "shape"
+                win._sync_properties()
+                win.update()
+                width_before = win.composition.shapes[0].width
+                win.var_shape_width.set("3")
+                win._on_shape_changed()
+                win.update()
+                check("a shape of the layout can be changed",
+                      abs(win.composition.shapes[0].width - 3.0) < 1e-6,
+                      f"{width_before} -> {win.composition.shapes[0].width}")
+            if win.composition.texts:
+                win._clear_selection()
+                win._sel_texts = [0]
+                win._last_kind = "text"
+                win._sync_properties()
+                win.update()
+                win._set_text_widget("Changed")
+                win.txt_text.edit_modified(True)
+                win._on_text_changed("typed")
+                win.update()
+                check("a text of the layout can be changed",
+                      win.composition.texts[0].text == "Changed",
+                      repr(win.composition.texts[0].text))
     finally:
         compositor_gui.filedialog.asksaveasfilename = original_save
         compositor_gui.filedialog.askopenfilename = original_open

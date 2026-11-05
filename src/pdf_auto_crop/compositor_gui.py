@@ -6199,6 +6199,10 @@ class ComposePanel(tk.Frame):
         self.var_sheet_w.set(f"{pt_to_mm(loaded.width):.0f}")
         self.var_sheet_h.set(f"{pt_to_mm(loaded.height):.0f}")
         self._clear_selection()
+        # The sheet that was opened is looked at, not drawn on: the tool goes
+        # back to moving things, or a click would draw a new one instead of
+        # picking up what is there.
+        self._pick_tool_kind("select")
         # A sheet that has just been opened has no history yet.
         self._undo.clear()
         self._redo.clear()
