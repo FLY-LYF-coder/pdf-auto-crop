@@ -118,6 +118,9 @@ PREVIEW_OFFSET_PX = 16
 TOOL_TEXT = "text"
 TOOL_TEXTBOX = "textbox"
 
+#: The tool that drags the canvas itself.
+TOOL_PAN = "pan"
+
 #: The tools that draw a graphic element.
 SHAPE_TOOLS = (comp.SHAPE_ARROW, comp.SHAPE_RECT, comp.SHAPE_ELLIPSE,
                comp.SHAPE_LINE)
@@ -142,6 +145,7 @@ SHAPE_CHOICES: Tuple[Tuple[str, str], ...] = (
 #: Every tool the toolbar offers: what it is called and what it draws.
 TOOL_CHOICES: Tuple[Tuple[str, str], ...] = (
     ("选择/移动", "select"),
+    ("移动画布", TOOL_PAN),
 ) + SHAPE_CHOICES + (
     ("文本", TOOL_TEXT),
     ("文本框", TOOL_TEXTBOX),
@@ -908,6 +912,11 @@ def resized_sheet(sheet_x: float, sheet_y: float, sheet_w: float,
             max(MIN_SHEET_PT, top - bottom))
 
 
+#: The fields that carry the look of an object are in the model, so that the
+#: format painter and its tests agree on what a look is.
+FORMAT_FIELDS = comp.FORMAT_FIELDS
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -960,11 +969,18 @@ class ComposePanel(tk.Frame):
         self._sel_labels: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
+        #: The grip of the box around the selection, while it is dragged.
+        self._drag_handle: int = 0
+        #: The box around the selection as it was when the drag began.
+        self._drag_group: Optional[fitz.Rect] = None
         #: The lines the object was snapped to, so they can be shown.
         self._snap_guides: List[Tuple[str, float]] = []
         #: The rubber band the cursor is drawing, while several objects are
         #: being picked at once.
         self._marquee: Optional[fitz.Rect] = None
+        #: The look the format brush carries, and the kind of object it
+        #: was filled from.
+        self._format_brush: Optional[Tuple[str, Dict[str, Any]]] = None
         self._drag_rect: Optional[fitz.Rect] = None
         self._drag_shape: Optional[comp.Shape] = None
         #: Which half of the property panel to show: the kind picked last.
@@ -987,6 +1003,12 @@ class ComposePanel(tk.Frame):
         self._fit_zoom = 1.0
         self._pan_origin: Optional[Tuple[float, float]] = None
         self._pan_from: Tuple[float, float] = (0.0, 0.0)
+        #: How far the view has been moved, in canvas pixels.  It is kept
+        #: apart from the origin, which is worked out again on every
+        #: redraw -- a pan that was folded into the origin would be wiped
+        #: out by the next redraw.
+        self._pan_x = 0.0
+        self._pan_y = 0.0
         self._origin = (0.0, 0.0)
 
         #: The active tool: "select" moves things, the others draw.
@@ -1208,20 +1230,28 @@ class ComposePanel(tk.Frame):
         ttk.Button(bar, text="表格…", command=self._insert_table).grid(
             row=0, column=17, padx=6, sticky="w")
 
+        # The format painter: it gives the look of the object that is picked
+        # to the next object that is clicked.
+        self.var_format_brush = tk.BooleanVar(value=False)
+        self.chk_format_brush = ttk.Checkbutton(
+            bar, text="格式刷", variable=self.var_format_brush,
+            command=self._on_format_brush)
+        self.chk_format_brush.grid(row=0, column=18, padx=(6, 0), sticky="w")
+
         # The snapping: a dragged object is pulled onto its neighbour.  It is
         # on by default, and the button says so.
         self.var_snap = tk.BooleanVar(value=True)
         self.chk_snap = ttk.Checkbutton(
             bar, text="吸附", variable=self.var_snap,
             command=self._on_snap_changed)
-        self.chk_snap.grid(row=0, column=18, padx=(10, 6), sticky="w")
+        self.chk_snap.grid(row=0, column=19, padx=(10, 6), sticky="w")
 
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=19, padx=12, sticky="e")
+            row=0, column=20, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=20, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=21, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         self.cmb_tool = ttk.Combobox(
@@ -2375,20 +2405,21 @@ class ComposePanel(tk.Frame):
         self._zoom_factor = target
         self._redraw()
         nx, ny = self._to_canvas(ux, uy)
-        self._origin = (self._origin[0] + (event.x - nx),
-                        self._origin[1] + (event.y - ny))
+        self._pan_x += event.x - nx
+        self._pan_y += event.y - ny
         self._redraw()
 
     def _on_pan_start(self, event: tk.Event) -> None:
         self._pan_origin = (event.x, event.y)
-        self._pan_from = self._origin
+        self._pan_from = (self._pan_x, self._pan_y)
 
     def _on_pan_move(self, event: tk.Event) -> None:
         if self._pan_origin is None:
             return
         dx = event.x - self._pan_origin[0]
         dy = event.y - self._pan_origin[1]
-        self._origin = (self._pan_from[0] + dx, self._pan_from[1] + dy)
+        self._pan_x = self._pan_from[0] + dx
+        self._pan_y = self._pan_from[1] + dy
         self._redraw()
 
     def _on_pan_end(self, event: tk.Event) -> None:
@@ -2405,8 +2436,8 @@ class ComposePanel(tk.Frame):
         self._zoom_factor = target
         self._redraw()
         nx, ny = self._to_canvas(ux, uy)
-        self._origin = (self._origin[0] + (cw / 2 - nx),
-                        self._origin[1] + (ch / 2 - ny))
+        self._pan_x += cw / 2 - nx
+        self._pan_y += ch / 2 - ny
         self._redraw()
 
     def _zoom_fit(self) -> None:
@@ -2421,6 +2452,9 @@ class ComposePanel(tk.Frame):
         self._view_w = sheet.width
         self._view_h = sheet.height
         self._zoom_factor = 1.0
+        # The view is centred again: the sheet is where it belongs.
+        self._pan_x = 0.0
+        self._pan_y = 0.0
         self._redraw()
 
     # -- coordinate mapping -------------------------------------------------
@@ -2463,7 +2497,9 @@ class ComposePanel(tk.Frame):
         self._zoom = self._fit_zoom * self._zoom_factor
         pw = max(1, self._view_w * self._zoom)
         ph = max(1, self._view_h * self._zoom)
-        self._origin = (cw / 2 - pw / 2, ch / 2 - ph / 2)
+        # The view sits where the user has dragged it to.
+        self._origin = (cw / 2 - pw / 2 + self._pan_x,
+                        ch / 2 - ph / 2 + self._pan_y)
 
         self.canvas.delete("all")
         # The sheet is a rectangle in the composition's frame; the view is
@@ -2488,6 +2524,12 @@ class ComposePanel(tk.Frame):
             self._draw_text(idx, item)
         for idx, placement in enumerate(self.composition.placements):
             self._draw_label(idx, placement)
+        group = self._group_box()
+        if group is not None:
+            # A selection of several objects: the box around them carries
+            # the grips that make the whole selection bigger or smaller.
+            left, top, right, bottom = self._canvas_rect(group)
+            self._draw_selection_frame(left, top, right, bottom, primary=True)
         if self._shape_preview is not None:
             self._draw_shape(-1, self._shape_preview)
         if self._marquee is not None:
@@ -2556,6 +2598,206 @@ class ComposePanel(tk.Frame):
                 return i
         return None
 
+    def _hit_selection_handle(self, cx: float, cy: float) -> Optional[int]:
+        """Which grip of the box around the selection the cursor is on."""
+        group = self._group_box()
+        if group is None:
+            return None
+        left, top, right, bottom = self._canvas_rect(group)
+        for i, (hx, hy) in enumerate(
+                HANDLE_POSITIONS(left, top, right, bottom)):
+            if abs(cx - hx) <= HANDLE_PX + 2 and abs(cy - hy) <= HANDLE_PX + 2:
+                return i
+        return None
+
+    def _drag_selection_handle(self, event: tk.Event) -> None:
+        """Make the whole selection bigger or smaller.
+
+        The grip that is dragged follows the mouse and the corner opposite
+        it stays where it was.  The selection keeps its proportions, so that
+        the figures in it do not come out squashed.
+        """
+        base = self._drag_group
+        if base is None or base.width <= 0 or base.height <= 0:
+            return
+        ux, uy = self._to_user(event.x, event.y)
+        h = self._drag_handle
+        new = fitz.Rect(base)
+        if h in (0, 3):
+            new.x0 = ux
+        else:
+            new.x1 = ux
+        if h in (0, 1):
+            new.y1 = uy
+        else:
+            new.y0 = uy
+        # The corner opposite the grip stays put.
+        corner = USER_CORNER(base, (h + 2) % 4)
+        new = self._selection_locked(new, corner)
+        if new.width <= 0 or new.height <= 0:
+            return
+        sx = new.width / base.width
+        sy = new.height / base.height
+        for kind, index, rect in self._selected_boxes():
+            if kind == "label":
+                # A label travels with its figure; it has no size of its own.
+                continue
+            r = fitz.Rect(rect)
+            self._set_box(kind, index, fitz.Rect(
+                new.x0 + (r.x0 - base.x0) * sx,
+                new.y0 + (r.y0 - base.y0) * sy,
+                new.x0 + (r.x1 - base.x0) * sx,
+                new.y0 + (r.y1 - base.y0) * sy,
+            ), resize=True)
+        self._redraw()
+
+    def _selection_locked(self, rect: fitz.Rect, anchor: Tuple[float, float]
+                          ) -> fitz.Rect:
+        """Resize the selection keeping its proportions, pivoting on ``anchor``.
+
+        ``anchor`` is the corner that stays put -- the one opposite the
+        grip being dragged -- so the selection grows away from it instead
+        of jumping.
+        """
+        base = self._drag_group
+        if base is None or base.width <= 0 or base.height <= 0:
+            return rect
+        aspect = base.width / base.height
+        new_w = abs(rect.x1 - rect.x0)
+        if new_w <= 0:
+            return rect
+        new_h = new_w / aspect
+        if anchor[0] <= (rect.x0 + rect.x1) / 2:
+            x0, x1 = anchor[0], anchor[0] + new_w
+        else:
+            x1, x0 = anchor[0], anchor[0] - new_w
+        if anchor[1] >= (rect.y0 + rect.y1) / 2:
+            y1, y0 = anchor[1], anchor[1] - new_h
+        else:
+            y0, y1 = anchor[1], anchor[1] + new_h
+        return fitz.Rect(x0, y0, x1, y1)
+
+    def _object_of(self, kind: str, index: int) -> Any:
+        """One object of the sheet, by kind and index."""
+        if kind == "figure":
+            if 0 <= index < len(self.composition.placements):
+                return self.composition.placements[index]
+        elif kind == "shape":
+            if 0 <= index < len(self.composition.shapes):
+                return self.composition.shapes[index]
+        elif kind == "text":
+            if 0 <= index < len(self.composition.texts):
+                return self.composition.texts[index]
+        elif kind == "table":
+            if 0 <= index < len(self.composition.tables):
+                return self.composition.tables[index]
+        return None
+
+    def _set_object(self, kind: str, index: int, obj: Any) -> None:
+        """Put an object back where it came from."""
+        if kind == "figure":
+            self.composition.placements[index] = obj
+        elif kind == "shape":
+            self.composition.shapes[index] = obj
+        elif kind == "text":
+            self.composition.texts[index] = obj
+        elif kind == "table":
+            self.composition.tables[index] = obj
+
+    def _object_under(self, cx: float, cy: float) -> Optional[Tuple[str, int]]:
+        """The object under the cursor, and what kind of object it is.
+
+        The kinds are looked for in the order they are drawn, so that the
+        one on top is the one that is found.
+        """
+        text_idx = self._hit_text(cx, cy)
+        if text_idx is not None:
+            return ("text", text_idx)
+        table_idx = self._hit_table(cx, cy)
+        if table_idx is not None:
+            return ("table", table_idx)
+        shape_idx = self._hit_shape(cx, cy)
+        if shape_idx is not None:
+            return ("shape", shape_idx)
+        fig_idx, part = self._hit(cx, cy)
+        if fig_idx is not None and part == "body":
+            return ("figure", fig_idx)
+        return None
+
+    def _format_of(self, kind: str, index: int) -> Optional[Dict[str, Any]]:
+        """The look of an object, ready to be put on another one."""
+        obj = self._object_of(kind, index)
+        if obj is None:
+            return None
+        return comp.format_of(obj, kind)
+
+    def _on_format_brush(self) -> None:
+        """The 格式刷 button: take the look of the object that is picked."""
+        if not self.var_format_brush.get():
+            self._format_brush = None
+            self._status("格式刷已关。")
+            return
+        items = self._selected_boxes()
+        if not items:
+            self.var_format_brush.set(False)
+            self._status("先选中一个元素，再点格式刷。")
+            return
+        kind, index, _ = items[0]
+        fmt = self._format_of(kind, index)
+        if fmt is None:
+            self.var_format_brush.set(False)
+            return
+        self._format_brush = (kind, fmt)
+        self._status("格式刷已就绪：点下一个元素，就把样式给它（Esc 取消）。")
+
+    def _paint_format(self, event: tk.Event) -> bool:
+        """Put the look of the brush on the object under the cursor."""
+        if self._format_brush is None:
+            return False
+        kind, fmt = self._format_brush
+        target = self._object_under(event.x, event.y)
+        if target is None:
+            return False
+        tkind, tindex = target
+        if tkind != kind:
+            self._status("格式刷只给同一种元素上样式。")
+            return True
+        self._remember()
+        self._put_format(tkind, tindex, fmt)
+        self._sync_properties()
+        self._redraw()
+        self._status("已把样式给这个元素。")
+        return True
+
+    def _put_format(self, kind: str, index: int, fmt: Dict[str, Any]) -> None:
+        """Give an object the look of another one."""
+        obj = self._object_of(kind, index)
+        if obj is None:
+            return
+        self._set_object(kind, index, comp.with_format(obj, fmt))
+
+    def _draw_selection_frame(self, left: float, top: float, right: float,
+                              bottom: float, primary: bool = False) -> None:
+        """Mark an object as picked.
+
+        Every picked object gets a frame of its own, so that a selection of
+        several objects shows at once -- otherwise the user cannot tell
+        whether the extra ones were caught.  The object the property panel
+        is editing also gets the grips.
+        """
+        self.canvas.create_rectangle(
+            left, top, right, bottom, outline="#ff7f0e", width=3,
+            tags=("selection",),
+        )
+        if not primary:
+            return
+        for hx, hy in HANDLE_POSITIONS(left, top, right, bottom):
+            self.canvas.create_rectangle(
+                hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
+                hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
+                fill="#ff7f0e", outline="white", width=1, tags=("grip",),
+            )
+
     def _draw_placement(self, idx: int, placement: comp.Placement) -> None:
         left, top, right, bottom = self._canvas_rect(placement.rect)
         # A turned figure takes up the box its corners sweep, the same way
@@ -2596,13 +2838,29 @@ class ComposePanel(tk.Frame):
             width=3 if selected else 2, tags=("fig", str(idx)),
         )
 
-        if primary:
+        if primary and not self._group_box():
             for hx, hy in HANDLE_POSITIONS(left, top, right, bottom):
                 self.canvas.create_rectangle(
                     hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
                     hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
                     fill="#ff7f0e", outline="white", width=1, tags=("fig", str(idx)),
                 )
+
+    def _group_box(self) -> Optional[fitz.Rect]:
+        """The box around a selection of several objects, if there is one.
+
+        A selection of one object is resized by the grips of the object
+        itself; a selection of several -- a group, or a rubber band -- is
+        resized by the grips of the box around it.
+        """
+        boxes = [rect for kind, _, rect in self._selected_boxes()
+                 if kind != "label"]
+        if len(boxes) < 2:
+            return None
+        out = fitz.Rect(boxes[0])
+        for b in boxes[1:]:
+            out |= fitz.Rect(b)
+        return out
 
     def _draw_label(self, idx: int, placement: comp.Placement) -> None:
         if not placement.label:
@@ -2698,13 +2956,7 @@ class ComposePanel(tk.Frame):
                 font=font,
                 anchor=tk.SW, tags=("text", str(idx)))
         if selected:
-            for hx, hy in ((x, y - h), (x + w, y - h), (x + w, y), (x, y)):
-                self.canvas.create_rectangle(
-                    hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
-                    hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
-                    fill="#ff7f0e", outline="white", width=1,
-                    tags=("text", str(idx)),
-                )
+            self._draw_selection_frame(x, y - h, x + w, y, primary=True)
 
     def _draw_turned_text(self, idx: int, item: comp.TextItem) -> None:
         """Show a turned text the way it will be printed."""
@@ -2823,14 +3075,10 @@ class ComposePanel(tk.Frame):
                 font=tk_font("Helvetica", shape.text_size * self._zoom),
                 anchor=tk.CENTER, tags=("shape", tag))
 
-        if primary:
-            for hx, hy in ((left, top), (right, top), (right, bottom),
-                           (left, bottom)):
-                self.canvas.create_rectangle(
-                    hx - HANDLE_PX / 2, hy - HANDLE_PX / 2,
-                    hx + HANDLE_PX / 2, hy + HANDLE_PX / 2,
-                    fill="#ff7f0e", outline="white", width=1, tags=("shape", tag),
-                )
+        if selected:
+            # Every picked element shows its frame, so that a selection of
+            # several of them shows at once.
+            self._draw_selection_frame(left, top, right, bottom, primary=primary)
 
     def _draw_table(self, idx: int, table: comp.Table) -> None:
         """Draw a table on the canvas: its rules and its text."""
@@ -2869,9 +3117,9 @@ class ComposePanel(tk.Frame):
                     tags=("table", tag))
         left, top, right, bottom = self._canvas_rect(table.rect)
         if idx >= 0 and idx in self._sel_tables:
-            self.canvas.create_rectangle(
-                left - 2, top - 2, right + 2, bottom + 2,
-                outline="#ff7f0e", width=1, dash=(3, 2), tags=("table", tag))
+            self._draw_selection_frame(
+                left, top, right, bottom,
+                primary=(idx == self._selected_table))
 
     def _hit_table(self, cx: float, cy: float) -> Optional[int]:
         """Which table the cursor is on.
@@ -3055,6 +3303,18 @@ class ComposePanel(tk.Frame):
 
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
+        if self.tool == TOOL_PAN:
+            # The hand: the cursor drags the canvas, not an object.
+            self._drag_mode = "pan"
+            self._pan_origin = (event.x, event.y)
+            self._pan_from = (self._pan_x, self._pan_y)
+            self._redraw()
+            return
+        if self._format_brush is not None and self.tool == "select":
+            # The format painter gives its look to the object that is
+            # clicked; the click does not move it.
+            if self._paint_format(event):
+                return
         if self.tool in (TOOL_TEXT, TOOL_TEXTBOX):
             # Drop a piece of text where the cursor is.
             ux, uy = self._to_user(event.x, event.y)
@@ -3103,6 +3363,19 @@ class ComposePanel(tk.Frame):
         sheet_handle = self._hit_sheet_handle(event.x, event.y)
         idx, part = self._hit(event.x, event.y)
         fig_hit, shape_hit, part = resolve_pick(shape_idx, idx, part)
+
+        group_handle = self._hit_selection_handle(event.x, event.y)
+        if group_handle is not None and self.tool == "select":
+            # A grip of the box around the selection: the whole selection
+            # is made bigger or smaller.
+            self._drag_mode = "selection-handle"
+            self._drag_start = (event.x, event.y)
+            self._drag_handle = group_handle
+            self._drag_group = self._group_box()
+            self._remember()
+            self._sync_properties()
+            self._redraw()
+            return
 
         if sheet_handle is not None and self.tool == "select":
             # A grip of the sheet itself: the page is resized, not its
@@ -3370,6 +3643,9 @@ class ComposePanel(tk.Frame):
     def _on_drag(self, event: tk.Event) -> None:
         if self._drag_mode is None:
             return
+        if self._drag_mode == "pan":
+            self._on_pan_move(event)
+            return
         if self._drag_mode == "sheet":
             self._drag_sheet(event)
             return
@@ -3380,6 +3656,9 @@ class ComposePanel(tk.Frame):
             self._marquee = fitz.Rect(min(sx, ux), min(sy, uy),
                                        max(sx, ux), max(sy, uy))
             self._redraw()
+            return
+        if self._drag_mode == "selection-handle":
+            self._drag_selection_handle(event)
             return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
@@ -3596,14 +3875,19 @@ class ComposePanel(tk.Frame):
             self._redraw()
             return
         was_sheet = self._drag_mode == "sheet"
+        was_pan = self._drag_mode == "pan"
         self._drag_mode = None
         self._drag_start = None
+        self._drag_handle = 0
+        self._drag_group = None
         self._snap_guides = []
         self._drag_rect = None
         self._drag_shape = None
         self._drag_rects = {}
         self._drag_shapes = {}
         self._update_count()
+        if was_pan:
+            self._pan_origin = None
         if was_sheet:
             self._tell_if_the_page_left_the_window()
 
@@ -3770,6 +4054,13 @@ class ComposePanel(tk.Frame):
             self._delete_selected()
             return
         if key == "Escape":
+            if self._format_brush is not None:
+                # The format brush is put away.
+                self._format_brush = None
+                self.var_format_brush.set(False)
+                self._status("格式刷已关。")
+                self._redraw()
+                return
             self._clear_selection()
             self._sync_properties()
             self._redraw()
@@ -3983,8 +4274,9 @@ class ComposePanel(tk.Frame):
         the tool would never change.
         """
         self.tool = TOOL_BY_NAME.get(self.var_tool.get(), "select")
-        self.canvas.configure(cursor="crosshair" if self.tool != "select"
-                              else "")
+        self.canvas.configure(cursor="fleur" if self.tool == TOOL_PAN
+                              else ("crosshair" if self.tool != "select"
+                                    else ""))
         self._status("已选择工具：{}".format(self.var_tool.get()))
 
     def _choose_font_file(self) -> None:

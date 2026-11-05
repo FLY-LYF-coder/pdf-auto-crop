@@ -574,6 +574,32 @@ The **图形** tab takes the width and the height of a graphic element in
 millimetres, so it comes out exactly the size that was asked for.  With
 nothing picked the same two boxes say how big a new element is.
 
+### Seeing what is selected
+
+Every picked object shows a frame of its own -- figures, graphic elements,
+free text and tables alike -- so a rubber band that caught six objects
+shows six frames and not one.
+
+A selection of several objects also gets a box around it, and the grips
+on that box make the whole selection bigger or smaller with one drag: a
+group of figures is scaled as a whole, and the figures in it keep their
+proportions.
+
+### Moving the canvas
+
+The **移动画布** tool drags the canvas itself, so a figure that is larger
+than the window can be brought into the middle of it.  The middle mouse
+button does the same, the wheel zooms around the cursor, and **适应窗口**
+puts the view back where it was.
+
+### The format painter
+
+**格式刷** takes the look of the object that is picked -- the colour, the
+width, the dash and the fill of a graphic element; the face, the size and
+the colour of a caption -- and gives it to the next object that is
+clicked.  The words and the place of the object are not touched: only the
+look is copied.  **Esc** puts the brush away.
+
 ### What the output is
 
 The sheet is written with the same vector-preserving mechanism as the

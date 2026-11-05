@@ -1228,6 +1228,43 @@ class Table:
         )
 
 
+#: The fields that carry the look of an object.  Where the object stands
+#: and what it says are not part of it: a format painter copies the look,
+#: not the content.
+FORMAT_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "figure": ("label_font", "label_fontfile", "label_size", "label_color",
+               "label_bold", "label_italic", "label_formula", "rotation"),
+    "shape": ("color", "width", "fill", "fill_color", "fill_opacity",
+              "stroke_opacity", "dash", "rotation", "text_size", "text_color"),
+    "text": ("font", "fontfile", "size", "color", "bold", "italic",
+             "formula", "box", "box_color", "box_width"),
+    "table": ("style", "font_size", "font", "fontfile", "header", "color",
+              "line_width", "align"),
+}
+
+
+def format_of(obj: Any, kind: str) -> Dict[str, Any]:
+    """The look of an object, ready to be put on another one.
+
+    Args:
+        obj: The object whose look is wanted.
+        kind: ``"figure"``, ``"shape"``, ``"text"`` or ``"table"``.
+
+    Returns:
+        The values of the fields that carry the look.
+    """
+    return {name: getattr(obj, name) for name in FORMAT_FIELDS[kind]}
+
+
+def with_format(obj: Any, fmt: Dict[str, Any]) -> Any:
+    """A copy of an object with another one's look.
+
+    The copy keeps the place of the object and what it says: only the look
+    is taken over.
+    """
+    return dataclasses.replace(obj, **fmt)
+
+
 @dataclass
 class Group:
     """A set of objects that travel together.

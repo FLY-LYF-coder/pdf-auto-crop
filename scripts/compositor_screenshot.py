@@ -1396,6 +1396,89 @@ def main() -> int:
     finally:
         doc.close()
 
+    # -- every object of a selection shows at once -------------------------
+    # A rubber band that catches several objects has to show all of them:
+    # one highlighted object would look like the band had missed the rest.
+    win._clear_selection()
+    spot_x, spot_y = empty_spots()[0]
+    for kind in (comp.SHAPE_RECT, comp.SHAPE_ELLIPSE):
+        win.composition.shapes.append(comp.Shape(
+            kind, fitz.Point(spot_x + 25, spot_y + 25),
+            fitz.Point(spot_x + 65, spot_y + 55)))
+    win._redraw()
+    win.update()
+    n_shapes = len(win.composition.shapes)
+    bx0, by0 = win._to_canvas(spot_x, spot_y)
+    bx1, by1 = win._to_canvas(spot_x + 85, spot_y + 75)
+    _drag(win, int(bx0), int(by0), int(bx1), int(by1))
+    marked = len(win.canvas.find_withtag("selection"))
+    check("every object of the selection shows at once",
+          marked >= len(win._sel_shapes) + 1,
+          f"{marked} frames for {len(win._sel_shapes)} objects")
+
+    # -- a group can be made smaller by the box around it ------------------
+    win._clear_selection()
+    if len(win.composition.placements) >= 2:
+        win._sel_figs = [0, 1]
+        win._group_selected()
+        win.update()
+        box = win._group_box()
+        check("a group of objects has a box around it",
+              box is not None and box.width > 1, str(box))
+        before = [fitz.Rect(p.rect) for p in win.composition.placements[:2]]
+        left, top, right, bottom = win._canvas_rect(box)
+        # The grip at the bottom right corner, pulled inwards.
+        _drag(win, int(right), int(bottom), int(right) - 40, int(bottom) - 40)
+        after = [fitz.Rect(p.rect) for p in win.composition.placements[:2]]
+        check("dragging the box makes the whole group smaller",
+              all(a.width < b.width for a, b in zip(after, before)),
+              str([(round(a.width), round(b.width))
+                   for a, b in zip(after, before)]))
+        win._ungroup_selected()
+        win._clear_selection()
+
+    # -- the format painter gives its look to another object --------------
+    if win.composition.shapes:
+        win._clear_selection()
+        win._sel_shapes = [0]
+        green = (0.0, 0.7, 0.0)
+        win.composition.shapes[0].color = green
+        win._selected_shape = 0
+        win._sync_properties()
+        win.var_format_brush.set(True)
+        win._on_format_brush()
+        check("the format painter takes the look of the picked object",
+              win._format_brush is not None, str(win._format_brush))
+        # The element that is painted is a new one, on empty ground: nothing
+        # stands on top of it.
+        spot_x, spot_y = empty_spots()[-1]
+        win.composition.shapes.append(comp.Shape(
+            comp.SHAPE_RECT, fitz.Point(spot_x + 25, spot_y + 25),
+            fitz.Point(spot_x + 65, spot_y + 55)))
+        win._redraw()
+        win.update()
+        target = win.composition.shapes[-1]
+        # The stroke is what is grabbed, so the cursor goes onto the edge.
+        cx, cy = win._to_canvas((target.start.x + target.end.x) / 2,
+                                target.end.y)
+        _click(win, int(cx), int(cy))
+        check("the format painter gives its look to the next object",
+              tuple(win.composition.shapes[-1].color) == green,
+              str(win.composition.shapes[-1].color))
+        win.var_format_brush.set(False)
+        win._on_format_brush()
+
+    # -- the canvas can be dragged ------------------------------------------
+    pan_before = (win._pan_x, win._pan_y)
+    _pick_tool(win, "移动画布")
+    _drag(win, 300, 200, 380, 260)
+    check("the canvas can be dragged",
+          (win._pan_x, win._pan_y) != pan_before,
+          f"{pan_before} -> {(win._pan_x, win._pan_y)}")
+    _pick_tool(win, "选择/移动")
+    win._zoom_fit()
+    win.update()
+
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
     n_palette = len(win.palette)

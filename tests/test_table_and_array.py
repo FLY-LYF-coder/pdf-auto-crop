@@ -168,6 +168,64 @@ def test_the_array_of_one_cell_is_the_cell_itself() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The format painter
+# ---------------------------------------------------------------------------
+
+
+def test_the_look_of_an_object_is_separate_from_its_content() -> None:
+    """What a format painter copies is the look, not the words."""
+    shape = comp.Shape(comp.SHAPE_RECT, fitz.Point(0, 0), fitz.Point(10, 10),
+                       color=(1.0, 0.0, 0.0), width=2.5, text="caption")
+    fmt = comp.format_of(shape, "shape")
+    assert fmt["color"] == (1.0, 0.0, 0.0)
+    assert fmt["width"] == pytest.approx(2.5)
+    # The words in the shape are not part of its look.
+    assert "text" not in fmt
+    assert "start" not in fmt and "end" not in fmt
+
+
+def test_the_format_painter_gives_the_look_and_keeps_the_rest() -> None:
+    """The copy keeps its place and its words; only the look is taken."""
+    source = comp.Shape(comp.SHAPE_RECT, fitz.Point(0, 0),
+                        fitz.Point(10, 10), color=(0.0, 1.0, 0.0),
+                        width=3.0, dash=comp.DASH_DASHED)
+    target = comp.Shape(comp.SHAPE_RECT, fitz.Point(50, 50),
+                        fitz.Point(70, 80), color=(1.0, 0.0, 0.0),
+                        width=1.0, text="mine")
+    painted = comp.with_format(target, comp.format_of(source, "shape"))
+    assert painted.color == (0.0, 1.0, 0.0)
+    assert painted.width == pytest.approx(3.0)
+    assert painted.dash == comp.DASH_DASHED
+    # Its own place and its own words are untouched.
+    assert (painted.start.x, painted.start.y) == (50, 50)
+    assert painted.text == "mine"
+
+
+def test_the_look_of_a_figure_is_the_look_of_its_label(tmp_path) -> None:
+    """A figure is painted with the look of its caption."""
+    src = tmp_path / "fig.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=100, height=100)
+    page.draw_rect(fitz.Rect(10, 10, 90, 90), color=(0, 0, 1), fill=(0, 0, 1))
+    doc.save(str(src))
+    doc.close()
+    figure = comp.Figure(path=src, page_index=0,
+                         region=fitz.Rect(0, 0, 100, 100), name="fig")
+    placement = comp.Placement(
+        figure, rect=fitz.Rect(10, 10, 40, 40),
+        label="(a)", label_size=11.0, label_bold=True,
+        label_color=(0.2, 0.3, 0.4),
+    )
+    fmt = comp.format_of(placement, "figure")
+    assert fmt["label_size"] == pytest.approx(11.0)
+    assert fmt["label_bold"] is True
+    assert fmt["label_color"] == (0.2, 0.3, 0.4)
+    # The caption's words and the figure's place are not part of the look.
+    assert "label" not in fmt
+    assert "rect" not in fmt
+
+
+# ---------------------------------------------------------------------------
 # The rubber band
 # ---------------------------------------------------------------------------
 
