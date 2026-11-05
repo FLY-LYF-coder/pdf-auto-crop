@@ -883,6 +883,14 @@ def main() -> int:
     win.update()
     check("a text written like a formula is recognised",
           win.composition.texts[1].formula is True)
+    # Every way of writing a formula is one formula.
+    for form in ("$E = mc^2$", "\\[E = mc^2\\]", "$$E = mc^2$$"):
+        win._set_text_widget(form)
+        win.txt_text.edit_modified(True)
+        win._on_text_changed("typed")
+        win.update()
+        check(f"the formula {form} is recognised",
+              win.composition.texts[1].formula is True, form)
     win.var_text_formula.set(True)
     win._on_text_changed()
     win.update()

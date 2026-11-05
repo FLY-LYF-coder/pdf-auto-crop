@@ -101,6 +101,10 @@ def split_math(text: str) -> List[Tuple[str, bool]]:
         return []
     if body.startswith("\\[") and body.endswith("\\]"):
         return [(body, True)]
+    if body.startswith("$$") and body.endswith("$$") and len(body) >= 4:
+        # A pair of dollar signs is a formula of its own: the inner ones
+        # would otherwise be taken for two empty formulas.
+        return [(body, True)]
     parts: List[Tuple[str, bool]] = []
     pos = 0
     while pos < len(body):

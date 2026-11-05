@@ -96,6 +96,38 @@ def test_every_way_of_writing_a_formula_is_the_same() -> None:
         assert other == first, text
 
 
+@pytest.mark.parametrize("text", ["$E = mc^2$", "\\[E = mc^2\\]", "$$E = mc^2$$"])
+def test_the_delimiters_never_reach_the_file(text, tmp_path) -> None:
+    """The formula is typeset, and its own delimiters stay out of it."""
+    sheet = comp.Composition(width=300.0, height=200.0)
+    sheet.texts.append(comp.TextItem(text=text, position=fitz.Point(40, 60),
+                                     size=14.0, formula=True))
+    out = tmp_path / "formula.pdf"
+    comp.export_composition(sheet, out, fit_to_content=False,
+                            page_size=(300.0, 200.0))
+    doc = fitz.open(str(out))
+    try:
+        page = doc[0]
+        written = page.get_text().strip()
+        assert "$" not in written, written
+        assert "\\" not in written, written
+        spans = [s for b in page.get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        assert spans, "the formula is not on the page"
+        # It stands where the text was put.
+        assert spans[0]["origin"][0] == pytest.approx(40.0, abs=0.5)
+        assert spans[0]["origin"][1] == pytest.approx(140.0, abs=0.5)
+    finally:
+        doc.close()
+
+
+def test_the_two_dollar_signs_are_one_formula() -> None:
+    """``$$...$$`` is a formula, not two empty ones."""
+    parts = tex.split_math("$$E = mc^2$$")
+    assert parts == [("$$E = mc^2$$", True)]
+    assert tex.math_parts("$$E = mc^2$$") is not None
+
+
 def test_a_formula_is_recognised_however_it_is_written() -> None:
     """The user does not have to say that the text is mathematics."""
     assert tex.looks_like_math("$x^2$")
