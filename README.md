@@ -312,7 +312,8 @@ Open it with the **组合…** button in the main window's toolbar.
 | `Ctrl`+click | Add to (or take out of) the selection |
 | Arrow keys | Nudge 1 pt; hold `Shift` for 10 pt |
 | `Delete` | Remove everything that is selected |
-| 置于顶层 / 置于底层 | Change the stacking order |
+| 置于顶层 / 置于底层 | Put the selection on the top or at the bottom |
+| 上移一层 / 下移一层 | Move the selection one layer up or down |
 
 A scientific figure must not be stretched, so resizing keeps the aspect
 ratio: the figure grows away from the corner opposite the handle you drag.
@@ -487,6 +488,55 @@ Everything stays vector: an arrow is a line plus two short strokes for the
 head, a box is a rectangle, a triangle is a polygon.  The dash pattern and
 the opacities are written into the PDF as such.  No bitmap is introduced
 anywhere in the composition.
+
+### The layers of the sheet
+
+Everything on the sheet stands on a layer, and the layers decide what covers
+what.  The four buttons under the property panel move the selection in that
+order:
+
+| Button | Effect |
+| ------ | ------ |
+| 置于顶层 | The selection goes to the top |
+| 置于底层 | The selection goes to the bottom |
+| 上移一层 | The selection swaps with the object just above it |
+| 下移一层 | The selection swaps with the object just below it |
+
+They work on anything that is picked — a figure, a graphic element, a table
+or a piece of text — and on a mixture of them: **one layer** is one object,
+whatever kind it is.  Several objects picked at once move as one block, the
+way a layer does in a drawing program.
+
+A figure's label travels with it: the label stands just above its figure, so
+putting the figure at the bottom takes the label down with it.
+
+### Boolean operations
+
+Two or more graphic elements can be made into one with a boolean operation.
+Pick them (with `Ctrl`+click, or with the rubber band) and press one of the
+four buttons:
+
+| Button | Result |
+| ------ | ------ |
+| 并集 | Everything the elements cover |
+| 交集 | What all of them cover |
+| 差集 | The bottom-most element, less the others |
+| 排除 | What an odd number of them cover |
+
+The elements that took part are replaced by the result — `Ctrl`+`Z` brings
+them back.  The result keeps the look of the base (the bottom-most element):
+its border, its fill and its caption.  It can still be moved, made bigger and
+turned, and it carries the elements it was made from, so it stays exact.
+
+The result is **vector**: PDF's own clipping paths do the work, so the area
+that comes out is the true area, not an approximation, and the file can be
+scaled and printed like the rest of the page.  What the canvas shows is drawn
+by the exporter itself, so the screen and the file agree.
+
+Lines, arrows and braces are open paths: they have no inside to keep or to
+take away, and they cannot take part in an operation.  The result of an
+operation is an area rather than a path, so it cannot take part in another
+one either.
 
 ### The view
 
@@ -1050,9 +1100,31 @@ page is sized to the content instead of the sheet.
 
 A `Shape`'s two points are in the composition's user space, like everything
 else here: an arrow runs from `start` to `end` and puts its head at `end`, and
-a box or an ellipse is the rectangle spanned by the two points.  The drawing
-order is figures, then graphic elements, then labels — a label under an arrow
-is unreadable.
+a box or an ellipse is the rectangle spanned by the two points.  Every object
+stands on a layer, and the layers decide the drawing order; a new object goes
+on top, and a label stands just above the figure it belongs to.
+
+### Layers and boolean operations
+
+```python
+from pdf_auto_crop import compositor as comp
+
+# What is on the sheet, from the bottom up.
+sheet.stack_order()                      # [("figure", 0), ("shape", 1), ...]
+
+# Put one object on top, or move it one layer up.
+sheet.restack([("shape", 1)], "top")
+sheet.restack([("shape", 1)], "up")
+
+# Make one element out of two: the first one is the base.
+result = comp.boolean_result(comp.BOOLEAN_UNION, [box_a, box_b])
+sheet.shapes.append(result)
+```
+
+`restack` renumbers the layers, so they stay small and whole; `"top"`,
+`"bottom"`, `"up"` and `"down"` are the four moves.  A selection moves as one
+block.  `boolean_result` keeps the look of the base and carries the elements
+it was made from, so the result can still be moved, made bigger and turned.
 
 The page is the sheet, and the sheet is a rectangle in the composition's
 frame.  Dragging one of the sheet's grips moves that edge and nothing else:

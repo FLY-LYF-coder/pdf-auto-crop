@@ -76,7 +76,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
 
@@ -249,6 +249,27 @@ SHAPE_TEXT_KINDS: Tuple[str, ...] = (
     SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
 ) + tuple(k for k in SHAPE_KINDS
           if k not in (SHAPE_ARROW, SHAPE_LINE))
+
+#: The kind of a graphic element that is the result of a boolean operation.
+#: It is not in the catalogue: the user cannot draw one, only make one.
+SHAPE_BOOLEAN = "boolean"
+
+#: The boolean operations.  The name says what the result is.
+BOOLEAN_UNION = "union"
+BOOLEAN_INTERSECT = "intersect"
+BOOLEAN_DIFFERENCE = "difference"
+BOOLEAN_EXCLUDE = "exclude"
+
+BOOLEAN_OPS: Tuple[str, ...] = (BOOLEAN_UNION, BOOLEAN_INTERSECT,
+                                BOOLEAN_DIFFERENCE, BOOLEAN_EXCLUDE)
+
+#: What the operations are called in the interface.
+BOOLEAN_NAMES: Dict[str, str] = {
+    BOOLEAN_UNION: "并集",
+    BOOLEAN_INTERSECT: "交集",
+    BOOLEAN_DIFFERENCE: "差集",
+    BOOLEAN_EXCLUDE: "排除",
+}
 
 #: The colour a new shape is drawn in.
 SHAPE_COLOR_DEFAULT: Tuple[float, float, float] = (0.85, 0.1, 0.1)
@@ -610,6 +631,9 @@ class Placement:
     #: The text inside the figure that the user has changed: the line's
     #: number -> its new text.  An empty text takes the line away.
     text_edits: Dict[int, str] = field(default_factory=dict)
+    #: The layer the figure stands on: the bigger the number, the nearer the
+    #: top.  The label of the figure follows it.
+    z: float = 0.0
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
@@ -618,6 +642,7 @@ class Placement:
                              float(self.label_offset[1]))
         self.rotation = float(self.rotation) % 360.0
         self.text_edits = {int(k): str(v) for k, v in self.text_edits.items()}
+        self.z = float(self.z)
 
     @property
     def aspect(self) -> float:
@@ -680,6 +705,7 @@ class Placement:
             "label_offset": list(self.label_offset),
             "rotation": self.rotation,
             "text_edits": {str(k): v for k, v in self.text_edits.items()},
+            "z": self.z,
         }
 
     @classmethod
@@ -702,6 +728,7 @@ class Placement:
             rotation=float(data.get("rotation", 0.0)),
             text_edits={int(k): str(v)
                         for k, v in (data.get("text_edits") or {}).items()},
+            z=float(data.get("z", 0.0)),
         )
 
 
@@ -932,6 +959,15 @@ class Shape:
     text_size: float = 9.0
     #: The caption's colour; the border colour when empty.
     text_color: Optional[Tuple[float, float, float]] = None
+    #: The layer the shape stands on: the bigger the number, the nearer the
+    #: top.
+    z: float = 0.0
+    #: The boolean operation this shape is the result of.  Empty for an
+    #: ordinary shape; one of :data:`BOOLEAN_OPS` for the result of one.
+    op: str = ""
+    #: The shapes the result was made from.  They are kept, so that the
+    #: result can still be moved, made bigger and turned.
+    parts: List["Shape"] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.start = fitz.Point(self.start)
@@ -950,6 +986,14 @@ class Shape:
         self.rotation = float(self.rotation) % 360.0
         if self.dash not in DASH_STYLES:
             self.dash = DASH_SOLID
+        self.z = float(self.z)
+        self.op = str(self.op or "")
+        if self.op not in BOOLEAN_OPS:
+            self.op = ""
+        # The parts may come straight out of a file, where they are plain
+        # dictionaries.
+        self.parts = [p if isinstance(p, Shape) else Shape.from_dict(p)
+                      for p in (self.parts or [])]
 
     @property
     def fill_rgb(self) -> Tuple[float, float, float]:
@@ -994,6 +1038,9 @@ class Shape:
             "text_size": self.text_size,
             "text_color": (list(self.text_color)
                            if self.text_color is not None else None),
+            "z": self.z,
+            "op": self.op,
+            "parts": [p.to_dict() for p in self.parts],
         }
 
     @classmethod
@@ -1019,6 +1066,9 @@ class Shape:
             text=str(data.get("text", "")),
             text_size=float(data.get("text_size", 9.0)),
             text_color=(tuple(text_color) if text_color is not None else None),
+            z=float(data.get("z", 0.0)),
+            op=str(data.get("op", "")),
+            parts=list(data.get("parts", []) or []),
         )
 
 
@@ -1052,6 +1102,8 @@ class TextItem:
     box_width: float = 0.8
     #: How far the text is turned about its own start, in degrees, clockwise.
     rotation: float = 0.0
+    #: The layer the text stands on: the bigger the number, the nearer the top.
+    z: float = 0.0
 
     def __post_init__(self) -> None:
         self.position = fitz.Point(self.position)
@@ -1061,6 +1113,7 @@ class TextItem:
         self.size = max(1.0, float(self.size))
         self.box_width = max(0.1, float(self.box_width))
         self.rotation = float(self.rotation) % 360.0
+        self.z = float(self.z)
 
     def font_info(self) -> Tuple[str, str]:
         """The ``(fontname, fontfile)`` the text is written with."""
@@ -1104,6 +1157,7 @@ class TextItem:
                           if self.box_color is not None else None),
             "box_width": self.box_width,
             "rotation": self.rotation,
+            "z": self.z,
         }
 
     @classmethod
@@ -1123,6 +1177,7 @@ class TextItem:
             box_color=(tuple(box_color) if box_color is not None else None),
             box_width=float(data.get("box_width", 0.8)),
             rotation=float(data.get("rotation", 0.0)),
+            z=float(data.get("z", 0.0)),
         )
 
 
@@ -1173,6 +1228,8 @@ class Table:
     align: str = "center"
     #: The space between the text and the edge of its cell, in points.
     padding: float = 3.0
+    #: The layer the table stands on: the bigger the number, the nearer the top.
+    z: float = 0.0
 
     def __post_init__(self) -> None:
         self.rect = fitz.Rect(self.rect)
@@ -1182,6 +1239,7 @@ class Table:
         self.font_size = max(1.0, float(self.font_size))
         self.line_width = max(0.1, float(self.line_width))
         self.padding = max(0.0, float(self.padding))
+        self.z = float(self.z)
         if self.style not in TABLE_STYLES:
             self.style = TABLE_THREE_LINE
         if self.align not in TABLE_ALIGNS:
@@ -1294,6 +1352,7 @@ class Table:
             "line_width": self.line_width,
             "align": self.align,
             "padding": self.padding,
+            "z": self.z,
         }
 
     @classmethod
@@ -1311,6 +1370,7 @@ class Table:
             line_width=float(data.get("line_width", 0.8)),
             align=str(data.get("align", "center")),
             padding=float(data.get("padding", 3.0)),
+            z=float(data.get("z", 0.0)),
         )
 
 
@@ -1519,6 +1579,126 @@ class Composition:
         for i, t in enumerate(self.texts):
             items.append(("text", i, fitz.Rect(t.rect())))
         return items
+
+    # -- the stacking order -------------------------------------------------
+
+    #: The kinds of object that stand on the sheet.
+    STACK_KINDS: Tuple[str, ...] = ("figure", "shape", "table", "text")
+
+    def object(self, kind: str, index: int) -> Optional[Any]:
+        """The object of that kind at that place, if it is still there."""
+        if kind == "figure":
+            if 0 <= index < len(self.placements):
+                return self.placements[index]
+        elif kind == "shape":
+            if 0 <= index < len(self.shapes):
+                return self.shapes[index]
+        elif kind == "table":
+            if 0 <= index < len(self.tables):
+                return self.tables[index]
+        elif kind == "text":
+            if 0 <= index < len(self.texts):
+                return self.texts[index]
+        return None
+
+    def next_z(self) -> float:
+        """The layer a new object takes: a new object goes on top."""
+        layers = [p.z for p in self.placements]
+        layers += [s.z for s in self.shapes]
+        layers += [t.z for t in self.tables]
+        layers += [t.z for t in self.texts]
+        return max(layers) + 1.0 if layers else 0.0
+
+    def stack_order(self) -> List[Tuple[str, int]]:
+        """Every object on the sheet, from the bottom up.
+
+        The layer number decides the order.  Objects on the same layer keep
+        the order they were made in -- the figures first, then the graphic
+        elements, the tables and the free text -- so a file from before the
+        layers existed comes out exactly as it was.
+        """
+        items: List[Tuple[float, int, int, str, int]] = []
+        for i, p in enumerate(self.placements):
+            items.append((p.z, 0, i, "figure", i))
+        for i, s in enumerate(self.shapes):
+            items.append((s.z, 1, i, "shape", i))
+        for i, t in enumerate(self.tables):
+            items.append((t.z, 2, i, "table", i))
+        for i, t in enumerate(self.texts):
+            items.append((t.z, 3, i, "text", i))
+        items.sort(key=lambda it: (it[0], it[1], it[2]))
+        return [(kind, index) for _, _, _, kind, index in items]
+
+    def draw_order(self) -> List[Tuple[str, int]]:
+        """Everything that is drawn, in the order it is drawn.
+
+        The label of a figure stands just above its figure: it travels with
+        it.  A file from before the layers existed keeps the look it had,
+        because every object was on the same layer and the labels stood
+        above them all.
+        """
+        items: List[Tuple[float, int, int, str, int]] = []
+        for i, p in enumerate(self.placements):
+            items.append((p.z, 0, i, "figure", i))
+            if p.label:
+                items.append((p.z + 0.5, 0, i, "label", i))
+        for i, s in enumerate(self.shapes):
+            items.append((s.z, 1, i, "shape", i))
+        for i, t in enumerate(self.tables):
+            items.append((t.z, 2, i, "table", i))
+        for i, t in enumerate(self.texts):
+            items.append((t.z, 3, i, "text", i))
+        items.sort(key=lambda it: (it[0], it[1], it[2]))
+        return [(kind, index) for _, _, _, kind, index in items]
+
+    def restack(self, items: Sequence[Tuple[str, int]], where: str) -> bool:
+        """Move objects in the drawing order.
+
+        ``where`` is "top", "bottom", "up" or "down".  A selection moves as
+        one block, the way a layer does in a drawing program: the objects
+        keep the order they had among themselves.
+
+        Returns:
+            Whether anything moved.
+        """
+        order = self.stack_order()
+        picked: List[Tuple[str, int]] = []
+        for item in items:
+            if item in order and item not in picked:
+                picked.append(item)
+        if not picked:
+            return False
+        chosen = set(picked)
+        rest = [item for item in order if item not in chosen]
+        if where == "top":
+            new = rest + picked
+        elif where == "bottom":
+            new = picked + rest
+        elif where in ("up", "down"):
+            places = [order.index(item) for item in picked]
+            low, high = min(places), max(places)
+            block = order[low:high + 1]
+            if where == "up":
+                if high >= len(order) - 1:
+                    return False
+                new = (order[:low] + [order[high + 1]] + block
+                       + order[high + 2:])
+            else:
+                if low <= 0:
+                    return False
+                new = (order[:low - 1] + block + [order[low - 1]]
+                       + order[high + 1:])
+        else:
+            raise ValueError(f"unknown stacking move: {where!r}")
+        if new == order:
+            # Nothing moved: there was no room.
+            return False
+        # The layers are numbered again, so that they stay small and whole.
+        for rank, (kind, index) in enumerate(new):
+            obj = self.object(kind, index)
+            if obj is not None:
+                obj.z = float(rank)
+        return True
 
     def to_dict(self) -> dict:
         return {
@@ -2503,7 +2683,9 @@ def _append_to_page(page: fitz.Page, data: bytes) -> None:
         old = doc.xref_stream(last)
     except Exception:  # noqa: BLE001 -- a content stream that cannot be read
         old = b""
-    doc.update_stream(last, old + data, new=0)
+    # A space between the two: the old content may end with an operator,
+    # and "Qq" is not a keyword.
+    doc.update_stream(last, old + b"\n" + data, new=0)
 
 
 def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
@@ -2516,6 +2698,13 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
     ``written`` collects the text that was put on the page, by the font it was
     written with, so that the fonts can be repaired afterwards.
     """
+    if shape.kind == SHAPE_BOOLEAN:
+        # The result of a boolean operation is not an outline of its own: it
+        # is the area the operation leaves behind.
+        draw_boolean(page, shape, 0.0, 0.0, page_height)
+        if shape.text:
+            _draw_shape_caption(page, shape, shape.rect, page_height, written)
+        return
     p0 = fitz.Point(shape.start.x, page_height - shape.start.y)
     p1 = fitz.Point(shape.end.x, page_height - shape.end.y)
     color = shape.color
@@ -2575,6 +2764,350 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
 
     if shape.text:
         _draw_shape_caption(page, shape, box, page_height, written)
+
+
+# ---------------------------------------------------------------------------
+# Boolean operations on graphic elements
+# ---------------------------------------------------------------------------
+
+
+def can_boolean(shape: Shape) -> bool:
+    """Whether the shape may take part in a boolean operation.
+
+    A line, an arrow and a brace are open paths: they have no inside to
+    keep or to take away.  The result of an operation cannot take part
+    either: it is an area, not a path, and there is no way to clip by it.
+    """
+    return (shape.kind not in SHAPE_OPEN_KINDS
+            and shape.kind not in (SHAPE_LINE, SHAPE_ARROW, SHAPE_BOOLEAN))
+
+
+def boolean_result(op: str, shapes: Sequence[Shape]) -> Shape:
+    """The graphic element that is the result of a boolean operation.
+
+    ``shapes`` are the elements that take part, from the bottom up: the
+    first one is the base, and a difference is taken from it.
+
+    The result keeps the look of the base -- its border, its fill and its
+    caption -- and carries the shapes it was made from, so that it can
+    still be moved, made bigger and turned.
+
+    Raises:
+        ValueError: When the operation is unknown or there are not enough
+            shapes to work with.
+    """
+    if op not in BOOLEAN_OPS:
+        raise ValueError(f"unknown boolean operation: {op!r}")
+    if len(shapes) < 2:
+        raise ValueError("a boolean operation needs at least two shapes")
+    for shape in shapes:
+        if not can_boolean(shape):
+            raise ValueError(
+                f"a {shape.kind} cannot take part in a boolean operation")
+    base = shapes[0]
+    parts = [dataclasses.replace(s) for s in shapes]
+    box = None
+    for part in parts:
+        box = fitz.Rect(part.rect) if box is None else (box | part.rect)
+    result = dataclasses.replace(
+        base,
+        kind=SHAPE_BOOLEAN,
+        start=fitz.Point(box.x0, box.y0),
+        end=fitz.Point(box.x1, box.y1),
+        rotation=0.0,
+        parts=parts,
+    )
+    result.op = op
+    return result
+
+
+def boolean_bounds(shape: Shape) -> Optional[fitz.Rect]:
+    """The box the result of a boolean operation takes up."""
+    box = None
+    for part in shape.parts:
+        box = fitz.Rect(part.rect) if box is None else (box | part.rect)
+    if box is None:
+        return None
+    if abs(shape.rotation) > 1e-6:
+        box = rotated_bbox(box, shape.rotation)
+    return box
+
+
+def shift_shape(shape: Shape, dx: float, dy: float) -> Shape:
+    """Move a shape, and the shapes a result was made from."""
+    parts = [dataclasses.replace(
+        p,
+        start=fitz.Point(p.start.x + dx, p.start.y + dy),
+        end=fitz.Point(p.end.x + dx, p.end.y + dy),
+    ) for p in shape.parts]
+    return dataclasses.replace(
+        shape,
+        start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+        end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+        parts=parts,
+    )
+
+
+def mirror_shape(shape: Shape, axis: str) -> Shape:
+    """Mirror a shape about its own middle.
+
+    A shape that is the result of a boolean operation is made of other
+    shapes, and those are the ones that are mirrored.
+    """
+    box = shape.rect
+    cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
+
+    def turn(point: fitz.Point) -> fitz.Point:
+        if axis == "x":
+            return fitz.Point(2 * cx - point.x, point.y)
+        return fitz.Point(point.x, 2 * cy - point.y)
+
+    parts = [dataclasses.replace(p, start=turn(p.start), end=turn(p.end))
+             for p in shape.parts]
+    return dataclasses.replace(shape, start=turn(shape.start),
+                               end=turn(shape.end), parts=parts)
+
+
+def _part_in_box(part: Shape, box: fitz.Rect) -> Shape:
+    """Put one of the shapes of a result in another box.
+
+    The shape keeps the direction it was drawn in: an arrow that pointed to
+    the left still points to the left.
+    """
+    if part.end.x >= part.start.x:
+        x0, x1 = box.x0, box.x1
+    else:
+        x0, x1 = box.x1, box.x0
+    if part.end.y >= part.start.y:
+        y0, y1 = box.y0, box.y1
+    else:
+        y0, y1 = box.y1, box.y0
+    return dataclasses.replace(part, start=fitz.Point(x0, y0),
+                               end=fitz.Point(x1, y1))
+
+
+def transform_boolean(shape: Shape, rect: fitz.Rect, resize: bool) -> Shape:
+    """Move the result of a boolean operation, or make it bigger.
+
+    The result is made of the shapes it was made from, so those are the ones
+    that move.
+    """
+    old = shape.rect
+    parts: List[Shape] = []
+    for part in shape.parts:
+        r = part.rect
+        if resize:
+            sx = rect.width / old.width if old.width else 1.0
+            sy = rect.height / old.height if old.height else 1.0
+            box = fitz.Rect(
+                rect.x0 + (r.x0 - old.x0) * sx, rect.y0 + (r.y0 - old.y0) * sy,
+                rect.x0 + (r.x1 - old.x0) * sx, rect.y0 + (r.y1 - old.y0) * sy)
+        else:
+            dx = rect.x0 - old.x0
+            dy = rect.y0 - old.y0
+            box = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
+        parts.append(_part_in_box(part, box))
+    box = None
+    for part in parts:
+        box = fitz.Rect(part.rect) if box is None else (box | part.rect)
+    if box is None:
+        box = fitz.Rect(shape.rect)
+    return dataclasses.replace(shape,
+                               start=fitz.Point(box.x0, box.y0),
+                               end=fitz.Point(box.x1, box.y1),
+                               parts=parts)
+
+
+def _boolean_outline(part: Shape, result: Shape, dx: float, dy: float,
+                     page_height: float) -> List[Tuple[float, float]]:
+    """The outline of one of the shapes a result was made from.
+
+    The points come back in the PDF's own frame, where the y grows upwards.
+    """
+    p0 = fitz.Point(part.start.x + dx, page_height - (part.start.y + dy))
+    p1 = fitz.Point(part.end.x + dx, page_height - (part.end.y + dy))
+    # The result may be turned: the whole compound turns about its middle.
+    centre = fitz.Point((result.start.x + result.end.x) / 2 + dx,
+                        page_height - ((result.start.y + result.end.y) / 2 + dy))
+    p0 = rotate_point(p0, centre, result.rotation)
+    p1 = rotate_point(p1, centre, result.rotation)
+    # The shape keeps the turn it had of its own.
+    own = fitz.Point((p0.x + p1.x) / 2, (p0.y + p1.y) / 2)
+    p0 = rotate_point(p0, own, part.rotation)
+    p1 = rotate_point(p1, own, part.rotation)
+    box = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
+                    max(p0.x, p1.x), max(p0.y, p1.y))
+    points = shape_clip_points(part.kind, box)
+    # The page counts downwards; the PDF counts upwards.
+    return [(x, page_height - y) for x, y in points]
+
+
+def _signed_area(points: Sequence[Tuple[float, float]]) -> float:
+    """How much room a closed path takes, with the sign of its winding."""
+    total = 0.0
+    count = len(points)
+    for i in range(count):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % count]
+        total += x0 * y1 - x1 * y0
+    return total / 2.0
+
+
+def _same_winding(points: Sequence[Tuple[float, float]]
+                  ) -> List[Tuple[float, float]]:
+    """The points of a path, wound the same way as a clockwise path.
+
+    The union of two paths is only their union when they wind the same way:
+    the other way round, the area they share is left out.
+    """
+    if _signed_area(points) > 0:
+        return list(reversed(points))
+    return list(points)
+
+
+def _boolean_path(points: Sequence[Tuple[float, float]]) -> str:
+    """The operators that trace a closed path."""
+    if not points:
+        return ""
+    out = [f"{points[0][0]:.3f} {points[0][1]:.3f} m"]
+    out.extend(f"{x:.3f} {y:.3f} l" for x, y in points[1:])
+    out.append("h")
+    return " ".join(out)
+
+
+def _boolean_paths(shape: Shape, dx: float, dy: float,
+                   page_height: float) -> List[str]:
+    """The paths of the shapes the result was made from."""
+    outlines = [_boolean_outline(p, shape, dx, dy, page_height)
+                for p in shape.parts]
+    return [_boolean_path(_same_winding(o)) for o in outlines]
+
+
+def _boolean_region(op: str, paths: Sequence[str]) -> str:
+    """The operators that clip the page to the result of the operation.
+
+    PDF's own clipping paths do the work.  A clip can only be narrowed, and
+    the odd-even rule (``W*``) takes a path away from the region the page
+    is clipped to.
+    """
+    if not paths:
+        return ""
+    if op == BOOLEAN_UNION:
+        # One path with all the shapes in it: the non-zero rule keeps the
+        # lot of them.
+        return " ".join(paths) + " W n"
+    if op == BOOLEAN_INTERSECT:
+        return " ".join(f"{path} W n" for path in paths)
+    if op == BOOLEAN_DIFFERENCE:
+        # The base, less each of the others.  The odd-even rule takes away
+        # the part of the base the other shape covers.
+        base, rest = paths[0], paths[1:]
+        out = [f"{base} W n"]
+        out.extend(f"{base} {other} W* n" for other in rest)
+        return " ".join(out)
+    if op == BOOLEAN_EXCLUDE:
+        # The odd-even rule leaves what an odd number of shapes cover.
+        return " ".join(paths) + " W* n"
+    raise ValueError(f"unknown boolean operation: {op!r}")
+
+
+def _boolean_border(shape: Shape, paths: Sequence[str]) -> str:
+    """The operators that stroke the outline the result really has.
+
+    Every shape is stroked only where the others do not cover it, so the
+    seam between two shapes does not show up in a union.
+    """
+    r, g, b = shape.color
+    dashes, _cap = dash_pattern(shape.dash)
+    style = f"{shape.width:.3f} w {r:.3f} {g:.3f} {b:.3f} RG"
+    if dashes:
+        style += f" {dashes} d"
+    ops: List[str] = []
+    for i, path in enumerate(paths):
+        if shape.op == BOOLEAN_UNION:
+            # The part of this shape that the others do not cover.
+            clip = f"{path} W n"
+            for j, other in enumerate(paths):
+                if j != i:
+                    clip += f" {path} {other} W* n"
+        elif shape.op == BOOLEAN_INTERSECT:
+            clip = f"{path} W n"
+            for j, other in enumerate(paths):
+                if j != i:
+                    clip += f" {other} W n"
+        elif shape.op == BOOLEAN_DIFFERENCE:
+            if i == 0:
+                clip = f"{path} W n"
+                for other in paths[1:]:
+                    clip += f" {path} {other} W* n"
+            else:
+                # The edge of the hole that was cut out.
+                clip = f"{path} W n {paths[0]} W n"
+        else:  # exclude
+            clip = " ".join(paths) + " W* n"
+        ops.append(f"q {clip} {path} {style} S Q")
+    return " ".join(ops)
+
+
+def _graphics_state(page: fitz.Page, shape: Shape) -> str:
+    """The name of the graphics state that carries the opacities."""
+    fill_alpha = shape.fill_opacity if shape.fill else 1.0
+    stroke_alpha = shape.stroke_opacity
+    if fill_alpha >= 1.0 and stroke_alpha >= 1.0:
+        return ""
+    doc = page.parent
+    xref = doc.get_new_xref()
+    doc.update_object(
+        xref,
+        f"<< /Type /ExtGState /ca {fill_alpha:.3f} /CA {stroke_alpha:.3f} >>")
+    _page_resource(page, "ExtGState", f"/GS{xref} {xref} 0 R")
+    return f"/GS{xref} gs "
+
+
+def _boolean_shading(page: fitz.Page, shape: Shape, dx: float, dy: float,
+                     page_height: float) -> int:
+    """The shading that carries the gradient of a result."""
+    doc = page.parent
+    angle = math.radians(shape.gradient_angle)
+    box = shape.rect
+    cx = (box.x0 + box.x1) / 2 + dx
+    cy = page_height - (box.y0 + box.y1) / 2 + dy
+    half = max(box.width, box.height) / 2
+    ux = math.cos(angle) * half
+    uy = math.sin(angle) * half
+    xref = _shading_object(doc, shape.fill_rgb, shape.fill_gradient,
+                           (cx - ux, cy - uy, cx + ux, cy + uy))
+    _page_resource(page, "Shading", f"/Sh{xref} {xref} 0 R")
+    return xref
+
+
+def draw_boolean(page: fitz.Page, shape: Shape, dx: float, dy: float,
+                 page_height: float) -> None:
+    """Draw the result of a boolean operation on a page.
+
+    The region is filled through a clip, and the outline that belongs to the
+    result is stroked through another one.  Both come out of PDF's own
+    clipping paths, so the result is exact -- and still vector.
+    """
+    if not shape.op or len(shape.parts) < 2:
+        return
+    paths = _boolean_paths(shape, dx, dy, page_height)
+    if not all(paths):
+        return
+    region = _boolean_region(shape.op, paths)
+    if not region:
+        return
+    content = f"q {_graphics_state(page, shape)}"
+    if shape.fill:
+        if shape.fill_gradient is not None:
+            xref = _boolean_shading(page, shape, dx, dy, page_height)
+            content += f" {region} /Sh{xref} sh"
+        else:
+            r, g, b = shape.fill_rgb
+            content += (f" {region} {' '.join(paths)} "
+                        f"{r:.3f} {g:.3f} {b:.3f} rg f")
+    content += f" {_boolean_border(shape, paths)} Q"
+    _append_to_page(page, content.encode("ascii"))
 
 
 def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
@@ -2882,6 +3415,55 @@ def _spans_on_page(page: fitz.Page) -> List[Dict[str, Any]]:
     return out
 
 
+def _draw_placement(page: fitz.Page, placement: Placement, h: float,
+                    dx: float, dy: float,
+                    written: Optional[Dict[str, str]] = None) -> None:
+    """Put a figure on the page."""
+    rect = fitz.Rect(
+        placement.rect.x0 + dx, placement.rect.y0 + dy,
+        placement.rect.x1 + dx, placement.rect.y1 + dy,
+    )
+    baked = fitz.open(str(bake_with_edits(placement.figure,
+                                          placement.text_edits)))
+    try:
+        # The figure's rect is in user space; MuPDF wants top-down.
+        target = to_mupdf_rect(rect, h)
+        if abs(placement.rotation) > 1e-6:
+            # A turned figure keeps its size and takes up the box its
+            # corners sweep, so the target has to grow with it.
+            target = rotated_bbox(target, placement.rotation)
+        page.show_pdf_page(target, baked, 0, rotate=placement.rotation)
+    finally:
+        baked.close()
+
+
+def _draw_label(page: fitz.Page, placement: Placement, h: float,
+                dx: float, dy: float,
+                written: Optional[Dict[str, str]] = None) -> None:
+    """Write the label of a figure."""
+    if not placement.label:
+        return
+    fontname, fontfile = placement.label_font_info()
+    # The label travels with the figure, so it moves with the page
+    # when the page is resized to the content.
+    anchor = placement.label_anchor()
+    anchor = fitz.Point(anchor.x + dx, anchor.y + dy)
+    if placement.label_formula:
+        from .tex import render_math
+        rendered = render_math(placement.label, placement.label_size)
+        if rendered is not None:
+            draw_formula(page, rendered, anchor, h)
+            return
+    # The anchor is in user space; MuPDF wants top-down.
+    baseline = fitz.Point(anchor.x, h - anchor.y)
+    _note_font(written, fontname, placement.label)
+    page.insert_text(
+        baseline, placement.label, fontsize=placement.label_size,
+        fontname=fontname, fontfile=fontfile or None,
+        color=placement.label_color,
+    )
+
+
 def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
                        dx: float, dy: float, subset: bool = True) -> Path:
     """Write the sheet itself."""
@@ -2891,79 +3473,36 @@ def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
         #: What was written, by the font it was written with.
         written: Dict[str, str] = {}
 
-        # 1. the figures
-        for placement in comp.placements:
-            rect = fitz.Rect(
-                placement.rect.x0 + dx, placement.rect.y0 + dy,
-                placement.rect.x1 + dx, placement.rect.y1 + dy,
-            )
-            baked = fitz.open(str(bake_with_edits(placement.figure,
-                                                  placement.text_edits)))
-            try:
-                # The figure's rect is in user space; MuPDF wants top-down.
-                target = to_mupdf_rect(rect, h)
-                if abs(placement.rotation) > 1e-6:
-                    # A turned figure keeps its size and takes up the box its
-                    # corners sweep, so the target has to grow with it.
-                    target = rotated_bbox(target, placement.rotation)
-                page.show_pdf_page(target, baked, 0,
-                                   rotate=placement.rotation)
-            finally:
-                baked.close()
-
-        # 2. the graphic elements, on top of the figures
-        for shape in comp.shapes:
-            # The whole style travels with the shape -- rebuilding it from
-            # the old fields would quietly drop the fill colour, the
-            # opacities and the line style.
-            moved = dataclasses.replace(
-                shape,
-                start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
-                end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
-            )
-            draw_shape(page, moved, h, written=written)
-
-        # 3. the tables, on top of the graphic elements
-        for table in comp.tables:
-            moved = dataclasses.replace(
-                table,
-                rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
-                               table.rect.x1 + dx, table.rect.y1 + dy),
-            )
-            draw_table(page, moved, h, written=written)
-
-        # 4. the free-standing text, on top of the graphic elements
-        for item in comp.texts:
-            moved = dataclasses.replace(
-                item,
-                position=fitz.Point(item.position.x + dx,
-                                    item.position.y + dy),
-            )
-            draw_text_item(page, moved, h, written=written)
-
-        # 5. the labels, on top of everything
-        for placement in comp.placements:
-            if not placement.label:
-                continue
-            fontname, fontfile = placement.label_font_info()
-            # The label travels with the figure, so it moves with the page
-            # when the page is resized to the content.
-            anchor = placement.label_anchor()
-            anchor = fitz.Point(anchor.x + dx, anchor.y + dy)
-            if placement.label_formula:
-                from .tex import render_math
-                rendered = render_math(placement.label, placement.label_size)
-                if rendered is not None:
-                    draw_formula(page, rendered, anchor, h)
-                    continue
-            # The anchor is in user space; MuPDF wants top-down.
-            baseline = fitz.Point(anchor.x, h - anchor.y)
-            _note_font(written, fontname, placement.label)
-            page.insert_text(
-                baseline, placement.label, fontsize=placement.label_size,
-                fontname=fontname, fontfile=fontfile or None,
-                color=placement.label_color,
-            )
+        # Everything is drawn in the order of the layers: the bottom one
+        # first, the top one last.  The label of a figure stands just above
+        # its figure, so it travels with it.
+        for kind, index in comp.draw_order():
+            if kind == "figure":
+                _draw_placement(page, comp.placements[index], h, dx, dy, written)
+            elif kind == "shape":
+                # The whole style travels with the shape -- rebuilding it
+                # from the old fields would quietly drop the fill colour,
+                # the opacities and the line style.
+                moved = shift_shape(comp.shapes[index], dx, dy)
+                draw_shape(page, moved, h, written=written)
+            elif kind == "table":
+                table = comp.tables[index]
+                moved = dataclasses.replace(
+                    table,
+                    rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                                   table.rect.x1 + dx, table.rect.y1 + dy),
+                )
+                draw_table(page, moved, h, written=written)
+            elif kind == "text":
+                item = comp.texts[index]
+                moved = dataclasses.replace(
+                    item,
+                    position=fitz.Point(item.position.x + dx,
+                                        item.position.y + dy),
+                )
+                draw_text_item(page, moved, h, written=written)
+            else:  # the label of a figure
+                _draw_label(page, comp.placements[index], h, dx, dy, written)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         if subset:
             subset_fonts(out)

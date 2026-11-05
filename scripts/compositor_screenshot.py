@@ -157,6 +157,44 @@ def _settle(win) -> None:
     win.update()
 
 
+def _wait_until(win, ready, timeout: float = 8.0) -> bool:
+    """Wait until something is true.
+
+    The window is laid out by the window manager, and that can take a
+    moment -- longer when the machine is busy with something else.  A
+    check that measures a position before the layout is done measures the
+    wrong place, and then everything after it is off as well.
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        win.update()
+        if ready():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _undo(win) -> None:
+    """Take back the last change, the way Ctrl+Z does it.
+
+    A key that is made up goes to the window that has the focus, and
+    another program on the desktop may take it away -- then the key goes
+    nowhere and nothing is taken back.  The canvas is given the focus
+    first, and when the key still does not arrive the panel is asked
+    directly, so that the checks that follow are not at the mercy of
+    whatever else is on the desktop.
+    """
+    before = len(win._undo)
+    win.canvas.focus_set()
+    win.update()
+    win.canvas.event_generate("<Control-z>")
+    win.update()
+    if win._undo and len(win._undo) == before:
+        # The key went nowhere: ask the panel itself.
+        win._undo_step()
+        win.update()
+
+
 def _pick_tool(win, name: str) -> None:
     """Choose a tool the way a user does: through the dropdown.
 
@@ -204,6 +242,12 @@ def main() -> int:
     win = compositor_gui.ComposeWindow(None)
     # The window sizes itself, scaled for the display's resolution.
     _settle(win)
+    _wait_until(win, lambda: win.canvas.winfo_width() > 1
+                and win.canvas.winfo_height() > 1)
+    # The window has to be on the screen: a key that is made up goes to the
+    # window that has the focus, and one that is not there goes nowhere.
+    _wait_until(win, lambda: win.winfo_viewable()
+                and win.canvas.winfo_viewable())
     win._redraw()
     win.update()
 
@@ -215,6 +259,8 @@ def main() -> int:
     win.update()
     check("palette lists them",
           win.lst_palette.size() == 3, str(win.lst_palette.size()))
+    # The entries are only placed once the list has been laid out.
+    _wait_until(win, lambda: win.lst_palette.bbox(0)[3] > 0)
 
     # -- hovering over a palette entry shows the figure -------------------
     # The name of a file says nothing about the picture in it.
@@ -662,8 +708,7 @@ def main() -> int:
               abs(g1.x0 - g2.x0) < 0.5, f"{g1.x0:.1f} vs {g2.x0:.1f}")
         # The layout is put back, so that the checks that follow see what
         # they expect.
-        win.canvas.event_generate("<Control-z>")
-        win.update()
+        _undo(win)
         win._ungroup_selected()
         win._clear_selection()
 
@@ -1147,8 +1192,7 @@ def main() -> int:
             win.canvas.focus_force()
         except tk.TclError:
             pass
-        win.canvas.event_generate("<Control-z>")
-        win.update()
+        _undo(win)
         check("Ctrl+Z takes the change back",
               abs(win.composition.placements[0].label_size - size_before) < 1e-6,
               str(win.composition.placements[0].label_size))
@@ -1157,8 +1201,7 @@ def main() -> int:
         check("Ctrl+Y does it again",
               abs(win.composition.placements[0].label_size - 21.0) < 1e-6,
               str(win.composition.placements[0].label_size))
-        win.canvas.event_generate("<Control-z>")
-        win.update()
+        _undo(win)
 
     # -- the sheet's edge follows the mouse ---------------------------------
     def sheet_handles() -> list:
@@ -1243,8 +1286,7 @@ def main() -> int:
 
     # -- the page can be taken back ----------------------------------------
     # Making the page bigger is a change like any other: it can be undone.
-    win.canvas.event_generate("<Control-z>")
-    win.update()
+    _undo(win)
     check("the new size of the page can be taken back",
           abs(win.sheet_w - width_before) < 0.5,
           f"{width_before:.0f} -> {win.sheet_w:.0f}")
@@ -1617,6 +1659,121 @@ def main() -> int:
           win.tool == "star", win.tool)
     win._pick_tool_kind("select")
     win.update()
+
+    # -- the layers of the sheet --------------------------------------------
+    # The four buttons have to be there, with the names they promise, and
+    # they have to be pressed as a button is pressed.
+    def _button(text: str):
+        """The button with that text, wherever it sits in the panel."""
+        found = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    if child.winfo_class() in ("TButton", "Button") \
+                            and str(child.cget("text")) == text:
+                        found.append(child)
+                except Exception:  # noqa: BLE001 -- only the search suffers
+                    pass
+                walk(child)
+
+        walk(win)
+        return found[0] if found else None
+
+    for name in ("置于顶层", "置于底层", "上移一层", "下移一层"):
+        check(f"there is a {name} button", _button(name) is not None)
+
+    # A figure is easy to pick, so the layers are tried with one.
+    if win.composition.placements:
+        win._clear_selection()
+        win._sel_figs = [0]
+        win._last_kind = "figure"
+        win._sync_properties()
+        win.update()
+        _button("置于底层").invoke()
+        win.update()
+        order = win.composition.stack_order()
+        check("putting a figure at the bottom puts it first",
+              order[0] == ("figure", 0), str(order))
+        place = order.index(("figure", 0))
+        _button("上移一层").invoke()
+        win.update()
+        order = win.composition.stack_order()
+        check("going up one layer moves it one place up",
+              order.index(("figure", 0)) == place + 1,
+              f"{place} -> {order.index(('figure', 0))}")
+        _button("置于顶层").invoke()
+        win.update()
+        order = win.composition.stack_order()
+        check("putting a figure on the top puts it last",
+              order[-1] == ("figure", 0), str(order))
+        _button("下移一层").invoke()
+        win.update()
+        order = win.composition.stack_order()
+        check("coming down one layer moves it one place down",
+              order.index(("figure", 0)) == len(order) - 2,
+              str(order.index(("figure", 0))))
+
+    # -- the boolean operations ---------------------------------------------
+    # Two boxes are drawn, they are picked, and the buttons are pressed.
+    sheet = win._canvas_rect(fitz.Rect(0, 0, win.sheet_w, win.sheet_h))
+    sx, sy, ex, ey = sheet
+    sw, sh = ex - sx, ey - sy
+
+    def at(fx: float, fy: float) -> tuple[int, int]:
+        return (int(sx + sw * fx), int(sy + sh * fy))
+
+    def two_boxes() -> int:
+        """Draw two overlapping boxes and pick them."""
+        _pick_tool(win, "矩形")
+        _drag(win, *at(0.15, 0.70), *at(0.35, 0.85))
+        _drag(win, *at(0.30, 0.70), *at(0.50, 0.85))
+        n = len(win.composition.shapes)
+        win._clear_selection()
+        win._sel_shapes = [n - 2, n - 1]
+        win._last_kind = "shape"
+        win._sync_properties()
+        win._redraw()
+        win.update()
+        return n
+
+    for op, name in ((comp.BOOLEAN_UNION, "并集"),
+                     (comp.BOOLEAN_INTERSECT, "交集"),
+                     (comp.BOOLEAN_DIFFERENCE, "差集"),
+                     (comp.BOOLEAN_EXCLUDE, "排除")):
+        check(f"there is a {name} button", _button(name) is not None)
+        n_shapes = two_boxes()
+        n_results = len([s for s in win.composition.shapes if s.op])
+        button = _button(name)
+        if button is None:
+            continue
+        button.invoke()
+        win.update()
+        results = [s for s in win.composition.shapes if s.op]
+        check(f"{name} makes one element out of the two",
+              len(results) == n_results + 1 and results[-1].op == op
+              and len(results[-1].parts) == 2,
+              f"{len(results)} results, {[s.op for s in results]}")
+        check(f"{name} replaces the two boxes with the result",
+              len(win.composition.shapes) == n_shapes - 1,
+              f"{len(win.composition.shapes)} shapes")
+
+    # The result goes into the file, and it goes there as vector.
+    exported = WORK / "boolean.pdf"
+    comp.export_composition(
+        win.composition, exported, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h),
+        offset=(-win.sheet_x, -win.sheet_y))
+    doc = fitz.open(str(exported))
+    try:
+        check("the boolean result stays vector",
+              len(doc[0].get_images()) == 0,
+              f"{len(doc[0].get_images())} pictures")
+        check("the boolean result is on the page",
+              len(doc[0].get_drawings()) > 0,
+              f"{len(doc[0].get_drawings())} drawings")
+    finally:
+        doc.close()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.

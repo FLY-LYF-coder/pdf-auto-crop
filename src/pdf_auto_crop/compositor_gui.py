@@ -904,12 +904,15 @@ def _signature(composition: comp.Composition) -> Tuple:
     """A short description of the sheet, to tell one state from another."""
     return (
         tuple(tuple(p.rect) + (p.label, p.label_size, p.label_mode,
-                               p.label_offset, p.rotation)
+                               p.label_offset, p.rotation, p.z)
               for p in composition.placements),
-        tuple((tuple(s.start), tuple(s.end), s.kind) for s in composition.shapes),
-        tuple((tuple(t.rect), tuple(t.rows), t.style, t.font_size)
+        tuple((tuple(s.start), tuple(s.end), s.kind, s.z, s.op,
+               tuple((tuple(q.start), tuple(q.end), q.kind, q.rotation)
+                     for q in s.parts))
+              for s in composition.shapes),
+        tuple((tuple(t.rect), tuple(t.rows), t.style, t.font_size, t.z)
               for t in composition.tables),
-        tuple((tuple(t.position), t.text, t.size, t.bold, t.italic)
+        tuple((tuple(t.position), t.text, t.size, t.bold, t.italic, t.z)
               for t in composition.texts),
         tuple((tuple(g.figs), tuple(g.shapes), tuple(g.texts))
               for g in composition.groups),
@@ -1562,10 +1565,37 @@ class ComposePanel(tk.Frame):
         self._build_table_tab(self.tab_table)
         self._build_align_tab(self.tab_align)
 
-        ttk.Button(right, text="置于顶层", command=lambda: self._restack(+1)).grid(
-            row=1, column=0, sticky="ew", pady=(10, 2))
-        ttk.Button(right, text="置于底层", command=lambda: self._restack(-1)).grid(
-            row=2, column=0, sticky="ew", pady=2)
+        # The four ways of moving an object in the drawing order.
+        layers = ttk.Frame(right)
+        layers.grid(row=1, column=0, sticky="ew", pady=(10, 2))
+        layers.columnconfigure(0, weight=1)
+        layers.columnconfigure(1, weight=1)
+        ttk.Button(layers, text="置于顶层", width=8,
+                   command=lambda: self._restack("top")).grid(
+            row=0, column=0, sticky="ew", padx=1)
+        ttk.Button(layers, text="置于底层", width=8,
+                   command=lambda: self._restack("bottom")).grid(
+            row=0, column=1, sticky="ew", padx=1)
+        ttk.Button(layers, text="上移一层", width=8,
+                   command=lambda: self._restack("up")).grid(
+            row=1, column=0, sticky="ew", padx=1)
+        ttk.Button(layers, text="下移一层", width=8,
+                   command=lambda: self._restack("down")).grid(
+            row=1, column=1, sticky="ew", padx=1)
+
+        # The boolean operations: they work on the picked graphic elements.
+        booleans = ttk.Labelframe(right, text="布尔运算（图形）",
+                                  style="Section.TLabelframe", padding=6)
+        booleans.grid(row=2, column=0, sticky="ew", pady=(8, 2))
+        booleans.columnconfigure(0, weight=1)
+        booleans.columnconfigure(1, weight=1)
+        self._bool_buttons: Dict[str, ttk.Button] = {}
+        for n, (op, name) in enumerate(comp.BOOLEAN_NAMES.items()):
+            button = ttk.Button(booleans, text=name, width=6,
+                                command=lambda o=op: self._boolean_selected(o))
+            button.grid(row=n // 2, column=n % 2, sticky="ew", padx=1, pady=1)
+            self._bool_buttons[op] = button
+
         edits = ttk.Frame(right)
         edits.grid(row=3, column=0, sticky="ew", pady=(8, 2))
         ttk.Button(edits, text="复制", width=6,
@@ -2595,6 +2625,7 @@ class ComposePanel(tk.Frame):
                 figure=fig,
                 rect=fitz.Rect(cx - pw / 2, cy - ph / 2, cx + pw / 2, cy + ph / 2),
                 label=comp.auto_label(len(self.composition.placements) + 1),
+                z=self.composition.next_z(),
             )
         )
         self._selected = len(self.composition.placements) - 1
@@ -2819,19 +2850,20 @@ class ComposePanel(tk.Frame):
         )
         self._draw_sheet_handles(left, top, right - left, bottom - top)
         self._draw_snap_guides()
-        for idx, placement in enumerate(self.composition.placements):
-            self._draw_placement(idx, placement)
-        # The graphic elements sit on top of the figures, the free text on
-        # top of those, and the labels on top of everything -- a label under
-        # an arrow is unreadable.
-        for idx, shape in enumerate(self.composition.shapes):
-            self._draw_shape(idx, shape)
-        for idx, table in enumerate(self.composition.tables):
-            self._draw_table(idx, table)
-        for idx, item in enumerate(self.composition.texts):
-            self._draw_text(idx, item)
-        for idx, placement in enumerate(self.composition.placements):
-            self._draw_label(idx, placement)
+        # Everything is drawn in the order of the layers: the bottom one
+        # first, the top one last.  The label of a figure stands just above
+        # its figure, so it travels with it.
+        for kind, index in self.composition.draw_order():
+            if kind == "figure":
+                self._draw_placement(index, self.composition.placements[index])
+            elif kind == "shape":
+                self._draw_shape(index, self.composition.shapes[index])
+            elif kind == "table":
+                self._draw_table(index, self.composition.tables[index])
+            elif kind == "text":
+                self._draw_text(index, self.composition.texts[index])
+            else:  # the label of a figure
+                self._draw_label(index, self.composition.placements[index])
         group = self._group_box()
         if group is not None:
             # A selection of several objects: the box around them carries
@@ -2847,7 +2879,23 @@ class ComposePanel(tk.Frame):
             self.canvas.create_rectangle(
                 left, top, right, bottom, outline="#e0407a", width=1,
                 dash=(4, 3), tags=("marquee",))
+        self._update_boolean_buttons()
         self._update_count()
+
+    def _update_boolean_buttons(self) -> None:
+        """The boolean operations need at least two graphic elements.
+
+        The buttons are only touched when their state really changes: a
+        widget that is reconfigured on every repaint makes the panel lay
+        itself out again, and the canvas may change its size -- which
+        would move everything that is on it under the user's eyes.
+        """
+        ready = len(self._sel_shapes) >= 2
+        if ready == getattr(self, "_bool_ready", None):
+            return
+        self._bool_ready = ready
+        for button in getattr(self, "_bool_buttons", {}).values():
+            button.configure(state="normal" if ready else "disabled")
 
     def _figure_image(self, fig: comp.Figure) -> Optional[Image.Image]:
         """Raster of a figure, for the canvas preview."""
@@ -3415,6 +3463,10 @@ class ComposePanel(tk.Frame):
 
     def _draw_shape(self, idx: int, shape: comp.Shape) -> None:
         """Draw a graphic element on the canvas."""
+        if shape.kind == comp.SHAPE_BOOLEAN:
+            # The result of a boolean operation is an area, not an outline.
+            self._draw_boolean_shape(idx, shape)
+            return
         x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
         x1, y1 = self._to_canvas(shape.end.x, shape.end.y)
         # A turned shape is turned about the middle of its own box -- the
@@ -3507,6 +3559,47 @@ class ComposePanel(tk.Frame):
             # several of them shows at once.
             self._draw_selection_frame(left, top, right, bottom, primary=primary)
 
+    def _draw_boolean_shape(self, idx: int, shape: comp.Shape) -> None:
+        """Draw the result of a boolean operation.
+
+        The picture is made by the exporter itself: the very same content is
+        written to a page of its own and rendered, so what is on the canvas
+        is what the file will hold.  Only the screen copy is a picture --
+        the file itself stays vector.
+        """
+        box = comp.boolean_bounds(shape)
+        if box is None or box.width <= 0 or box.height <= 0:
+            return
+        doc = fitz.open()
+        try:
+            page = doc.new_page(width=box.width, height=box.height)
+            comp.draw_boolean(page, shape, -box.x0, -box.y0, box.height)
+            pix = page.get_pixmap(dpi=72.0 * max(self._zoom, 0.05), alpha=True)
+            img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+        except Exception:  # noqa: BLE001 -- a shape that cannot be drawn
+            return
+        finally:
+            doc.close()
+        photo = ImageTk.PhotoImage(img)
+        # The picture has to be kept: Tk forgets it otherwise.
+        self._shape_photos.append(photo)
+        left, top = self._to_canvas(box.x0, box.y1)
+        tag = str(idx) if idx >= 0 else "preview"
+        self.canvas.create_image(left, top, image=photo, anchor=tk.NW,
+                                 tags=("shape", tag))
+        if shape.text:
+            self.canvas.create_text(
+                (left + left + img.width) / 2, (top + top + img.height) / 2,
+                text=shape.text,
+                fill="#%02x%02x%02x" % tuple(
+                    int(c * 255) for c in shape.caption_rgb),
+                font=tk_font("Helvetica", shape.text_size * self._zoom),
+                anchor=tk.CENTER, tags=("shape", tag))
+        if idx >= 0 and idx in self._sel_shapes:
+            self._draw_selection_frame(
+                left, top, left + img.width, top + img.height,
+                primary=(idx == self._selected_shape))
+
     def _draw_table(self, idx: int, table: comp.Table) -> None:
         """Draw a table on the canvas: its rules and its text."""
         r, g, b = table.color
@@ -3590,7 +3683,11 @@ class ComposePanel(tk.Frame):
         Only the *stroke* of an element is grabbable, so a translucent box
         drawn over a figure does not stop the figure from being selected.
         """
-        for i in range(len(self.composition.shapes) - 1, -1, -1):
+        # The element on top is the one that is picked, so the layers are
+        # walked from the top down.
+        order = [index for kind, index in self.composition.stack_order()
+                 if kind == "shape"]
+        for i in reversed(order):
             shape = self.composition.shapes[i]
             x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
             x1, y1 = self._to_canvas(shape.end.x, shape.end.y)
@@ -3757,6 +3854,7 @@ class ComposePanel(tk.Frame):
             self.composition.texts.append(comp.TextItem(
                 text="", position=fitz.Point(ux, uy),
                 size=10.0, box=(self.tool == TOOL_TEXTBOX),
+                z=self.composition.next_z(),
             ))
             self._sel_figs = []
             self._sel_shapes = []
@@ -4303,7 +4401,7 @@ class ComposePanel(tk.Frame):
             # Keep the whole style of the preview -- the fill, the
             # opacities and the line style included.
             self.composition.shapes.append(dataclasses.replace(
-                preview, end=end))
+                preview, end=end, z=self.composition.next_z()))
             self._clear_selection()
             self._selected_shape = len(self.composition.shapes) - 1
             self._last_kind = "shape"
@@ -4522,13 +4620,8 @@ class ComposePanel(tk.Frame):
         moved = False
         for i in self._sel_shapes:
             shape = self.composition.shapes[i]
-            self.composition.shapes[i] = dataclasses.replace(
-                shape,
-                start=fitz.Point(shape.start.x + dx * step,
-                                 shape.start.y + dy * step),
-                end=fitz.Point(shape.end.x + dx * step,
-                               shape.end.y + dy * step),
-            )
+            self.composition.shapes[i] = comp.shift_shape(
+                shape, dx * step, dy * step)
             moved = True
         for i in self._sel_figs:
             p = self.composition.placements[i]
@@ -4891,16 +4984,15 @@ class ComposePanel(tk.Frame):
             p = self.composition.placements[i]
             self.composition.placements.append(dataclasses.replace(
                 p, rect=fitz.Rect(p.rect.x0 + 10, p.rect.y0 - 10,
-                                   p.rect.x1 + 10, p.rect.y1 - 10)))
+                                   p.rect.x1 + 10, p.rect.y1 - 10),
+                z=self.composition.next_z()))
             made = True
         for i in list(self._sel_shapes):
             if not 0 <= i < len(self.composition.shapes):
                 continue
             shape = self.composition.shapes[i]
-            self.composition.shapes.append(dataclasses.replace(
-                shape,
-                start=fitz.Point(shape.start.x + 10, shape.start.y - 10),
-                end=fitz.Point(shape.end.x + 10, shape.end.y - 10)))
+            self.composition.shapes.append(comp.shift_shape(shape, 10, -10))
+            self.composition.shapes[-1].z = self.composition.next_z()
             made = True
         for i in list(self._sel_texts):
             if not 0 <= i < len(self.composition.texts):
@@ -4908,7 +5000,8 @@ class ComposePanel(tk.Frame):
             item = self.composition.texts[i]
             self.composition.texts.append(dataclasses.replace(
                 item, position=fitz.Point(item.position.x + 10,
-                                          item.position.y - 10)))
+                                          item.position.y - 10),
+                z=self.composition.next_z()))
             made = True
         if not made:
             self._status("先选中要复制的元素。")
@@ -4931,17 +5024,7 @@ class ComposePanel(tk.Frame):
             if not 0 <= i < len(self.composition.shapes):
                 continue
             shape = self.composition.shapes[i]
-            box = shape.rect
-            cx, cy = (box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2
-            start, end = shape.start, shape.end
-            if axis == "x":
-                start = fitz.Point(2 * cx - start.x, start.y)
-                end = fitz.Point(2 * cx - end.x, end.y)
-            else:
-                start = fitz.Point(start.x, 2 * cy - start.y)
-                end = fitz.Point(end.x, 2 * cy - end.y)
-            self.composition.shapes[i] = dataclasses.replace(
-                shape, start=start, end=end)
+            self.composition.shapes[i] = comp.mirror_shape(shape, axis)
             flipped += 1
         if not flipped:
             if self._sel_figs:
@@ -5087,6 +5170,12 @@ class ComposePanel(tk.Frame):
             placement.set_label_anchor(fitz.Point(rect.x0, rect.y0))
         elif kind == "shape":
             shape = self.composition.shapes[index]
+            if shape.parts:
+                # The result of a boolean operation is made of other shapes,
+                # and those are the ones that move.
+                self.composition.shapes[index] = comp.transform_boolean(
+                    shape, rect, resize)
+                return
             if resize:
                 # The shape keeps the direction it was drawn in: an arrow
                 # that was drawn to the left still points to the left.
@@ -5302,18 +5391,16 @@ class ComposePanel(tk.Frame):
             new_figs.append(len(self.composition.placements) - 1)
         elif kind == "shape":
             shape = self.composition.shapes[index]
-            copy = dataclasses.replace(
-                shape,
-                start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
-                end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
-            )
+            copy = comp.shift_shape(shape, dx, dy)
+            copy.z = self.composition.next_z()
             self.composition.shapes.append(copy)
             new_shapes.append(len(self.composition.shapes) - 1)
         elif kind == "text":
             item = self.composition.texts[index]
             copy = dataclasses.replace(
                 item, position=fitz.Point(item.position.x + dx,
-                                          item.position.y + dy))
+                                          item.position.y + dy),
+                z=self.composition.next_z())
             self.composition.texts.append(copy)
             new_texts.append(len(self.composition.texts) - 1)
         elif kind == "table":
@@ -5321,7 +5408,8 @@ class ComposePanel(tk.Frame):
             copy = dataclasses.replace(
                 table,
                 rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
-                               table.rect.x1 + dx, table.rect.y1 + dy))
+                               table.rect.x1 + dx, table.rect.y1 + dy),
+                z=self.composition.next_z())
             self.composition.tables.append(copy)
             new_tables.append(len(self.composition.tables) - 1)
 
@@ -5501,20 +5589,75 @@ class ComposePanel(tk.Frame):
         self.composition.placements[index].label_mode = self.var_label_mode.get()
         self._redraw()
 
+    def _stacked_selection(self) -> List[Tuple[str, int]]:
+        """The picked objects, as the model knows them."""
+        items: List[Tuple[str, int]] = []
+        for i in self._sel_figs:
+            if 0 <= i < len(self.composition.placements):
+                items.append(("figure", i))
+        for i in self._sel_shapes:
+            if 0 <= i < len(self.composition.shapes):
+                items.append(("shape", i))
+        for i in self._sel_tables:
+            if 0 <= i < len(self.composition.tables):
+                items.append(("table", i))
+        for i in self._sel_texts:
+            if 0 <= i < len(self.composition.texts):
+                items.append(("text", i))
+        return items
+
     @_action
-    def _restack(self, direction: int) -> None:
-        if self._selected is None:
+    def _restack(self, where: str) -> None:
+        """Move the selection in the drawing order.
+
+        ``where`` is "top", "bottom", "up" or "down".  Anything that is
+        picked moves: a figure, a graphic element, a table or a piece of
+        text, and several of them at once.
+        """
+        items = self._stacked_selection()
+        if not items:
+            self._status("先选中一个元素。")
             return
-        i = self._selected
-        j = i + direction
-        if not 0 <= j < len(self.composition.placements):
+        if not self.composition.restack(items, where):
+            self._status("已经在最上面了。" if where in ("top", "up")
+                         else "已经在最下面了。")
             return
-        items = self.composition.placements
-        items[i], items[j] = items[j], items[i]
-        # The selection follows the figure it was on.
-        self._sel_figs = [j if k == i else (i if k == j else k)
-                          for k in self._sel_figs]
         self._redraw()
+        names = {"top": "置于顶层", "bottom": "置于底层",
+                 "up": "上移一层", "down": "下移一层"}
+        self._status(f"已{names[where]} {len(items)} 个元素。")
+
+    @_action
+    def _boolean_selected(self, op: str) -> None:
+        """Make one graphic element out of the picked ones.
+
+        The bottom-most of them is the base: a difference is taken from it.
+        The shapes that took part are replaced by the result, and the whole
+        thing can be taken back with Ctrl+Z.
+        """
+        picked = [i for i in self._sel_shapes
+                  if 0 <= i < len(self.composition.shapes)]
+        if len(picked) < 2:
+            self._status("至少选中两个图形才能做布尔运算。")
+            return
+        rank = {item: n for n, item in enumerate(self.composition.stack_order())}
+        picked.sort(key=lambda i: rank.get(("shape", i), 0))
+        shapes = [self.composition.shapes[i] for i in picked]
+        if not all(comp.can_boolean(s) for s in shapes):
+            self._status("线条、花括号和布尔结果没有路径，不能参与布尔运算。")
+            return
+        result = comp.boolean_result(op, shapes)
+        base = picked[0]
+        for i in reversed(picked):
+            del self.composition.shapes[i]
+            self.composition.regroup_after_removal("shape", i)
+        self.composition.shapes.insert(base, result)
+        self._clear_selection()
+        self._sel_shapes = [base]
+        self._sync_properties()
+        self._redraw()
+        self._update_count()
+        self._status(f"已{comp.BOOLEAN_NAMES[op]} {len(picked)} 个图形。")
 
     @_action
     def _delete_selected(self) -> None:
@@ -5594,6 +5737,7 @@ class ComposePanel(tk.Frame):
             rect=fitz.Rect(x0, y0, x0 + w, y0 + h),
             rows=[["" for _ in range(cols)] for _ in range(rows)],
             style=style,
+            z=self.composition.next_z(),
         )
         self.composition.tables.append(table)
         self._clear_selection()
