@@ -563,7 +563,10 @@ def main() -> int:
     _shot(win, "09_aligned.png")
 
     # The two figures now sit on top of each other, which is what aligning
-    # them means -- put the layout back before the export checks.
+    # them means -- put the layout back before the export checks.  The
+    # selection is cleared first: with something picked, the arrangement
+    # lays out the selection and not the whole sheet.
+    win._clear_selection()
     win._arrange("grid")
     win.update()
 
@@ -1260,6 +1263,138 @@ def main() -> int:
     win.var_sheet.set("A4 横向")
     win._on_sheet_changed()
     win.update()
+
+    # -- the size of a graphic element can be written down ---------------
+    # The panel takes the size in millimetres, so the element comes out
+    # exactly the size the user asked for.
+    if win.composition.shapes:
+        win._clear_selection()
+        win._sel_shapes = [0]
+        win._sync_properties()
+        win.var_shape_w.set("40")
+        win.var_shape_h.set("20")
+        win.update()
+        rect = win.composition.shapes[0].rect
+        check("the size of a graphic element can be set",
+              abs(rect.width - 40 * 72 / 25.4) < 1.0
+              and abs(rect.height - 20 * 72 / 25.4) < 1.0,
+              f"{rect.width:.1f} x {rect.height:.1f}")
+        check("the panel shows the size of the element",
+              abs(float(win.var_shape_w.get()) - 40) < 0.6,
+              win.var_shape_w.get())
+
+    # -- the selection can be copied into a matrix -------------------------
+    # A matrix of copies: the original stays where it is and the copies
+    # fill the cells around it.
+    win._clear_selection()
+    win._sel_figs = [0]
+    n_figs = len(win.composition.placements)
+    win._array_copy(3, 2)
+    win.update()
+    check("the selection can be copied into a matrix",
+          len(win.composition.placements) == n_figs + 5,
+          f"{n_figs} -> {len(win.composition.placements)}")
+    copies = win.composition.placements[n_figs:]
+    check("the copies stand in a grid",
+          len({round(p.rect.x0, 1) for p in copies}) == 3
+          and len({round(p.rect.y0, 1) for p in copies}) == 2,
+          str([(round(p.rect.x0), round(p.rect.y0)) for p in copies]))
+    # The copies are taken off again, so the sheet stays as it was.
+    del win.composition.placements[n_figs:]
+    win._clear_selection()
+    win._redraw()
+
+    # -- a rubber band catches several objects at once ---------------------
+    # The band has to start on empty ground: a press on an object picks
+    # that object instead of starting a band.
+    def empty_spots() -> list:
+        """Places on the sheet where nothing stands.
+
+        The grips of the sheet's edges are avoided as well: a press on one
+        of them resizes the page instead of starting a band.
+        """
+        found = []
+        for gy in range(20, int(win.sheet_h - 80), 20):
+            for gx in range(20, int(win.sheet_w - 80), 20):
+                x = win.sheet_x + gx
+                y = win.sheet_y + gy
+                cx, cy = win._to_canvas(x, y)
+                if (win._hit(cx, cy)[0] is None
+                        and win._hit_shape(cx, cy) is None
+                        and win._hit_text(cx, cy) is None
+                        and win._hit_label(cx, cy) is None
+                        and win._hit_table(cx, cy) is None
+                        and win._hit_sheet_handle(cx, cy) is None):
+                    found.append((x, y))
+                    if len(found) >= 2:
+                        return found
+        raise AssertionError("there is no empty place on the sheet")
+
+    spot_x, spot_y = empty_spots()[0]
+    for kind in (comp.SHAPE_RECT, comp.SHAPE_ELLIPSE):
+        win.composition.shapes.append(comp.Shape(
+            kind, fitz.Point(spot_x + 25, spot_y + 25),
+            fitz.Point(spot_x + 65, spot_y + 55)))
+    win._redraw()
+    win.update()
+    n_shapes = len(win.composition.shapes)
+    bx0, by0 = win._to_canvas(spot_x, spot_y)
+    bx1, by1 = win._to_canvas(spot_x + 85, spot_y + 75)
+    _drag(win, int(bx0), int(by0), int(bx1), int(by1))
+    check("the rubber band catches the objects it sweeps over",
+          len(win._sel_shapes) == 2,
+          str(win._sel_shapes))
+    # A click on the empty sheet clears the selection again.  It is not the
+    # same spot as the band started from: two clicks in the same place are
+    # a double click, and a double click opens a table.
+    other_x, other_y = empty_spots()[-1]
+    ox, oy = win._to_canvas(other_x, other_y)
+    _click(win, int(ox), int(oy))
+    check("a click on the empty sheet clears the selection",
+          not win._sel_shapes and not win._sel_figs,
+          str(win._sel_shapes))
+    del win.composition.shapes[n_shapes - 2:]
+    win._clear_selection()
+    win._redraw()
+
+    # -- a table can be put on the sheet and edited -------------------------
+    win._clear_selection()
+    win._create_table(2, 3, comp.TABLE_THREE_LINE, 60.0, 25.0)
+    win.update()
+    check("a table can be put on the sheet",
+          len(win.composition.tables) == 1,
+          str(len(win.composition.tables)))
+    check("the table is picked after it is put down",
+          win._sel_tables == [0], str(win._sel_tables))
+    table = win.composition.tables[0]
+    win._apply_table_content([["材料", "模量", "备注"],
+                              ["钢", "210", ""]])
+    win.update()
+    check("the text of the cells can be written",
+          table.rows[0][0] == "材料" and table.rows[1][1] == "210",
+          str(table.rows))
+    check("the table is on the sheet",
+          win.composition.content_bounds() is not None
+          and win.composition.content_bounds().contains(table.rect),
+          str(table.rect))
+    exported = WORK / "with_table.pdf"
+    comp.export_composition(
+        win.composition, exported, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h),
+        offset=(-win.sheet_x, -win.sheet_y))
+    doc = fitz.open(str(exported))
+    try:
+        page = doc[0]
+        text = page.get_text()
+        check("the table comes into the file",
+              "材料" in text and "210" in text, repr(text[:120]))
+        check("the table stays vector", len(page.get_images()) == 0,
+              str(len(page.get_images())))
+        check("the rules of the table are drawn",
+              len(page.get_drawings()) > 0,
+              str(len(page.get_drawings())))
+    finally:
+        doc.close()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.

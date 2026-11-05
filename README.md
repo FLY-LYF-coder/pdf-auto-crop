@@ -534,6 +534,46 @@ one makes the page bigger or smaller.  **The edge you grab follows the
 mouse** and the opposite one stays where it was — pulling the top edge up
 makes the page taller, and the content stays where it was.
 
+### Picking several objects at once
+
+Dragging on the empty sheet draws a **rubber band**: everything the band
+sweeps over is picked -- figures, graphic elements, free text and tables
+alike.  A click on the empty sheet still clears the selection, and
+**Ctrl+click** adds one object at a time.
+
+### Arrays
+
+**矩阵阵列…** moves the selected objects into a grid of so many columns and
+rows.  **阵列复制…** copies them: the originals stay where they are and
+become the first cell of the matrix, and every other cell holds a copy.
+Both ask how far apart the cells should be.  A copy is an object of its
+own -- it can be picked up, lined up and taken away again.
+
+The **横向排列** and **网格排列** buttons lay the selection out in a row or in
+a grid.  When only figures are picked -- or nothing is -- every figure on
+the sheet is laid out, the way it always was; a selection that holds a
+graphic element, a table or a free text is laid out as it stands.
+
+### Tables
+
+**表格…** puts a table on the sheet: how many rows and columns it has, how
+it is ruled and how big it is.  **三线表** is the journal's table -- a line
+on top, one under the head and one at the foot; **全网格** rules every
+cell; **无线** leaves the rules out.  The text of the cells is written in
+the **表格** tab of the properties panel, or by double-clicking the table
+on the sheet.
+
+A table is **vector lines and real text**, like everything else on the
+sheet: it stays sharp at any zoom and its words can be searched and
+copied.  It is an object like any other -- it can be picked up, lined up
+with the other elements, arranged in an array and taken away again.
+
+### The size of a graphic element
+
+The **图形** tab takes the width and the height of a graphic element in
+millimetres, so it comes out exactly the size that was asked for.  With
+nothing picked the same two boxes say how big a new element is.
+
 ### What the output is
 
 The sheet is written with the same vector-preserving mechanism as the

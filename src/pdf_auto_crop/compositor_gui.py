@@ -38,7 +38,7 @@ from PIL import Image, ImageTk
 from . import compositor as comp
 from . import dpi
 from .config import CropConfig
-from .geometry import mm_to_pt
+from .geometry import mm_to_pt, pt_to_mm
 
 #: Working sheet size: A4 landscape, in points.
 SHEET_LANDSCAPE = (842.0, 595.0)
@@ -149,6 +149,22 @@ TOOL_CHOICES: Tuple[Tuple[str, str], ...] = (
 
 #: The name of a tool -> the thing it draws.
 TOOL_BY_NAME: Dict[str, str] = dict(TOOL_CHOICES)
+
+#: How a table is ruled, in the words the panel uses.
+TABLE_STYLE_NAMES: Dict[str, str] = {
+    comp.TABLE_THREE_LINE: "三线表",
+    comp.TABLE_GRID: "全网格",
+    comp.TABLE_NO_RULES: "无线",
+}
+TABLE_STYLE_BY_NAME: Dict[str, str] = {
+    name: style for style, name in TABLE_STYLE_NAMES.items()}
+
+#: How the text of a cell sits in its cell.
+TABLE_ALIGN_NAMES: Dict[str, str] = {
+    "center": "居中", "left": "左对齐", "right": "右对齐",
+}
+TABLE_ALIGN_BY_NAME: Dict[str, str] = {
+    name: align for align, name in TABLE_ALIGN_NAMES.items()}
 
 
 def distance_to_segment(px: float, py: float, x0: float, y0: float,
@@ -466,14 +482,20 @@ class _TextEditDialog(tk.Toplevel):
 
 
 class _ArrayDialog(tk.Toplevel):
-    """How many rows and columns the array should have."""
+    """How many rows and columns the array should have, and how far apart.
+
+    The same dialog asks for a matrix of the objects that are already on
+    the sheet and for a matrix of copies of them, so the two read the
+    same way.
+    """
 
     def __init__(self, master: tk.Misc, count: int,
-                 on_ok: Callable[[int, int], None]) -> None:
+                 on_ok: Callable[[int, int, float], None],
+                 title: str = "矩阵阵列") -> None:
         super().__init__(master)
-        self.title("矩阵阵列")
+        self.title(title)
         self.transient(master)
-        self.geometry("260x150")
+        self.geometry("260x190")
         self._on_ok = on_ok
 
         body = ttk.Frame(self, padding=12)
@@ -486,6 +508,10 @@ class _ArrayDialog(tk.Toplevel):
         ttk.Label(body, text="行").grid(row=1, column=0, sticky="w", pady=4)
         ttk.Spinbox(body, from_=1, to=50, textvariable=self.var_rows,
                      width=6).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="间距 mm").grid(row=2, column=0, sticky="w", pady=4)
+        self.var_gap = tk.StringVar(value="4")
+        ttk.Entry(body, textvariable=self.var_gap, width=6).grid(
+            row=2, column=1, sticky="w", padx=6)
 
         buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
         buttons.pack(side=tk.BOTTOM, fill=tk.X)
@@ -500,10 +526,152 @@ class _ArrayDialog(tk.Toplevel):
         try:
             columns = max(1, int(self.var_cols.get()))
             rows = max(1, int(self.var_rows.get()))
+            gap = mm_to_pt(float(self.var_gap.get()))
         except (ValueError, tk.TclError):
             return
         try:
-            self._on_ok(columns, rows)
+            self._on_ok(columns, rows, max(0.0, gap))
+        finally:
+            self.destroy()
+
+
+class _TableDialog(tk.Toplevel):
+    """How big a table is, and how it is ruled."""
+
+    def __init__(self, master: tk.Misc,
+                 on_ok: Callable[[int, int, str, float, float], None],
+                 rows: int = 3, cols: int = 3,
+                 style: str = comp.TABLE_THREE_LINE,
+                 width_mm: float = 60.0, height_mm: float = 25.0) -> None:
+        super().__init__(master)
+        self.title("插入表格")
+        self.transient(master)
+        self.geometry("300x250")
+        self._on_ok = on_ok
+
+        body = ttk.Frame(self, padding=12)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.var_rows = tk.IntVar(value=rows)
+        self.var_cols = tk.IntVar(value=cols)
+        self.var_style = tk.StringVar(value=TABLE_STYLE_NAMES.get(style, "三线表"))
+        self.var_w = tk.StringVar(value=f"{width_mm:g}")
+        self.var_h = tk.StringVar(value=f"{height_mm:g}")
+
+        ttk.Label(body, text="行").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Spinbox(body, from_=1, to=40, textvariable=self.var_rows,
+                     width=6).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="列").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Spinbox(body, from_=1, to=20, textvariable=self.var_cols,
+                     width=6).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="样式").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Combobox(body, textvariable=self.var_style, state="readonly",
+                     width=10, values=list(TABLE_STYLE_NAMES.values())
+                     ).grid(row=2, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="宽 mm").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=self.var_w, width=8).grid(
+            row=3, column=1, sticky="w", padx=6)
+        ttk.Label(body, text="高 mm").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=self.var_h, width=8).grid(
+            row=4, column=1, sticky="w", padx=6)
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="确定", command=self._apply).pack(
+            side=tk.RIGHT, padx=4)
+        self.bind("<Return>", lambda _e: self._apply())
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _apply(self) -> None:
+        try:
+            rows = max(1, int(self.var_rows.get()))
+            cols = max(1, int(self.var_cols.get()))
+            width = float(self.var_w.get())
+            height = float(self.var_h.get())
+        except (ValueError, tk.TclError):
+            return
+        if width <= 0 or height <= 0:
+            return
+        style = TABLE_STYLE_BY_NAME.get(self.var_style.get(), comp.TABLE_THREE_LINE)
+        try:
+            self._on_ok(rows, cols, style, width, height)
+        finally:
+            self.destroy()
+
+
+class _TableContentDialog(tk.Toplevel):
+    """The text of the cells of a table.
+
+    The number of rows and columns can be changed here as well: the grid
+    is built again when they are.
+    """
+
+    def __init__(self, master: tk.Misc, rows: List[List[str]],
+                 on_ok: Callable[[List[List[str]]], None]) -> None:
+        super().__init__(master)
+        self.title("表格内容")
+        self.transient(master)
+        self.geometry("520x360")
+        self._on_ok = on_ok
+        self._data = [list(r) for r in rows]
+        self._entries: List[List[ttk.Entry]] = []
+
+        body = ttk.Frame(self, padding=12)
+        body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        top = ttk.Frame(body)
+        top.pack(side=tk.TOP, fill=tk.X)
+        self.var_rows = tk.IntVar(value=max(1, len(self._data)))
+        self.var_cols = tk.IntVar(
+            value=max(1, max((len(r) for r in self._data), default=1)))
+        ttk.Label(top, text="行").pack(side=tk.LEFT)
+        ttk.Spinbox(top, from_=1, to=40, textvariable=self.var_rows,
+                    width=5, command=self._rebuild).pack(side=tk.LEFT, padx=4)
+        ttk.Label(top, text="列").pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Spinbox(top, from_=1, to=20, textvariable=self.var_cols,
+                    width=5, command=self._rebuild).pack(side=tk.LEFT, padx=4)
+        self.var_rows.trace_add("write", lambda *_a: self._rebuild())
+        self.var_cols.trace_add("write", lambda *_a: self._rebuild())
+
+        self._grid = ttk.Frame(body)
+        self._grid.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(8, 0))
+        self._rebuild()
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(buttons, text="取消", command=self.destroy).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(buttons, text="确定", command=self._apply).pack(
+            side=tk.RIGHT, padx=4)
+        self.bind("<Escape>", lambda _e: self.destroy())
+
+    def _rebuild(self) -> None:
+        """Build the grid of cells again."""
+        try:
+            rows = max(1, min(40, int(self.var_rows.get())))
+            cols = max(1, min(20, int(self.var_cols.get())))
+        except (ValueError, tk.TclError):
+            return
+        for widget in self._grid.winfo_children():
+            widget.destroy()
+        self._entries = []
+        for r in range(rows):
+            row: List[ttk.Entry] = []
+            for c in range(cols):
+                entry = ttk.Entry(self._grid, width=14)
+                entry.grid(row=r, column=c, padx=2, pady=2, sticky="ew")
+                text = (self._data[r][c] if r < len(self._data)
+                        and c < len(self._data[r]) else "")
+                entry.insert(0, text)
+                row.append(entry)
+            self._entries.append(row)
+        for c in range(cols):
+            self._grid.columnconfigure(c, weight=1)
+
+    def _apply(self) -> None:
+        data = [[entry.get() for entry in row] for row in self._entries]
+        try:
+            self._on_ok(data)
         finally:
             self.destroy()
 
@@ -666,6 +834,8 @@ def _signature(composition: comp.Composition) -> Tuple:
                                p.label_offset, p.rotation)
               for p in composition.placements),
         tuple((tuple(s.start), tuple(s.end), s.kind) for s in composition.shapes),
+        tuple((tuple(t.rect), tuple(t.rows), t.style, t.font_size)
+              for t in composition.tables),
         tuple((tuple(t.position), t.text, t.size, t.bold, t.italic)
               for t in composition.texts),
         tuple((tuple(g.figs), tuple(g.shapes), tuple(g.texts))
@@ -784,12 +954,17 @@ class ComposePanel(tk.Frame):
         self._sel_figs: List[int] = []
         self._sel_shapes: List[int] = []
         self._sel_texts: List[int] = []
+        #: The tables that are picked.
+        self._sel_tables: List[int] = []
         #: The labels that are picked, by the figure they belong to.
         self._sel_labels: List[int] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         #: The lines the object was snapped to, so they can be shown.
         self._snap_guides: List[Tuple[str, float]] = []
+        #: The rubber band the cursor is drawing, while several objects are
+        #: being picked at once.
+        self._marquee: Optional[fitz.Rect] = None
         self._drag_rect: Optional[fitz.Rect] = None
         self._drag_shape: Optional[comp.Shape] = None
         #: Which half of the property panel to show: the kind picked last.
@@ -840,6 +1015,7 @@ class ComposePanel(tk.Frame):
         return {
             "placements": copy.deepcopy(self.composition.placements),
             "shapes": copy.deepcopy(self.composition.shapes),
+            "tables": copy.deepcopy(self.composition.tables),
             "texts": copy.deepcopy(self.composition.texts),
             "groups": copy.deepcopy(self.composition.groups),
             "width": self.composition.width,
@@ -855,6 +1031,7 @@ class ComposePanel(tk.Frame):
         """Put the sheet back the way it was."""
         self.composition.placements = state["placements"]
         self.composition.shapes = state["shapes"]
+        self.composition.tables = state["tables"]
         self.composition.texts = state["texts"]
         self.composition.groups = state["groups"]
         self.composition.width = state["width"]
@@ -869,9 +1046,11 @@ class ComposePanel(tk.Frame):
         n_figs = len(self.composition.placements)
         n_shapes = len(self.composition.shapes)
         n_texts = len(self.composition.texts)
+        n_tables = len(self.composition.tables)
         self._sel_figs = [i for i in self._sel_figs if 0 <= i < n_figs]
         self._sel_shapes = [i for i in self._sel_shapes if 0 <= i < n_shapes]
         self._sel_texts = [i for i in self._sel_texts if 0 <= i < n_texts]
+        self._sel_tables = [i for i in self._sel_tables if 0 <= i < n_tables]
         self._sel_labels = [i for i in self._sel_labels if 0 <= i < n_figs]
         self._sync_properties()
         self._redraw()
@@ -953,6 +1132,15 @@ class ComposePanel(tk.Frame):
         """The label that is picked, by the figure it belongs to."""
         return self._sel_labels[-1] if self._sel_labels else None
 
+    @property
+    def _selected_table(self) -> Optional[int]:
+        """The table the property panel edits."""
+        return self._sel_tables[-1] if self._sel_tables else None
+
+    @_selected_table.setter
+    def _selected_table(self, value: Optional[int]) -> None:
+        self._sel_tables = [] if value is None else [value]
+
     # -- styling ----------------------------------------------------------
 
     def _build_style(self) -> None:
@@ -1017,6 +1205,8 @@ class ComposePanel(tk.Frame):
             row=0, column=15, padx=6, sticky="w")
         ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=16, padx=6, sticky="w")
+        ttk.Button(bar, text="表格…", command=self._insert_table).grid(
+            row=0, column=17, padx=6, sticky="w")
 
         # The snapping: a dragged object is pulled onto its neighbour.  It is
         # on by default, and the button says so.
@@ -1024,14 +1214,14 @@ class ComposePanel(tk.Frame):
         self.chk_snap = ttk.Checkbutton(
             bar, text="吸附", variable=self.var_snap,
             command=self._on_snap_changed)
-        self.chk_snap.grid(row=0, column=17, padx=(10, 6), sticky="w")
+        self.chk_snap.grid(row=0, column=18, padx=(10, 6), sticky="w")
 
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=18, padx=12, sticky="e")
+            row=0, column=19, padx=12, sticky="e")
 
         # The drawing tools, on a second row of the toolbar.
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=19, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=20, sticky="w", pady=(6, 0))
         ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         self.cmb_tool = ttk.Combobox(
@@ -1110,6 +1300,8 @@ class ComposePanel(tk.Frame):
         # The same for the release: a modified drag has to end too.
         self.canvas.bind("<Control-ButtonRelease-1>", self._on_release)
         self.canvas.bind("<Shift-ButtonRelease-1>", self._on_release)
+        # A double click on a table opens its cells.
+        self.canvas.bind("<Double-Button-1>", self._on_double_click)
         # The wheel zooms the view, and the middle button pans it.
         self.canvas.bind("<MouseWheel>", self._on_wheel)
         self.canvas.bind("<Button-2>", self._on_pan_start)
@@ -1142,15 +1334,18 @@ class ComposePanel(tk.Frame):
         self.tab_label = ttk.Frame(self.nb, padding=6)
         self.tab_text = ttk.Frame(self.nb, padding=6)
         self.tab_shape = ttk.Frame(self.nb, padding=6)
+        self.tab_table = ttk.Frame(self.nb, padding=6)
         self.tab_align = ttk.Frame(self.nb, padding=6)
         self.nb.add(self.tab_label, text="标签")
         self.nb.add(self.tab_text, text="文本")
         self.nb.add(self.tab_shape, text="图形")
+        self.nb.add(self.tab_table, text="表格")
         self.nb.add(self.tab_align, text="对齐")
 
         self._build_label_tab(self.tab_label)
         self._build_text_tab(self.tab_text)
         self._build_shape_tab(self.tab_shape)
+        self._build_table_tab(self.tab_table)
         self._build_align_tab(self.tab_align)
 
         ttk.Button(right, text="置于顶层", command=lambda: self._restack(+1)).grid(
@@ -1454,6 +1649,145 @@ class ComposePanel(tk.Frame):
         self.var_shape_text_size.trace_add(
             "write", lambda *_a: self._on_shape_changed())
 
+        # The size of the element: the width and the height, in millimetres,
+        # so it can be set exactly instead of being dragged out by hand.
+        ttk.Label(tab, text="宽 mm").grid(row=10, column=0, sticky="w", pady=3)
+        self.var_shape_w = tk.StringVar(value="")
+        self.ent_shape_w = ttk.Entry(tab, textvariable=self.var_shape_w, width=6)
+        self.ent_shape_w.grid(row=10, column=1, sticky="w", pady=3)
+        self.var_shape_w.trace_add("write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(tab, text="高 mm").grid(row=11, column=0, sticky="w", pady=3)
+        self.var_shape_h = tk.StringVar(value="")
+        self.ent_shape_h = ttk.Entry(tab, textvariable=self.var_shape_h, width=6)
+        self.ent_shape_h.grid(row=11, column=1, sticky="w", pady=3)
+        self.var_shape_h.trace_add("write", lambda *_a: self._on_shape_changed())
+
+        ttk.Label(
+            tab,
+            text="选中时改选中图形的大小；未选中时是新建图形的大小。",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+    # -- the table tab -------------------------------------------------------
+
+    def _build_table_tab(self, tab: ttk.Frame) -> None:
+        tab.columnconfigure(1, weight=1)
+
+        ttk.Label(tab, text="样式").grid(row=0, column=0, sticky="w", pady=3)
+        self.var_table_style = tk.StringVar(value="三线表")
+        self.cmb_table_style = ttk.Combobox(
+            tab, textvariable=self.var_table_style, state="readonly", width=10,
+            values=list(TABLE_STYLE_NAMES.values()),
+        )
+        self.cmb_table_style.grid(row=0, column=1, sticky="w", pady=3)
+        self.cmb_table_style.bind("<<ComboboxSelected>>", self._on_table_changed)
+
+        ttk.Label(tab, text="字号").grid(row=1, column=0, sticky="w", pady=3)
+        self.var_table_font_size = tk.StringVar(value="9")
+        self.spin_table_font_size = ttk.Spinbox(
+            tab, from_=4, to=36, increment=0.5,
+            textvariable=self.var_table_font_size, width=6,
+        )
+        self.spin_table_font_size.grid(row=1, column=1, sticky="w", pady=3)
+        self.var_table_font_size.trace_add(
+            "write", lambda *_a: self._on_table_changed())
+
+        ttk.Label(tab, text="线宽").grid(row=2, column=0, sticky="w", pady=3)
+        self.var_table_line_width = tk.StringVar(value="0.8")
+        self.spin_table_line_width = ttk.Spinbox(
+            tab, from_=0.1, to=6, increment=0.1,
+            textvariable=self.var_table_line_width, width=6,
+        )
+        self.spin_table_line_width.grid(row=2, column=1, sticky="w", pady=3)
+        self.var_table_line_width.trace_add(
+            "write", lambda *_a: self._on_table_changed())
+
+        ttk.Label(tab, text="表头").grid(row=3, column=0, sticky="w", pady=3)
+        self.var_table_header = tk.BooleanVar(value=True)
+        self.chk_table_header = ttk.Checkbutton(
+            tab, text="首行加粗", variable=self.var_table_header,
+            command=self._on_table_changed,
+        )
+        self.chk_table_header.grid(row=3, column=1, columnspan=2, sticky="w",
+                                   pady=3)
+
+        ttk.Label(tab, text="对齐").grid(row=4, column=0, sticky="w", pady=3)
+        self.var_table_align = tk.StringVar(value="居中")
+        self.cmb_table_align = ttk.Combobox(
+            tab, textvariable=self.var_table_align, state="readonly", width=10,
+            values=list(TABLE_ALIGN_NAMES.values()),
+        )
+        self.cmb_table_align.grid(row=4, column=1, sticky="w", pady=3)
+        self.cmb_table_align.bind("<<ComboboxSelected>>", self._on_table_changed)
+
+        ttk.Label(tab, text="宽 mm").grid(row=5, column=0, sticky="w", pady=3)
+        self.var_table_w = tk.StringVar(value="")
+        self.ent_table_w = ttk.Entry(tab, textvariable=self.var_table_w, width=6)
+        self.ent_table_w.grid(row=5, column=1, sticky="w", pady=3)
+        self.var_table_w.trace_add("write", lambda *_a: self._on_table_changed())
+
+        ttk.Label(tab, text="高 mm").grid(row=6, column=0, sticky="w", pady=3)
+        self.var_table_h = tk.StringVar(value="")
+        self.ent_table_h = ttk.Entry(tab, textvariable=self.var_table_h, width=6)
+        self.ent_table_h.grid(row=6, column=1, sticky="w", pady=3)
+        self.var_table_h.trace_add("write", lambda *_a: self._on_table_changed())
+
+        ttk.Button(tab, text="编辑表格内容…", command=self._edit_table_content
+                   ).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 3))
+
+        ttk.Label(
+            tab,
+            text="表格是矢量线加真实文字，导出后仍可编辑。\n"
+                 "双击画布上的表格也能改内容。",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    @_action
+    def _on_table_changed(self, event=None) -> None:
+        """Apply the table panel to the table that is picked."""
+        if self._syncing:
+            return
+        index = self._selected_table
+        if index is None or not 0 <= index < len(self.composition.tables):
+            return
+        table = self.composition.tables[index]
+        table.style = TABLE_STYLE_BY_NAME.get(self.var_table_style.get(),
+                                               comp.TABLE_THREE_LINE)
+        table.align = TABLE_ALIGN_BY_NAME.get(self.var_table_align.get(),
+                                               "center")
+        table.header = bool(self.var_table_header.get())
+        try:
+            table.font_size = max(4.0, min(36.0,
+                                           float(self.var_table_font_size.get())))
+        except ValueError:
+            return
+        try:
+            table.line_width = max(0.1, min(6.0,
+                                            float(self.var_table_line_width.get())))
+        except ValueError:
+            return
+        size = self._table_size()
+        if size is not None:
+            rect = table.rect
+            cx = (rect.x0 + rect.x1) / 2
+            cy = (rect.y0 + rect.y1) / 2
+            self.composition.tables[index] = dataclasses.replace(
+                table, rect=fitz.Rect(cx - size[0] / 2, cy - size[1] / 2,
+                                       cx + size[0] / 2, cy + size[1] / 2))
+        self._redraw()
+
+    def _table_size(self) -> Optional[Tuple[float, float]]:
+        """The size the table panel asks for, in points."""
+        try:
+            w = mm_to_pt(float(self.var_table_w.get()))
+            h = mm_to_pt(float(self.var_table_h.get()))
+        except ValueError:
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return (w, h)
+
     # -- the alignment tab ---------------------------------------------------
 
     def _build_align_tab(self, tab: ttk.Frame) -> None:
@@ -1497,9 +1831,12 @@ class ComposePanel(tk.Frame):
                                                                    padx=1)
 
         ttk.Label(tab, text="阵列").grid(row=4, column=0, sticky="w", pady=3)
-        ttk.Button(tab, text="矩阵阵列…", width=12,
-                   command=self._array_dialog).grid(
-            row=4, column=1, columnspan=2, sticky="w", pady=3)
+        array = ttk.Frame(tab)
+        array.grid(row=4, column=1, columnspan=2, sticky="w", pady=3)
+        ttk.Button(array, text="矩阵阵列…", width=10,
+                   command=self._array_dialog).pack(side=tk.LEFT, padx=1)
+        ttk.Button(array, text="阵列复制…", width=10,
+                   command=self._array_copy_dialog).pack(side=tk.LEFT, padx=1)
 
         ttk.Label(
             tab,
@@ -1544,11 +1881,14 @@ class ComposePanel(tk.Frame):
         n = len(self.composition.placements)
         m = len(self.composition.shapes)
         t = len(self.composition.texts)
+        b = len(self.composition.tables)
         text = f"画布上 {n} 个图"
         if m:
             text += f" · {m} 个图形"
         if t:
             text += f" · {t} 个文本"
+        if b:
+            text += f" · {b} 个表格"
         if self.palette:
             text += f"  ·  素材 {len(self.palette)} 个"
         self.lbl_count.configure(text=text)
@@ -1981,6 +2321,9 @@ class ComposePanel(tk.Frame):
         for shape in self.composition.shapes:
             shape.start = fitz.Point(shape.start.x + dx, shape.start.y + dy)
             shape.end = fitz.Point(shape.end.x + dx, shape.end.y + dy)
+        for table in self.composition.tables:
+            table.rect = fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                                   table.rect.x1 + dx, table.rect.y1 + dy)
         for item in self.composition.texts:
             item.position = fitz.Point(item.position.x + dx,
                                        item.position.y + dy)
@@ -2139,12 +2482,20 @@ class ComposePanel(tk.Frame):
         # an arrow is unreadable.
         for idx, shape in enumerate(self.composition.shapes):
             self._draw_shape(idx, shape)
+        for idx, table in enumerate(self.composition.tables):
+            self._draw_table(idx, table)
         for idx, item in enumerate(self.composition.texts):
             self._draw_text(idx, item)
         for idx, placement in enumerate(self.composition.placements):
             self._draw_label(idx, placement)
         if self._shape_preview is not None:
             self._draw_shape(-1, self._shape_preview)
+        if self._marquee is not None:
+            # The rubber band the cursor is drawing.
+            left, top, right, bottom = self._canvas_rect(self._marquee)
+            self.canvas.create_rectangle(
+                left, top, right, bottom, outline="#e0407a", width=1,
+                dash=(4, 3), tags=("marquee",))
         self._update_count()
 
     def _figure_image(self, fig: comp.Figure) -> Optional[Image.Image]:
@@ -2481,6 +2832,61 @@ class ComposePanel(tk.Frame):
                     fill="#ff7f0e", outline="white", width=1, tags=("shape", tag),
                 )
 
+    def _draw_table(self, idx: int, table: comp.Table) -> None:
+        """Draw a table on the canvas: its rules and its text."""
+        r, g, b = table.color
+        colour = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+        tag = str(idx)
+        for x0, y0, x1, y1, w in table.rules():
+            ax, ay = self._to_canvas(x0, y0)
+            bx, by = self._to_canvas(x1, y1)
+            self.canvas.create_line(
+                ax, ay, bx, by, fill=colour,
+                width=max(1, int(round(w * self._zoom))), tags=("table", tag))
+        for row in range(table.n_rows):
+            for col in range(table.n_cols):
+                text = table.cell_text(row, col)
+                if not text:
+                    continue
+                fontname, fontfile = table.cell_font(row, col)
+                width = comp.text_width(text, fontname, table.font_size, fontfile)
+                cell = table.cell_rect(row, col)
+                if table.align == "left":
+                    x = cell.x0 + table.padding
+                elif table.align == "right":
+                    x = cell.x1 - table.padding - width
+                else:
+                    x = cell.x0 + (cell.width - width) / 2
+                # The text sits in the middle of its cell, the same way the
+                # exporter puts it.
+                baseline = cell.y0 + cell.height / 2 - table.font_size * 0.25
+                px, py = self._to_canvas(x, baseline)
+                style = "bold" if (table.header and row == 0) else "normal"
+                self.canvas.create_text(
+                    px, py, text=text, fill=colour, anchor=tk.W,
+                    font=tk_font(table.font or "Times-Roman",
+                                 table.font_size * self._zoom, style),
+                    tags=("table", tag))
+        left, top, right, bottom = self._canvas_rect(table.rect)
+        if idx >= 0 and idx in self._sel_tables:
+            self.canvas.create_rectangle(
+                left - 2, top - 2, right + 2, bottom + 2,
+                outline="#ff7f0e", width=1, dash=(3, 2), tags=("table", tag))
+
+    def _hit_table(self, cx: float, cy: float) -> Optional[int]:
+        """Which table the cursor is on.
+
+        A table is caught by its rules and by the space between them: the
+        cells hold text, and the text is picked up by the text's own hit
+        test.
+        """
+        for i in range(len(self.composition.tables) - 1, -1, -1):
+            table = self.composition.tables[i]
+            left, top, right, bottom = self._canvas_rect(table.rect)
+            if left - 3 <= cx <= right + 3 and top - 3 <= cy <= bottom + 3:
+                return i
+        return None
+
     # -- interaction --------------------------------------------------------
 
     def _hit(self, cx: float, cy: float) -> Tuple[Optional[int], Optional[str]]:
@@ -2589,11 +2995,49 @@ class ComposePanel(tk.Frame):
                 return i
         return None
 
+    def _apply_marquee(self, band: Optional[fitz.Rect],
+                       additive: bool = False) -> None:
+        """Pick everything the rubber band swept over.
+
+        An object is caught when any part of it lies inside the band, the
+        way a drawing program catches everything the cursor sweeps over.
+        A band that was only a click -- a click on the empty sheet --
+        clears the selection, as it always did.
+        """
+        if band is None or band.width < 2.0 or band.height < 2.0:
+            self._clear_selection()
+            self._sync_properties()
+            return
+        caught = comp.select_in_band(band, self.composition.object_boxes())
+        if additive:
+            # Ctrl (or Shift) adds to the selection instead of replacing it.
+            for kind, key in (("figure", "_sel_figs"),
+                              ("shape", "_sel_shapes"),
+                              ("text", "_sel_texts"),
+                              ("table", "_sel_tables")):
+                have = list(getattr(self, key))
+                for index in caught.get(kind, []):
+                    if index not in have:
+                        have.append(index)
+                setattr(self, key, have)
+        else:
+            self._sel_figs = caught.get("figure", [])
+            self._sel_shapes = caught.get("shape", [])
+            self._sel_texts = caught.get("text", [])
+            self._sel_tables = caught.get("table", [])
+        self._sel_labels = []
+        self._last_kind = None
+        self._sync_properties()
+        n = (len(self._sel_figs) + len(self._sel_shapes)
+             + len(self._sel_texts) + len(self._sel_tables))
+        self._status(f"框选了 {n} 个元素。")
+
     def _clear_selection(self) -> None:
         """Forget the selection, whichever kinds it held."""
         self._sel_figs = []
         self._sel_shapes = []
         self._sel_texts = []
+        self._sel_tables = []
         self._sel_labels = []
         self._last_kind = None
 
@@ -2654,6 +3098,7 @@ class ComposePanel(tk.Frame):
 
         label_idx = self._hit_label(event.x, event.y)
         text_idx = self._hit_text(event.x, event.y)
+        table_idx = self._hit_table(event.x, event.y)
         shape_idx = self._hit_shape(event.x, event.y)
         sheet_handle = self._hit_sheet_handle(event.x, event.y)
         idx, part = self._hit(event.x, event.y)
@@ -2675,6 +3120,18 @@ class ComposePanel(tk.Frame):
             self._redraw()
             return
 
+        if (label_idx is None and text_idx is None and table_idx is None
+                and shape_hit is None and fig_hit is None):
+            # Nothing under the cursor: the user is drawing a rubber band
+            # to pick several objects at once.  The selection is cleared
+            # only when the band turns out to hold nothing -- a click on
+            # the empty sheet still clears it.
+            self._drag_mode = "marquee"
+            self._drag_start = (event.x, event.y)
+            self._marquee = None
+            self._redraw()
+            return
+
         if label_idx is not None:
             # A label is an object of its own: it can be picked, dragged
             # and lined up without moving the figure it belongs to.
@@ -2682,6 +3139,8 @@ class ComposePanel(tk.Frame):
             index: Optional[int] = label_idx
         elif text_idx is not None:
             kind, index = "text", text_idx
+        elif table_idx is not None:
+            kind, index = "table", table_idx
         elif shape_hit is not None:
             kind, index = "shape", shape_hit
         elif fig_hit is not None:
@@ -2697,12 +3156,32 @@ class ComposePanel(tk.Frame):
             self._sel_shapes = []
             self._sel_texts = []
             self._sel_labels = []
+            self._sel_tables = []
             mode: Optional[str] = part
+        elif kind == "table":
+            # A table is an object of its own, like a graphic element.
+            if additive:
+                if index in self._sel_tables:
+                    self._sel_tables.remove(index)
+                else:
+                    self._sel_tables.append(index)
+                mode = "table-body" if index in self._sel_tables else None
+            else:
+                self._sel_figs = []
+                self._sel_shapes = []
+                self._sel_texts = []
+                self._sel_labels = []
+                self._sel_tables = [index]
+                mode = "table-body"
+            self._last_kind = kind
         else:
             (self._sel_figs, self._sel_shapes, self._sel_texts,
              self._sel_labels, mode) = update_selection(
                 self._sel_figs, self._sel_shapes, self._sel_texts,
                 self._sel_labels, kind, index, additive)
+            if not additive:
+                # A plain click replaces the selection, tables included.
+                self._sel_tables = []
             self._last_kind = kind
             # An object that belongs to a group brings the whole group
             # along: a group is one thing, as far as the cursor is
@@ -2846,7 +3325,8 @@ class ComposePanel(tk.Frame):
 
     def _other_boxes(self, exclude_figs: Sequence[int],
                      exclude_shapes: Sequence[int],
-                     exclude_texts: Sequence[int]) -> List[fitz.Rect]:
+                     exclude_texts: Sequence[int],
+                     exclude_tables: Sequence[int] = ()) -> List[fitz.Rect]:
         """The boxes of everything that is not being dragged."""
         out: List[fitz.Rect] = []
         for i, placement in enumerate(self.composition.placements):
@@ -2857,6 +3337,10 @@ class ComposePanel(tk.Frame):
             if i in exclude_shapes:
                 continue
             out.append(fitz.Rect(shape.rect))
+        for i, table in enumerate(self.composition.tables):
+            if i in exclude_tables:
+                continue
+            out.append(fitz.Rect(table.rect))
         for i, item in enumerate(self.composition.texts):
             if i in exclude_texts:
                 continue
@@ -2889,6 +3373,14 @@ class ComposePanel(tk.Frame):
         if self._drag_mode == "sheet":
             self._drag_sheet(event)
             return
+        if self._drag_mode == "marquee":
+            # The rubber band: the rectangle the cursor is sweeping over.
+            ux, uy = self._to_user(event.x, event.y)
+            sx, sy = self._to_user(*self._drag_start)
+            self._marquee = fitz.Rect(min(sx, ux), min(sy, uy),
+                                       max(sx, ux), max(sy, uy))
+            self._redraw()
+            return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
             ux, uy = self._clamp_to_sheet_point(ux, uy)
@@ -2913,6 +3405,21 @@ class ComposePanel(tk.Frame):
                     start=fitz.Point(base.start.x + dx, base.start.y + dy),
                     end=fitz.Point(base.end.x + dx, base.end.y + dy),
                 )
+            self._redraw()
+            return
+        if self._drag_mode == "table-body":
+            offset = self._drag_offset(event)
+            if offset is None:
+                return
+            dx, dy = offset
+            for i in self._sel_tables:
+                if not 0 <= i < len(self.composition.tables):
+                    continue
+                table = self.composition.tables[i]
+                self.composition.tables[i] = dataclasses.replace(
+                    table,
+                    rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                                   table.rect.x1 + dx, table.rect.y1 + dy))
             self._redraw()
             return
         if self._drag_mode == "text-body":
@@ -3037,9 +3544,13 @@ class ComposePanel(tk.Frame):
     def _default_shape_size(self) -> Tuple[float, float]:
         """How big a shape is when it is placed with a click.
 
-        A quarter of the sheet is big enough to see and small enough to
-        place anywhere.
+        The size the panel asks for, when it says one.  Otherwise a quarter
+        of the sheet: big enough to see and small enough to place
+        anywhere.
         """
+        size = self._shape_size()
+        if size is not None:
+            return size
         return (self.sheet_w * 0.25, self.sheet_h * 0.25)
 
     def _on_release(self, event: tk.Event) -> None:
@@ -3072,6 +3583,16 @@ class ComposePanel(tk.Frame):
             self._selected_shape = len(self.composition.shapes) - 1
             self._last_kind = "shape"
             self._sync_properties()
+            self._redraw()
+            return
+        if self._drag_mode == "marquee":
+            band = self._marquee
+            self._marquee = None
+            self._drag_mode = None
+            self._drag_start = None
+            # Ctrl (or Shift) adds to the selection instead of replacing it.
+            additive = bool(event.state & (0x0004 | 0x0001))
+            self._apply_marquee(band, additive)
             self._redraw()
             return
         was_sheet = self._drag_mode == "sheet"
@@ -3404,12 +3925,45 @@ class ComposePanel(tk.Frame):
             self.var_shape_rotation.set(f"{shape.rotation:g}")
             self.var_shape_text.set(shape.text)
             self.var_shape_text_size.set(f"{shape.text_size:g}")
+            # The size of the element, in the unit the panel shows.
+            self.var_shape_w.set(f"{pt_to_mm(shape.rect.width):.1f}")
+            self.var_shape_h.set(f"{pt_to_mm(shape.rect.height):.1f}")
             self._set_swatch(self.btn_shape_color, shape.color)
             self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
+
+        # -- the table
+        has_table = (self._selected_table is not None
+                     and 0 <= self._selected_table
+                     < len(self.composition.tables))
+        self.cmb_table_style.configure(
+            state="readonly" if has_table else "disabled")
+        self.spin_table_font_size.configure(
+            state="normal" if has_table else "disabled")
+        self.spin_table_line_width.configure(
+            state="normal" if has_table else "disabled")
+        self.chk_table_header.configure(
+            state="normal" if has_table else "disabled")
+        self.cmb_table_align.configure(
+            state="readonly" if has_table else "disabled")
+        self.ent_table_w.configure(state="normal" if has_table else "disabled")
+        self.ent_table_h.configure(state="normal" if has_table else "disabled")
+        if has_table:
+            table = self.composition.tables[self._selected_table]
+            self.var_table_style.set(
+                TABLE_STYLE_NAMES.get(table.style, "三线表"))
+            self.var_table_font_size.set(f"{table.font_size:g}")
+            self.var_table_line_width.set(f"{table.line_width:g}")
+            self.var_table_header.set(bool(table.header))
+            self.var_table_align.set(
+                TABLE_ALIGN_NAMES.get(table.align, "居中"))
+            self.var_table_w.set(f"{pt_to_mm(table.rect.width):.1f}")
+            self.var_table_h.set(f"{pt_to_mm(table.rect.height):.1f}")
 
         # -- which tab to show: the kind that was picked last
         if self._last_kind == "shape" and has_shape:
             self.nb.select(self.tab_shape)
+        elif self._last_kind == "table" and has_table:
+            self.nb.select(self.tab_table)
         elif self._last_kind == "text" and has_text:
             self.nb.select(self.tab_text)
         elif has_fig:
@@ -3492,6 +4046,7 @@ class ComposePanel(tk.Frame):
         rotation = self._shape_rotation()
         text = self.var_shape_text.get()
         text_size = self._shape_text_size()
+        size = self._shape_size()
         for i in self._sel_shapes:
             if not 0 <= i < len(self.composition.shapes):
                 continue
@@ -3506,9 +4061,33 @@ class ComposePanel(tk.Frame):
             shape.rotation = rotation
             shape.text = text
             shape.text_size = text_size
+            if size is not None:
+                # The element is made the size the panel asks for, about
+                # its own middle: the middle is what the user can see.
+                rect = shape.rect
+                cx = (rect.x0 + rect.x1) / 2
+                cy = (rect.y0 + rect.y1) / 2
+                self._set_box("shape", i, fitz.Rect(
+                    cx - size[0] / 2, cy - size[1] / 2,
+                    cx + size[0] / 2, cy + size[1] / 2), resize=True)
         self._set_swatch(self.btn_shape_color, color)
         self._set_swatch(self.btn_shape_fill_color, fill_color)
         self._redraw()
+
+    def _shape_size(self) -> Optional[Tuple[float, float]]:
+        """The size the panel asks for, in points.
+
+        ``None`` when the panel does not say -- then a new element gets the
+        size the sheet suggests.
+        """
+        try:
+            w = mm_to_pt(float(self.var_shape_w.get()))
+            h = mm_to_pt(float(self.var_shape_h.get()))
+        except ValueError:
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return (w, h)
 
     def _shape_rotation(self) -> float:
         try:
@@ -3635,6 +4214,10 @@ class ComposePanel(tk.Frame):
             if 0 <= i < len(self.composition.texts):
                 items.append(("text", i,
                               fitz.Rect(self.composition.texts[i].rect())))
+        for i in self._sel_tables:
+            if 0 <= i < len(self.composition.tables):
+                items.append(("table", i,
+                              fitz.Rect(self.composition.tables[i].rect)))
         for i in self._sel_labels:
             if 0 <= i < len(self.composition.placements):
                 placement = self.composition.placements[i]
@@ -3688,6 +4271,10 @@ class ComposePanel(tk.Frame):
                     start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
                     end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
                 )
+        elif kind == "table":
+            table = self.composition.tables[index]
+            self.composition.tables[index] = dataclasses.replace(
+                table, rect=fitz.Rect(rect))
         else:
             item = self.composition.texts[index]
             if resize:
@@ -3732,38 +4319,139 @@ class ComposePanel(tk.Frame):
 
     def _array_dialog(self) -> None:
         """Ask how many rows and columns the array should have."""
-        _ArrayDialog(self, len(self._sel_figs), self._apply_array)
+        items = self._selected_boxes()
+        _ArrayDialog(self, max(1, len(items)), self._apply_array)
 
-    def _apply_array(self, columns: int, rows: int) -> None:
-        """Lay the selected figures out in a grid of the given size."""
-        items = self._sel_figs
+    def _apply_array(self, columns: int, rows: int,
+                     gap: float = mm_to_pt(4.0)) -> None:
+        """Lay the selected objects out in a grid of the given size.
+
+        The objects that are selected are moved into the grid -- figures,
+        graphic elements, free text and tables alike.  A figure fills its
+        cell, as it always did, so that a panel of figures comes out
+        even; the others keep their own size.
+        """
+        items = self._selected_boxes()
         if not items:
-            self._status("先选中要排成阵列的图。")
+            self._status("先选中要排成阵列的元素。")
             return
         if columns < 1 or rows < 1:
             return
         needed = columns * rows
         if needed < len(items):
-            self._status(f"{columns}×{rows} 放不下 {len(items)} 个图。")
+            self._status(f"{columns}×{rows} 放不下 {len(items)} 个元素。")
             return
-        cell_w = max(self.composition.placements[i].rect.width
-                     for i in items)
-        cell_h = max(self.composition.placements[i].rect.height
-                     for i in items)
-        gap = mm_to_pt(4.0)
+        cell_w = max(rect.width for _, _, rect in items)
+        cell_h = max(rect.height for _, _, rect in items)
         total_w = columns * cell_w + (columns - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
         x0 = self.sheet_x + (self.sheet_w - total_w) / 2
         y0 = self.sheet_y + (self.sheet_h - total_h) / 2
-        for n, i in enumerate(items):
-            r, c = divmod(n, columns)
-            p = self.composition.placements[i]
-            p.rect = fitz.Rect(
-                x0 + c * (cell_w + gap), y0 + total_h - (r + 1) * cell_h - r * gap,
-                x0 + c * (cell_w + gap) + cell_w,
-                y0 + total_h - r * cell_h - r * gap)
+        for (kind, index, rect), (px, py) in zip(
+                items, comp.array_positions(len(items), columns, rows,
+                                           cell_w, cell_h, gap, x0, y0)):
+            self._set_box(kind, index,
+                          fitz.Rect(px, py, px + cell_w, py + cell_h),
+                          resize=(kind == "figure"))
         self._redraw()
         self._status(f"已排成 {columns}×{rows} 的阵列。")
+
+    def _array_copy_dialog(self) -> None:
+        """Ask how big a matrix of copies the user wants."""
+        items = self._selected_boxes()
+        if not items:
+            self._status("先选中要复制的元素。")
+            return
+        _ArrayDialog(self, max(1, len(items)), self._array_copy,
+                     title="阵列复制")
+
+    def _array_copy(self, columns: int, rows: int,
+                    gap: float = mm_to_pt(4.0)) -> None:
+        """Copy the selection into a matrix of copies.
+
+        The objects that are selected stay where they are and become the
+        first cell of the matrix; every other cell holds a copy of them.
+        The copies are the same objects -- a copy of a figure is the same
+        picture -- so the matrix looks like the original, repeated.
+        """
+        items = self._selected_boxes()
+        if not items:
+            self._status("先选中要复制的元素。")
+            return
+        if columns < 1 or rows < 1:
+            return
+        block_x0 = min(rect.x0 for _, _, rect in items)
+        block_y0 = min(rect.y0 for _, _, rect in items)
+        block_w = max(rect.x1 for _, _, rect in items) - block_x0
+        block_h = max(rect.y1 for _, _, rect in items) - block_y0
+        # The matrix starts where the originals are: the originals are the
+        # first cell of it, and the copies fill the cells to the right of
+        # them and below them.
+        cells = comp.array_positions(columns * rows, columns, rows,
+                                     block_w, block_h, gap,
+                                     block_x0,
+                                     block_y0 - (rows - 1) * (block_h + gap))
+        new_figs: List[int] = []
+        new_shapes: List[int] = []
+        new_texts: List[int] = []
+        new_tables: List[int] = []
+        for n, (px, py) in enumerate(cells):
+            if n == 0:
+                continue
+            dx = px - block_x0
+            dy = py - block_y0
+            for kind, index, rect in items:
+                self._copy_object(kind, index, dx, dy,
+                                  new_figs, new_shapes, new_texts, new_tables)
+        self._sel_figs = new_figs
+        self._sel_shapes = new_shapes
+        self._sel_texts = new_texts
+        self._sel_tables = new_tables
+        self._sync_properties()
+        self._redraw()
+        n = len(new_figs) + len(new_shapes) + len(new_texts) + len(new_tables)
+        self._status(f"已复制出 {n} 个副本，排在 {columns}×{rows} 的阵列里。")
+
+    def _copy_object(self, kind: str, index: int, dx: float, dy: float,
+                     new_figs: List[int], new_shapes: List[int],
+                     new_texts: List[int], new_tables: List[int]) -> None:
+        """Put a copy of an object a little to the side.
+
+        The copy is a new object of its own: it can be picked up, lined up
+        and taken away again without the original noticing.
+        """
+        if kind == "figure":
+            placement = self.composition.placements[index]
+            rect = fitz.Rect(placement.rect)
+            copy = dataclasses.replace(
+                placement, rect=fitz.Rect(rect.x0 + dx, rect.y0 + dy,
+                                           rect.x1 + dx, rect.y1 + dy))
+            self.composition.placements.append(copy)
+            new_figs.append(len(self.composition.placements) - 1)
+        elif kind == "shape":
+            shape = self.composition.shapes[index]
+            copy = dataclasses.replace(
+                shape,
+                start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
+                end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+            )
+            self.composition.shapes.append(copy)
+            new_shapes.append(len(self.composition.shapes) - 1)
+        elif kind == "text":
+            item = self.composition.texts[index]
+            copy = dataclasses.replace(
+                item, position=fitz.Point(item.position.x + dx,
+                                          item.position.y + dy))
+            self.composition.texts.append(copy)
+            new_texts.append(len(self.composition.texts) - 1)
+        elif kind == "table":
+            table = self.composition.tables[index]
+            copy = dataclasses.replace(
+                table,
+                rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                               table.rect.x1 + dx, table.rect.y1 + dy))
+            self.composition.tables.append(copy)
+            new_tables.append(len(self.composition.tables) - 1)
 
     @_action
     def _align(self, mode: str) -> None:
@@ -3910,6 +4598,10 @@ class ComposePanel(tk.Frame):
             if 0 <= i < len(self.composition.texts):
                 items.append(("text", i,
                               fitz.Rect(self.composition.texts[i].rect())))
+        for i in self._sel_tables:
+            if 0 <= i < len(self.composition.tables):
+                items.append(("table", i,
+                              fitz.Rect(self.composition.tables[i].rect)))
         if len(items) < 3:
             self._status("至少选中 3 个元素才能分布。")
             return
@@ -3928,6 +4620,13 @@ class ComposePanel(tk.Frame):
                     shape,
                     start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
                     end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
+                )
+            elif kind == "table":
+                table = self.composition.tables[index]
+                self.composition.tables[index] = dataclasses.replace(
+                    table,
+                    rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                                   table.rect.x1 + dx, table.rect.y1 + dy),
                 )
             else:
                 item = self.composition.texts[index]
@@ -3980,6 +4679,15 @@ class ComposePanel(tk.Frame):
             self._redraw()
             self._update_count()
             return
+        if self._sel_tables:
+            for i in sorted(self._sel_tables, reverse=True):
+                if 0 <= i < len(self.composition.tables):
+                    del self.composition.tables[i]
+            self._sel_tables = []
+            self._sync_properties()
+            self._redraw()
+            self._update_count()
+            return
         if self._sel_shapes:
             # Back to front, so the indices stay valid while deleting.
             for i in sorted(self._sel_shapes, reverse=True):
@@ -4004,17 +4712,83 @@ class ComposePanel(tk.Frame):
 
     def _clear_sheet(self) -> None:
         if not (self.composition.placements or self.composition.shapes
-                or self.composition.texts):
+                or self.composition.tables or self.composition.texts):
             return
         if not messagebox.askyesno("清空画布", "移除画布上的所有图？"):
             return
         self.composition.placements.clear()
         self.composition.shapes.clear()
+        self.composition.tables.clear()
         self.composition.texts.clear()
         self._clear_selection()
         self._sync_properties()
         self._redraw()
         self._update_count()
+
+    # -- tables ---------------------------------------------------------------
+
+    def _insert_table(self) -> None:
+        """Ask how big a table to put on the sheet."""
+        _TableDialog(self, self._create_table)
+
+    def _create_table(self, rows: int, cols: int, style: str,
+                      width_mm: float, height_mm: float) -> None:
+        """Put a new table in the middle of the sheet."""
+        self._remember()
+        w = mm_to_pt(width_mm)
+        h = mm_to_pt(height_mm)
+        x0 = self.sheet_x + (self.sheet_w - w) / 2
+        y0 = self.sheet_y + (self.sheet_h - h) / 2
+        table = comp.Table(
+            rect=fitz.Rect(x0, y0, x0 + w, y0 + h),
+            rows=[["" for _ in range(cols)] for _ in range(rows)],
+            style=style,
+        )
+        self.composition.tables.append(table)
+        self._clear_selection()
+        self._sel_tables = [len(self.composition.tables) - 1]
+        self._last_kind = "table"
+        self._sync_properties()
+        self._redraw()
+        self._status("已插入表格，双击表格可以改内容。")
+
+    def _edit_table_content(self) -> None:
+        """Open the table's cells, so their text can be written."""
+        index = self._selected_table
+        if index is None or not 0 <= index < len(self.composition.tables):
+            self._status("先选中一个表格。")
+            return
+        table = self.composition.tables[index]
+        _TableContentDialog(self, table.rows, self._apply_table_content)
+
+    def _apply_table_content(self, rows: List[List[str]]) -> None:
+        """Put the text the user wrote into the table."""
+        index = self._selected_table
+        if index is None or not 0 <= index < len(self.composition.tables):
+            return
+        self._remember()
+        self.composition.tables[index].rows = [list(r) for r in rows]
+        self._redraw()
+        self._status("已改表格内容。")
+
+    def _on_double_click(self, event: tk.Event) -> None:
+        """A double click on a table opens its cells.
+
+        Tk does not hand out the second click of a double click as a
+        click of its own, so a double click on anything else has to be
+        treated as a click -- otherwise the second click of a double click
+        would be swallowed, and the object under the cursor would not be
+        picked.
+        """
+        index = self._hit_table(event.x, event.y)
+        if index is None:
+            self._on_press(event)
+            return
+        self._clear_selection()
+        self._sel_tables = [index]
+        self._last_kind = "table"
+        self._sync_properties()
+        self._edit_table_content()
 
     # -- bulk operations ----------------------------------------------------
 
@@ -4029,7 +4803,20 @@ class ComposePanel(tk.Frame):
 
     @_action
     def _arrange(self, mode: str) -> None:
-        items = self.composition.placements
+        """Lay the selection out in a row or in a grid.
+
+        With nothing selected every figure on the sheet is laid out, the
+        way it always was.  With a selection the selected objects are --
+        graphic elements, free text and tables included.
+        """
+        items = self._selected_boxes()
+        if not any(kind != "figure" for kind, _, _ in items):
+            # Only figures are picked (or nothing is): then every figure on
+            # the sheet is laid out, the way it always was.  A selection
+            # that holds a graphic element, a table or a free text is laid
+            # out as it stands.
+            items = [("figure", i, fitz.Rect(p.rect))
+                     for i, p in enumerate(self.composition.placements)]
         if not items:
             return
         n = len(items)
@@ -4039,10 +4826,10 @@ class ComposePanel(tk.Frame):
         else:
             cols = int(n ** 0.5 + 0.999)
             rows = int((n + cols - 1) / cols)
-        # Every cell gets the size of the largest figure in it, so the layout
+        # Every cell gets the size of the largest object in it, so the layout
         # is even instead of ragged.
-        cell_w = max((p.rect.width for p in items), default=100.0)
-        cell_h = max((p.rect.height for p in items), default=100.0)
+        cell_w = max((rect.width for _, _, rect in items), default=100.0)
+        cell_h = max((rect.height for _, _, rect in items), default=100.0)
         total_w = cols * cell_w + (cols - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
         # A figure that was made bigger than the sheet must not push the
@@ -4050,7 +4837,10 @@ class ComposePanel(tk.Frame):
         # Room is kept under the bottom row for the labels, which sit below
         # their figures by default.
         label_room = 0.0
-        for p in items:
+        for kind, index, _ in items:
+            if kind != "figure":
+                continue
+            p = self.composition.placements[index]
             if p.label and p.label_mode == comp.LABEL_BELOW:
                 label_room = max(label_room, p.label_size * 1.6)
         scale = min(1.0,
@@ -4062,22 +4852,22 @@ class ComposePanel(tk.Frame):
         total_w = cols * cell_w + (cols - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
         x0 = self.sheet_x + (self.sheet_w - total_w) / 2
-        y0 = self.sheet_y + (self.sheet_h - label_room - total_h) / 2
-        for i, p in enumerate(items):
-            r, c = divmod(i, cols)
-            # Rows are laid out from the top of the sheet downwards.
-            top = self.sheet_y + self.sheet_h - (y0 + r * (cell_h + gap))
-            p.rect = fitz.Rect(
-                x0 + c * (cell_w + gap), top - cell_h,
-                x0 + c * (cell_w + gap) + cell_w, top,
-            )
+        # The block of objects stands above the room kept for the labels.
+        y0 = self.sheet_y + (self.sheet_h - label_room - total_h) / 2 + label_room
+        for (kind, index, rect), (px, py) in zip(
+                items, comp.array_positions(n, cols, rows, cell_w, cell_h,
+                                           gap, x0, y0)):
+            self._set_box(kind, index,
+                          fitz.Rect(px, py, px + cell_w, py + cell_h),
+                          resize=(kind == "figure"))
         self._redraw()
-        self._status(f"已{'横向' if mode == 'row' else '网格'}排列 {n} 个图。")
+        self._status(f"已{'横向' if mode == 'row' else '网格'}排列 {n} 个元素。")
 
     # -- export -------------------------------------------------------------
 
     def _export(self) -> None:
-        if not self.composition.placements:
+        if not (self.composition.placements or self.composition.shapes
+                or self.composition.tables or self.composition.texts):
             self._status("画布上还没有图。")
             return
         path = filedialog.asksaveasfilename(

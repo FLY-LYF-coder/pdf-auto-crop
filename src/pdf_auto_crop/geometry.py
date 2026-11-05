@@ -15,6 +15,18 @@ import pymupdf as fitz
 # Conversion factor: 1 inch = 25.4 mm = 72 pt  =>  1 mm = 72/25.4 pt.
 MM_TO_PT: float = 72.0 / 25.4
 
+#: The other way round: 1 pt = 25.4/72 mm.
+PT_TO_MM: float = 25.4 / 72.0
+
+
+def pt_to_mm(pt: float) -> float:
+    """Convert PDF points to millimetres.
+
+    The panels show sizes in millimetres, so a size that lives in points
+    has to be shown in the unit the user reads.
+    """
+    return pt * PT_TO_MM
+
 
 def mm_to_pt(mm: float) -> float:
     """Convert millimetres to PDF points (1 pt = 1/72 inch).

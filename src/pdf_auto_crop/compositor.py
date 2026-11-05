@@ -1040,6 +1040,194 @@ class TextItem:
         )
 
 
+#: The ways a table can be ruled.
+TABLE_THREE_LINE = "threeline"   # 顶线、表头线、底线：期刊里的三线表
+TABLE_GRID = "grid"              # 每一格都有线
+TABLE_NO_RULES = "none"          # 没有线，只有文字
+
+#: Every table style there is.
+TABLE_STYLES: Tuple[str, ...] = (TABLE_THREE_LINE, TABLE_GRID, TABLE_NO_RULES)
+
+#: How the text of a cell sits in its cell.
+TABLE_ALIGNS: Tuple[str, ...] = ("center", "left", "right")
+
+
+@dataclass
+class Table:
+    """A table of cells, drawn on the page as rules and text.
+
+    The table is one object: it can be picked up, moved and made bigger,
+    and it keeps its cells when it is.  The text in a cell is written with
+    the same machinery as a label, so it is real text in the file and not
+    a picture of one.
+    """
+
+    #: The box the table occupies, in the composition's user space.
+    rect: fitz.Rect
+    #: The cells, row by row: ``rows[r][c]`` is the text of a cell.
+    rows: List[List[str]] = field(default_factory=list)
+    #: How wide every column is, relative to the others.  Empty means the
+    #: columns are all the same width.
+    col_weights: List[float] = field(default_factory=list)
+    #: How the table is ruled.
+    style: str = TABLE_THREE_LINE
+    #: The size of the text in a cell, in points.
+    font_size: float = 9.0
+    #: The typeface: a key of :data:`LABEL_FONTS`, or empty for the default.
+    font: str = ""
+    #: An optional font file to embed instead of a built-in face.
+    fontfile: str = ""
+    #: Whether the first row is a head, and is written in bold.
+    header: bool = True
+    #: The colour of the rules and of the text.
+    color: Tuple[float, float, float] = LABEL_COLOR_DEFAULT
+    #: The width of the rules, in points.
+    line_width: float = 0.8
+    #: How the text sits in its cell: "center", "left" or "right".
+    align: str = "center"
+    #: The space between the text and the edge of its cell, in points.
+    padding: float = 3.0
+
+    def __post_init__(self) -> None:
+        self.rect = fitz.Rect(self.rect)
+        self.rows = [list(r) for r in self.rows]
+        self.col_weights = [float(w) for w in self.col_weights]
+        self.color = tuple(float(c) for c in self.color)[:3]
+        self.font_size = max(1.0, float(self.font_size))
+        self.line_width = max(0.1, float(self.line_width))
+        self.padding = max(0.0, float(self.padding))
+        if self.style not in TABLE_STYLES:
+            self.style = TABLE_THREE_LINE
+        if self.align not in TABLE_ALIGNS:
+            self.align = "center"
+
+    @property
+    def n_rows(self) -> int:
+        """How many rows the table has."""
+        return len(self.rows)
+
+    @property
+    def n_cols(self) -> int:
+        """How many columns the table has."""
+        return max((len(r) for r in self.rows), default=0)
+
+    def column_edges(self) -> List[float]:
+        """The x of every column's edge, from the left to the right."""
+        n = self.n_cols
+        if n <= 0:
+            return []
+        weights = list(self.col_weights[:n])
+        if len(weights) < n:
+            weights += [1.0] * (n - len(weights))
+        if sum(weights) <= 0:
+            weights = [1.0] * n
+        total = sum(weights)
+        out = [self.rect.x0]
+        x = self.rect.x0
+        for w in weights:
+            x += self.rect.width * w / total
+            out.append(x)
+        return out
+
+    def row_edges(self) -> List[float]:
+        """The y of every row's edge, from the bottom to the top."""
+        n = self.n_rows
+        if n <= 0:
+            return []
+        out = [self.rect.y0]
+        y = self.rect.y0
+        height = self.rect.height / n
+        for _ in range(n):
+            y += height
+            out.append(y)
+        return out
+
+    def cell_rect(self, row: int, col: int) -> fitz.Rect:
+        """The box of one cell.
+
+        The first row is the top one, the way a table is read; the edges
+        are counted from the bottom, where the y grows upwards.
+        """
+        xs = self.column_edges()
+        ys = self.row_edges()
+        r = self.n_rows - 1 - row
+        if r < 0 or r + 1 >= len(ys):
+            return fitz.Rect()
+        return fitz.Rect(xs[col], ys[r], xs[col + 1], ys[r + 1])
+
+    def cell_text(self, row: int, col: int) -> str:
+        """The text of one cell."""
+        if 0 <= row < len(self.rows) and 0 <= col < len(self.rows[row]):
+            return self.rows[row][col]
+        return ""
+
+    def cell_font(self, row: int, col: int) -> Tuple[str, str]:
+        """The ``(fontname, fontfile)`` one cell is written with."""
+        bold = self.header and row == 0
+        return resolve_label_font(self.cell_text(row, col) or " ",
+                                  self.font, self.fontfile, bold)
+
+    def rules(self) -> List[Tuple[float, float, float, float, float]]:
+        """The lines of the table, as ``(x0, y0, x1, y1, width)``.
+
+        The lines are given in the composition's user space; the three
+        line table has the top rule, the rule under the head and the
+        bottom rule, the grid table has every line.
+        """
+        xs = self.column_edges()
+        ys = self.row_edges()
+        if len(xs) < 2 or len(ys) < 2:
+            return []
+        out: List[Tuple[float, float, float, float, float]] = []
+        if self.style == TABLE_GRID:
+            for x in xs:
+                out.append((x, ys[0], x, ys[-1], self.line_width))
+            for y in ys:
+                out.append((xs[0], y, xs[-1], y, self.line_width))
+        elif self.style == TABLE_THREE_LINE:
+            out.append((xs[0], ys[-1], xs[-1], ys[-1], self.line_width))
+            if len(ys) > 2:
+                # The rule under the head is the thin one.  The head is the
+                # top row, so its lower edge is the one below it.
+                out.append((xs[0], ys[-2], xs[-1], ys[-2],
+                            max(0.1, self.line_width * 0.6)))
+            out.append((xs[0], ys[0], xs[-1], ys[0], self.line_width))
+        return out
+
+    def to_dict(self) -> dict:
+        return {
+            "rect": [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1],
+            "rows": [list(r) for r in self.rows],
+            "col_weights": list(self.col_weights),
+            "style": self.style,
+            "font_size": self.font_size,
+            "font": self.font,
+            "fontfile": self.fontfile,
+            "header": self.header,
+            "color": list(self.color),
+            "line_width": self.line_width,
+            "align": self.align,
+            "padding": self.padding,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Table":
+        return cls(
+            rect=fitz.Rect(*data.get("rect", (0.0, 0.0, 100.0, 50.0))),
+            rows=[list(r) for r in data.get("rows", [])],
+            col_weights=list(data.get("col_weights", [])),
+            style=str(data.get("style", TABLE_THREE_LINE)),
+            font_size=float(data.get("font_size", 9.0)),
+            font=str(data.get("font", "")),
+            fontfile=str(data.get("fontfile", "")),
+            header=bool(data.get("header", True)),
+            color=tuple(data.get("color", LABEL_COLOR_DEFAULT)),
+            line_width=float(data.get("line_width", 0.8)),
+            align=str(data.get("align", "center")),
+            padding=float(data.get("padding", 3.0)),
+        )
+
+
 @dataclass
 class Group:
     """A set of objects that travel together.
@@ -1090,6 +1278,8 @@ class Composition:
     placements: List[Placement] = field(default_factory=list)
     #: Graphic elements drawn on top of the figures.
     shapes: List[Shape] = field(default_factory=list)
+    #: Tables of cells, drawn on top of the figures.
+    tables: List[Table] = field(default_factory=list)
     #: Free-standing text: annotations, notes, formulas.
     texts: List[TextItem] = field(default_factory=list)
     #: Objects that travel together.
@@ -1133,6 +1323,8 @@ class Composition:
                 boxes.append(free_label_rect(p))
         for s in self.shapes:
             boxes.append(s.rect)
+        for t in self.tables:
+            boxes.append(fitz.Rect(t.rect))
         for t in self.texts:
             boxes.append(t.rect())
         if not boxes:
@@ -1150,6 +1342,24 @@ class Composition:
         m = self.margin_pt
         return (bounds.width + 2 * m, bounds.height + 2 * m)
 
+    def object_boxes(self) -> List[Tuple[str, int, fitz.Rect]]:
+        """Every object on the sheet, with the box it occupies.
+
+        The labels are left out: they belong to their figure and travel
+        with it, so a rubber band that catches a figure has caught its
+        label as well.
+        """
+        items: List[Tuple[str, int, fitz.Rect]] = []
+        for i, p in enumerate(self.placements):
+            items.append(("figure", i, fitz.Rect(p.rect)))
+        for i, s in enumerate(self.shapes):
+            items.append(("shape", i, fitz.Rect(s.rect)))
+        for i, t in enumerate(self.tables):
+            items.append(("table", i, fitz.Rect(t.rect)))
+        for i, t in enumerate(self.texts):
+            items.append(("text", i, fitz.Rect(t.rect())))
+        return items
+
     def to_dict(self) -> dict:
         return {
             "width": self.width,
@@ -1157,6 +1367,7 @@ class Composition:
             "margin_pt": self.margin_pt,
             "placements": [p.to_dict() for p in self.placements],
             "shapes": [s.to_dict() for s in self.shapes],
+            "tables": [t.to_dict() for t in self.tables],
             "texts": [t.to_dict() for t in self.texts],
             "groups": [g.to_dict() for g in self.groups],
         }
@@ -1169,6 +1380,7 @@ class Composition:
             margin_pt=float(data.get("margin_pt", 0.0)),
             placements=[Placement.from_dict(p) for p in data.get("placements", [])],
             shapes=[Shape.from_dict(s) for s in data.get("shapes", [])],
+            tables=[Table.from_dict(t) for t in data.get("tables", [])],
             texts=[TextItem.from_dict(t) for t in data.get("texts", [])],
             groups=[Group.from_dict(g) for g in data.get("groups", [])],
         )
@@ -1450,6 +1662,85 @@ def auto_label(index: int, style: str = "letter") -> str:
         n, rem = divmod(n - 1, 26)
         letters = chr(ord("a") + rem) + letters
     return f"({letters})"
+
+
+# ---------------------------------------------------------------------------
+# Arrays and rubber-band selection
+# ---------------------------------------------------------------------------
+
+
+def array_positions(count: int, columns: int, rows: int, cell_w: float,
+                    cell_h: float, gap: float, x0: float, y0: float
+                    ) -> List[Tuple[float, float]]:
+    """Where the cells of an array are, in the composition's user space.
+
+    The cells are filled in the way a table is read: the first one is at
+    the top left, the last one at the bottom right.  ``(x0, y0)`` is the
+    bottom left corner of the whole array, so the caller decides where the
+    array stands.
+
+    Args:
+        count: How many cells there are.
+        columns: How many cells there are in a row.
+        rows: How many rows there are.
+        cell_w: The width of a cell, in points.
+        cell_h: The height of a cell, in points.
+        gap: The space between two cells, in points.
+        x0: The left edge of the array.
+        y0: The bottom edge of the array.
+
+    Returns:
+        The bottom left corner of every cell, in reading order.
+    """
+    if columns < 1:
+        columns = 1
+    if rows < 1:
+        rows = 1
+    total_h = rows * cell_h + (rows - 1) * gap
+    out: List[Tuple[float, float]] = []
+    for n in range(max(0, count)):
+        r, c = divmod(n, columns)
+        if r >= rows:
+            break
+        out.append((x0 + c * (cell_w + gap),
+                    y0 + total_h - (r + 1) * cell_h - r * gap))
+    return out
+
+
+def boxes_overlap(a: fitz.Rect, b: fitz.Rect) -> bool:
+    """Whether two rectangles touch each other.
+
+    A rectangle without an area -- a line, a box that has been squashed --
+    still touches what lies on it, so the test is on the projections
+    rather than on the area.
+    """
+    if a.x1 < b.x0 or b.x1 < a.x0:
+        return False
+    if a.y1 < b.y0 or b.y1 < a.y0:
+        return False
+    return True
+
+
+def select_in_band(band: fitz.Rect,
+                   items: Sequence[Tuple[str, int, fitz.Rect]]
+                   ) -> Dict[str, List[int]]:
+    """The objects a rubber band catches, grouped by kind.
+
+    An object is caught when any part of it lies inside the band -- the
+    way a drawing program catches everything the cursor sweeps over.
+
+    Args:
+        band: The rectangle the cursor drew.
+        items: ``(kind, index, box)`` for every object on the sheet.
+
+    Returns:
+        The indices that were caught, keyed by kind.
+    """
+    out: Dict[str, List[int]] = {}
+    for kind, index, rect in items:
+        if boxes_overlap(fitz.Rect(rect), band):
+            out.setdefault(kind, []).append(index)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1925,6 +2216,44 @@ def _draw_text_frame(page: fitz.Page, item: TextItem, anchor: fitz.Point,
                        width=item.box_width)
 
 
+def draw_table(page: fitz.Page, table: Table, page_height: float,
+               written: Optional[Dict[str, str]] = None) -> None:
+    """Draw a table: its rules and its text.
+
+    The rules are lines and the text is real text, so the table stays
+    vector -- it can be scaled and printed like the rest of the page.
+    """
+    for x0, y0, x1, y1, width in table.rules():
+        page.draw_line(
+            fitz.Point(x0, page_height - y0),
+            fitz.Point(x1, page_height - y1),
+            color=table.color, width=width,
+        )
+    for r in range(table.n_rows):
+        for c in range(table.n_cols):
+            text = table.cell_text(r, c)
+            if not text:
+                continue
+            fontname, fontfile = table.cell_font(r, c)
+            _note_font(written, fontname, text)
+            width = text_width(text, fontname, table.font_size, fontfile)
+            cell = table.cell_rect(r, c)
+            if table.align == "left":
+                x = cell.x0 + table.padding
+            elif table.align == "right":
+                x = cell.x1 - table.padding - width
+            else:
+                x = cell.x0 + (cell.width - width) / 2
+            # The text sits in the middle of its cell: the baseline is a
+            # little below the centre, because the descenders hang under it.
+            baseline = cell.y0 + cell.height / 2 - table.font_size * 0.25
+            page.insert_text(
+                fitz.Point(x, page_height - baseline), text,
+                fontsize=table.font_size, fontname=fontname,
+                fontfile=fontfile or None, color=table.color,
+            )
+
+
 def export_composition(
     comp: Composition,
     out_path: Path,
@@ -2069,7 +2398,16 @@ def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
             )
             draw_shape(page, moved, h, written=written)
 
-        # 3. the free-standing text, on top of the graphic elements
+        # 3. the tables, on top of the graphic elements
+        for table in comp.tables:
+            moved = dataclasses.replace(
+                table,
+                rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
+                               table.rect.x1 + dx, table.rect.y1 + dy),
+            )
+            draw_table(page, moved, h, written=written)
+
+        # 4. the free-standing text, on top of the graphic elements
         for item in comp.texts:
             moved = dataclasses.replace(
                 item,
@@ -2078,7 +2416,7 @@ def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
             )
             draw_text_item(page, moved, h, written=written)
 
-        # 4. the labels, on top of everything
+        # 5. the labels, on top of everything
         for placement in comp.placements:
             if not placement.label:
                 continue
