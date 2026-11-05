@@ -591,6 +591,11 @@ sweeps over is picked -- figures, graphic elements, free text and tables
 alike.  A click on the empty sheet still clears the selection, and
 **Ctrl+click** adds one object at a time.
 
+Several things picked move as one: press on any of them and drag, and the
+whole selection travels with it -- a figure, a box, a note and a table keep
+their places among themselves.  To pick only one of them, `Ctrl`+click it
+(to take it out of the selection) or click the empty sheet first.
+
 ### Arrays
 
 **矩阵阵列…** moves the selected objects into a grid of so many columns and

@@ -446,15 +446,23 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
             else:
                 texts.append(index)
     else:
-        figs, shapes, texts, labels = [], [], [], []
-        if kind == "figure":
-            figs = [index]
-        elif kind == "shape":
-            shapes = [index]
-        elif kind == "label":
-            labels = [index]
-        else:
-            texts = [index]
+        # A plain press on something that is *already* picked keeps the
+        # selection: that is how a whole selection is dragged along.  A press
+        # on anything else starts afresh.
+        already = ((kind == "figure" and index in figs)
+                   or (kind == "shape" and index in shapes)
+                   or (kind == "text" and index in texts)
+                   or (kind == "label" and index in labels))
+        if not already:
+            figs, shapes, texts, labels = [], [], [], []
+            if kind == "figure":
+                figs = [index]
+            elif kind == "shape":
+                shapes = [index]
+            elif kind == "label":
+                labels = [index]
+            else:
+                texts = [index]
 
     mode: Optional[str] = None
     if kind == "figure" and index in figs:
@@ -1178,6 +1186,9 @@ class ComposePanel(tk.Frame):
         self._drag_rects: Dict[int, fitz.Rect] = {}
         self._drag_shapes: Dict[int, comp.Shape] = {}
         self._drag_texts: Dict[int, comp.TextItem] = {}
+        #: The same, for a selection that holds several kinds: every object
+        #: in it, with the box it had when the drag began.
+        self._drag_units: List[Tuple[str, int, fitz.Rect]] = []
         #: Where on the label the cursor grabbed it, so it does not jump.
         self._drag_label_grab: Tuple[float, float] = (0.0, 0.0)
         #: Which grip of the sheet is being dragged, and the size it had.
@@ -4111,6 +4122,15 @@ class ComposePanel(tk.Frame):
                 else:
                     self._sel_texts = members
 
+        # Several things picked move as one: the drag carries everything
+        # that is picked, whatever kind it is -- a figure, a graphic
+        # element, a table and a note travel together.
+        picked = (len(self._sel_figs) + len(self._sel_shapes)
+                  + len(self._sel_texts) + len(self._sel_tables))
+        if picked > 1 and mode in ("body", "shape-body", "text-body",
+                                   "table-body"):
+            mode = "selection-body"
+
         self._drag_mode = mode
         self._drag_start = (event.x, event.y)
         self._drag_rect = None
@@ -4132,6 +4152,14 @@ class ComposePanel(tk.Frame):
             i: dataclasses.replace(self.composition.texts[i])
             for i in self._sel_texts
         }
+        # The same for a selection of several kinds: every object in it,
+        # with the box it had when the drag began.  A label is left out: it
+        # travels with its figure.
+        self._drag_units = [
+            (kind, index, fitz.Rect(box))
+            for kind, index, box in self._selected_boxes()
+            if kind != "label"
+        ]
         if mode == "label" and self._selected_label is not None:
             placement = self.composition.placements[self._selected_label]
             anchor = placement.label_anchor()
@@ -4295,6 +4323,30 @@ class ComposePanel(tk.Frame):
             if self._shape_preview is not None:
                 self._shape_preview.end = fitz.Point(ux, uy)
                 self._redraw()
+            return
+        if self._drag_mode == "selection-body":
+            # Several things are picked: they all travel together, whatever
+            # kind they are.  The offset is the total one from where the
+            # press happened, so every object moves by the same amount.
+            offset = self._drag_offset(event)
+            if offset is None:
+                return
+            dx, dy = offset
+            if self._drag_units:
+                first = self._drag_units[0][2]
+                others = self._other_boxes(
+                    [i for k, i, _ in self._drag_units if k == "figure"],
+                    [i for k, i, _ in self._drag_units if k == "shape"],
+                    [i for k, i, _ in self._drag_units if k == "text"],
+                    [i for k, i, _ in self._drag_units if k == "table"],
+                )
+                dx, dy = self._snap_offset(fitz.Rect(first), dx, dy, others,
+                                           event.state)
+            for kind, index, box in self._drag_units:
+                new = fitz.Rect(
+                    box.x0 + dx, box.y0 + dy, box.x1 + dx, box.y1 + dy)
+                self._set_box(kind, index, new)
+            self._redraw()
             return
         if self._drag_mode == "shape-body":
             offset = self._drag_offset(event)
@@ -4514,6 +4566,7 @@ class ComposePanel(tk.Frame):
         self._drag_shape = None
         self._drag_rects = {}
         self._drag_shapes = {}
+        self._drag_units = []
         self._update_count()
         if was_pan:
             self._pan_origin = None

@@ -631,6 +631,42 @@ def main() -> int:
     win._arrange("grid")
     win.update()
 
+    # -- a selection of several things moves as one -------------------------
+    # A figure and a graphic element, picked together, have to travel
+    # together: that is what a selection is for.
+    win._clear_selection()
+    win._sel_figs = [0]
+    win._sel_shapes = [0]
+    win._last_kind = "figure"
+    win._sync_properties()
+    win._redraw()
+    win.update()
+    fig_before = fitz.Rect(win.composition.placements[0].rect)
+    shape_before = fitz.Rect(win.composition.shapes[0].rect)
+    # The press lands on the figure that is picked: the selection stays.
+    fx, fy = win._to_canvas((fig_before.x0 + fig_before.x1) / 2,
+                            (fig_before.y0 + fig_before.y1) / 2)
+    _drag(win, int(fx), int(fy), int(fx) + 40, int(fy) + 20)
+    win.update()
+    fig_after = fitz.Rect(win.composition.placements[0].rect)
+    shape_after = fitz.Rect(win.composition.shapes[0].rect)
+    moved_x = fig_after.x0 - fig_before.x0
+    moved_y = fig_after.y0 - fig_before.y0
+    check("a figure of a selection can be dragged",
+          moved_x > 10, f"{fig_before.x0:.1f} -> {fig_after.x0:.1f}")
+    check("the rest of the selection comes along",
+          abs((shape_after.x0 - shape_before.x0) - moved_x) < 1.0
+          and abs((shape_after.y0 - shape_before.y0) - moved_y) < 1.0,
+          f"figure {moved_x:.1f}/{moved_y:.1f}, "
+          f"shape {shape_after.x0 - shape_before.x0:.1f}/"
+          f"{shape_after.y0 - shape_before.y0:.1f}")
+    check("the selection is still whole",
+          set(win._sel_figs) == {0} and set(win._sel_shapes) == {0},
+          f"{win._sel_figs} {win._sel_shapes}")
+    win._clear_selection()
+    win._arrange("grid")
+    win.update()
+
     # -- editing the text inside an imported figure --------------------------
     # The panels above are plain colours; a figure with text is needed here.
     text_fig = WORK / "with_text.pdf"
@@ -1633,7 +1669,10 @@ def main() -> int:
         gpix = gpage.get_pixmap(dpi=72)
         gsamples = gpix.samples
         gwidth = gpix.width
-        grows = {gsamples[(gwidth * 2 + x) * 3]
+        # The row through the middle of the star: the gradient runs across
+        # it, so the red channel changes from one side to the other.
+        star_row = int(win.sheet_h - (star.rect.y0 + star.rect.y1) / 2)
+        grows = {gsamples[(star_row * gwidth + x) * 3]
                  for x in range(0, gwidth, 7)}
         check("the gradient is painted into the page",
               len(grows) > 1, str(sorted(grows)[:6]))

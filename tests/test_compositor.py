@@ -1787,6 +1787,12 @@ def test_the_selection_grows_and_shrinks_with_ctrl() -> None:
     # A plain click still starts afresh.
     assert u([1], [0], [0], [1], "text", 2, False) == (
         [], [], [2], [], "text-body")
+    # A plain press on something that is *already* picked keeps the
+    # selection: that is how a whole selection is dragged along.
+    assert u([1, 3], [], [], [], "figure", 1, False) == (
+        [1, 3], [], [], [], "body")
+    assert u([1], [0], [], [], "shape", 0, False) == (
+        [1], [0], [], [], "shape-body")
     # Clicking the empty sheet clears the selection -- unless Ctrl is held.
     assert u([1], [], [], [], None, None, False) == ([], [], [], [], None)
     assert u([1], [], [], [], None, None, True) == ([1], [], [], [], None)
