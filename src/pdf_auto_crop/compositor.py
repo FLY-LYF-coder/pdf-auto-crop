@@ -2332,9 +2332,13 @@ def _rounded_rect_points(box: fitz.Rect, radius: float,
     return out
 
 
-def shape_clip_points(shape: Shape, box: fitz.Rect) -> List[Tuple[float, float]]:
-    """The points of a graphic element's outline, whatever kind it is."""
-    if shape.kind == SHAPE_ELLIPSE:
+def shape_clip_points(kind: str, box: fitz.Rect) -> List[Tuple[float, float]]:
+    """The points of a graphic element's outline, whatever kind it is.
+
+    They are the points of a small picture of the element as well: what the
+    button in the palette shows is what the element will look like.
+    """
+    if kind == SHAPE_ELLIPSE:
         cx = (box.x0 + box.x1) / 2
         cy = (box.y0 + box.y1) / 2
         rx = (box.x1 - box.x0) / 2
@@ -2342,12 +2346,12 @@ def shape_clip_points(shape: Shape, box: fitz.Rect) -> List[Tuple[float, float]]
         return [(cx + rx * math.cos(math.radians(-90.0 + 360.0 * n / 48)),
                  cy + ry * math.sin(math.radians(-90.0 + 360.0 * n / 48)))
                 for n in range(48)]
-    if shape.kind == SHAPE_ROUNDRECT:
+    if kind == SHAPE_ROUNDRECT:
         return _rounded_rect_points(box, 0.15 * min(box.width, box.height))
-    if shape.kind == SHAPE_RECT:
+    if kind == SHAPE_RECT:
         return [(box.x0, box.y0), (box.x1, box.y0),
                 (box.x1, box.y1), (box.x0, box.y1)]
-    return [(p.x, p.y) for p in shape_outline(shape.kind, box)]
+    return [(p.x, p.y) for p in shape_outline(kind, box)]
 
 
 def _shape_path_operators(shape: Shape, box: fitz.Rect,
@@ -2356,7 +2360,7 @@ def _shape_path_operators(shape: Shape, box: fitz.Rect,
 
     The coordinates are in the PDF's own frame, where the y grows upwards.
     """
-    points = shape_clip_points(shape, box)
+    points = shape_clip_points(shape.kind, box)
     if not points:
         return ""
     def pt(x: float, y: float) -> str:

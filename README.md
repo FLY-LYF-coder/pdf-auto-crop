@@ -609,6 +609,16 @@ the colour of a caption -- and gives it to the next object that is
 clicked.  The words and the place of the object are not touched: only the
 look is copied.  **Esc** puts the brush away.
 
+### The gallery of elements
+
+The elements are shown in the **形状** tab of the panel on the left, each
+one as it looks: the little picture on every button is drawn from the very
+geometry the exporter uses, so what the button shows is what the element
+will really look like on the page.  They are grouped the way PowerPoint
+groups them, and the name of an element appears when the cursor rests on
+it.  The tools that are not elements -- 选择/移动, 移动画布, 文本, 文本框 --
+stand at the top of the same tab.
+
 ### The graphic elements
 
 The tools offer the shapes PowerPoint offers: the lines (straight, arrow,

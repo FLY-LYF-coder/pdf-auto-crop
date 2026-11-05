@@ -191,6 +191,36 @@ TOOL_CHOICES: Tuple[Tuple[str, str], ...] = (
 #: The name of a tool -> the thing it draws.
 TOOL_BY_NAME: Dict[str, str] = dict(TOOL_CHOICES)
 
+#: The other way round: the thing a tool draws -> its name.
+TOOL_NAME_BY_KIND: Dict[str, str] = {kind: name for name, kind in TOOL_CHOICES}
+
+
+class _Hint:
+    """A little note that appears when the cursor rests on something."""
+
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self.widget = widget
+        self.text = text
+        self.win: Optional[tk.Toplevel] = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+
+    def _show(self, _event: tk.Event) -> None:
+        if self.win is not None:
+            return
+        x = self.widget.winfo_rootx() + 10
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
+        self.win = tk.Toplevel(self.widget)
+        self.win.wm_overrideredirect(True)
+        tk.Label(self.win, text=self.text, background="#ffffe0",
+                 relief=tk.SOLID, borderwidth=1).pack()
+        self.win.wm_geometry(f"+{x}+{y}")
+
+    def _hide(self, _event: tk.Event) -> None:
+        if self.win is not None:
+            self.win.destroy()
+            self.win = None
+
 #: How a table is ruled, in the words the panel uses.
 TABLE_STYLE_NAMES: Dict[str, str] = {
     comp.TABLE_THREE_LINE: "三线表",
@@ -954,6 +984,98 @@ def resized_sheet(sheet_x: float, sheet_y: float, sheet_w: float,
 FORMAT_FIELDS = comp.FORMAT_FIELDS
 
 
+def draw_shape_icon(canvas: tk.Canvas, kind: str, width: int = 30,
+                    height: int = 26, colour: str = "#1b1b1b") -> None:
+    """Draw a small picture of a graphic element on a canvas.
+
+    The picture is drawn from the very geometry the exporter uses, so the
+    button shows what the element will really look like -- a name in a
+    list says much less.
+    """
+    canvas.delete("all")
+    pad = 3.5
+    box = fitz.Rect(pad, pad, width - pad, height - pad)
+    if kind == comp.SHAPE_LINE:
+        canvas.create_line(box.x0, box.y1, box.x1, box.y0, fill=colour, width=1)
+        return
+    if kind == comp.SHAPE_ARROW:
+        canvas.create_line(box.x0, box.y1, box.x1, box.y0, fill=colour, width=1)
+        # The head of the arrow.
+        canvas.create_polygon(
+            [box.x1, box.y0, box.x1 - 5, box.y0 - 1, box.x1 - 1, box.y0 + 4],
+            fill=colour, outline=colour,
+        )
+        return
+    points = comp.shape_clip_points(kind, box)
+    if not points:
+        return
+    flat: List[float] = []
+    for x, y in points:
+        flat.extend((x, y))
+    canvas.create_polygon(flat, fill="#cfe0f5", outline=colour, width=1)
+
+
+class _ScrollableFrame(ttk.Frame):
+    """A frame whose contents can be scrolled.
+
+    The shape gallery is taller than the panel it stands in, so it is put
+    on a canvas of its own with a scroll bar beside it.
+    """
+
+    def __init__(self, master: tk.Misc, **kwargs: Any) -> None:
+        super().__init__(master, **kwargs)
+        self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
+                               background="#f0f0f0")
+        self.scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL,
+                                      command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.body = ttk.Frame(self.canvas)
+        self._window = self.canvas.create_window((0, 0), window=self.body,
+                                                 anchor=tk.NW)
+        self.body.bind("<Configure>", self._on_body)
+        self.canvas.bind("<Configure>", self._on_canvas)
+        self.canvas.bind("<Enter>", lambda _e: self._wheel())
+        self.canvas.bind("<Leave>",
+                         lambda _e: self.canvas.unbind("<MouseWheel>"))
+
+    def _wheel(self) -> None:
+        self.canvas.bind_all("<MouseWheel>", self._on_wheel)
+
+    def _on_wheel(self, event: tk.Event) -> None:
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_body(self, _event: tk.Event) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas(self, event: tk.Event) -> None:
+        self.canvas.itemconfigure(self._window, width=event.width)
+
+
+def _scrollable_frame(master: tk.Misc) -> "_ScrollableFrame":
+    """A frame whose contents can be scrolled."""
+    return _ScrollableFrame(master)
+
+
+#: The groups the graphic elements are shown in, in PowerPoint's order.
+SHAPE_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("线条", ("直线", "箭头", "双箭头", "弧线")),
+    ("矩形", ("矩形", "圆角矩形", "椭圆")),
+    ("基本形状", ("三角形", "直角三角形", "平行四边形", "梯形", "菱形",
+               "五边形", "六边形", "八边形", "十边形", "十二边形",
+               "十字", "泪滴", "半月形")),
+    ("箭头", ("右箭头", "左箭头", "上箭头", "下箭头", "十字箭头", "燕尾箭头")),
+    ("公式形状", ("加号", "减号", "乘号", "除号", "等号", "大于号", "小于号")),
+    ("流程图", ("文档", "多文档", "准备", "存储", "延迟", "显示", "提取")),
+    ("星与旗帜", ("星形", "爆炸形", "旗帜", "卷轴")),
+    ("标注", ("云形",)),
+)
+
+#: How many elements are shown in a row of the gallery.
+SHAPE_GALLERY_COLUMNS = 5
+
+
 class ComposePanel(tk.Frame):
     """The compositor, as a panel that can live inside another window.
 
@@ -1007,6 +1129,7 @@ class ComposePanel(tk.Frame):
         #: The pictures of the gradients, kept so that Tk does not forget
         #: them.
         self._shape_photos: List[ImageTk.PhotoImage] = []
+        self._shape_frames: Dict[str, Any] = {}
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         #: The grip of the box around the selection, while it is dragged.
@@ -1289,19 +1412,12 @@ class ComposePanel(tk.Frame):
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
             row=0, column=20, padx=12, sticky="e")
 
-        # The drawing tools, on a second row of the toolbar.
+        # The tools and the graphic elements are shown in the panel on the
+        # left, each one as it looks -- a name in a list says much less
+        # than a small picture of the element.
+        self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         tools = ttk.Frame(bar)
         tools.grid(row=1, column=0, columnspan=21, sticky="w", pady=(6, 0))
-        ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
-        self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
-        self.cmb_tool = ttk.Combobox(
-            tools, textvariable=self.var_tool, state="readonly", width=12,
-            values=[name for name, _ in TOOL_CHOICES],
-        )
-        self.cmb_tool.pack(side=tk.LEFT)
-        self.cmb_tool.bind("<<ComboboxSelected>>", self._on_tool_changed)
-        ttk.Separator(tools, orient=tk.VERTICAL).pack(side=tk.LEFT,
-                                                       fill=tk.Y, padx=10)
         ttk.Label(
             tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐",
             style="Hint.TLabel",
@@ -1312,10 +1428,13 @@ class ComposePanel(tk.Frame):
         body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # -- palette
-        left = ttk.Labelframe(body, text="素材（双击放到画布）",
-                              style="Section.TLabelframe", padding=6)
+        left = ttk.Notebook(body)
         left.pack(side=tk.LEFT, fill=tk.Y)
-        self.lst_palette = tk.Listbox(left, width=26, height=28,
+        self.tab_palette = ttk.Frame(left, padding=6)
+        self.tab_shapes = ttk.Frame(left, padding=6)
+        left.add(self.tab_palette, text="素材")
+        left.add(self.tab_shapes, text="形状")
+        self.lst_palette = tk.Listbox(self.tab_palette, width=26, height=24,
                                       exportselection=False)
         self.lst_palette.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.lst_palette.bind("<Double-Button-1>", lambda _e: self._add_selected())
@@ -1326,7 +1445,7 @@ class ComposePanel(tk.Frame):
         self.lst_palette.bind("<Delete>", lambda _e: self._remove_from_palette())
         self.lst_palette.bind("<BackSpace>", lambda _e: self._remove_from_palette())
         ttk.Label(
-            left,
+            self.tab_palette,
             text="「导入 PDF」自动检测子图；\n「导入整页」一点不裁；\n"
                  "「导入已裁剪的图」取整页。",
             style="Hint.TLabel", wraplength=170, justify=tk.LEFT,
@@ -1336,7 +1455,7 @@ class ComposePanel(tk.Frame):
         # detector measures the ink, so an element that is very pale -- or
         # that sits just outside the ink -- can end up cut off; the margin
         # gives it room.
-        margin_row = ttk.Frame(left)
+        margin_row = ttk.Frame(self.tab_palette)
         margin_row.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
         ttk.Label(margin_row, text="识别留白").pack(side=tk.LEFT)
         self.var_detect_margin = tk.StringVar(value="2")
@@ -1347,12 +1466,15 @@ class ComposePanel(tk.Frame):
         ttk.Label(margin_row, text="mm", style="Hint.TLabel").pack(side=tk.LEFT)
 
         # What to do with a palette entry that is not wanted.
-        palette_buttons = ttk.Frame(left)
+        palette_buttons = ttk.Frame(self.tab_palette)
         palette_buttons.pack(side=tk.TOP, fill=tk.X, pady=(8, 0))
         ttk.Button(palette_buttons, text="删除选中", width=9,
                    command=self._remove_from_palette).pack(side=tk.LEFT)
         ttk.Button(palette_buttons, text="清空素材", width=9,
                    command=self._clear_palette).pack(side=tk.LEFT, padx=4)
+
+        # -- the graphic elements, each one shown as it looks
+        self._build_shape_gallery(self.tab_shapes)
 
         # -- sheet
         mid = ttk.Frame(body)
@@ -1640,6 +1762,86 @@ class ComposePanel(tk.Frame):
         ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # -- the graphic element tab --------------------------------------------
+
+    def _build_shape_gallery(self, parent: tk.Frame) -> None:
+        """The tools and the graphic elements, each one as it looks.
+
+        A name in a list says much less than a small picture: the button
+        is drawn from the very geometry the exporter uses, so what it shows
+        is what the element will look like on the page.
+        """
+        self._shape_frames: Dict[str, tk.Frame] = {}
+
+        # The tools that are not elements.
+        tools = ttk.Frame(parent)
+        tools.pack(side=tk.TOP, fill=tk.X, pady=(0, 4))
+        ttk.Label(tools, text="工具").pack(side=tk.LEFT, padx=(0, 6))
+        for name, kind in TOOL_CHOICES:
+            if kind in comp.SHAPE_KINDS:
+                continue
+            button = tk.Button(
+                tools, text=name, width=8, relief=tk.FLAT,
+                background="#f0f0f0", activebackground="#dcdcdc",
+                command=lambda k=kind: self._pick_tool_kind(k))
+            button.pack(side=tk.LEFT, padx=1)
+            self._shape_frames[kind] = button
+
+        gallery = _ScrollableFrame(parent)
+        gallery.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        body = gallery.body
+        row = 0
+        for group, names in SHAPE_GROUPS:
+            ttk.Label(body, text=group, style="Hint.TLabel").grid(
+                row=row, column=0, columnspan=SHAPE_GALLERY_COLUMNS,
+                sticky="w", pady=(6, 2))
+            row += 1
+            for i, name in enumerate(names):
+                kind = TOOL_BY_NAME[name]
+                r, c = divmod(i, SHAPE_GALLERY_COLUMNS)
+                self._shape_button(body, kind, name).grid(
+                    row=row + r, column=c, padx=1, pady=1)
+            row += (len(names) + SHAPE_GALLERY_COLUMNS - 1) // SHAPE_GALLERY_COLUMNS
+        self._update_tool_buttons()
+
+    def _shape_button(self, parent: tk.Frame, kind: str,
+                      name: str) -> tk.Frame:
+        """A small button that shows the element and picks it."""
+        frame = tk.Frame(parent, background="#f0f0f0", width=34, height=30,
+                         highlightthickness=1, highlightbackground="#c8c8c8")
+        canvas = tk.Canvas(frame, width=30, height=26, highlightthickness=0,
+                           background="#f0f0f0")
+        canvas.pack(fill=tk.BOTH, expand=True)
+        draw_shape_icon(canvas, kind)
+        canvas.bind("<Button-1>",
+                    lambda _e, k=kind: self._pick_tool_kind(k))
+        canvas.configure(cursor="hand2")
+        self._shape_frames[kind] = frame
+        # The name is a hint: the picture is the button.
+        _Hint(canvas, name)
+        return frame
+
+    def _pick_tool_kind(self, kind: str) -> None:
+        """Choose a tool, and mark the button that was chosen."""
+        name = TOOL_NAME_BY_KIND.get(kind, kind)
+        self.var_tool.set(name)
+        self.tool = kind
+        self._update_tool_buttons()
+        self.canvas.configure(
+            cursor="fleur" if kind == TOOL_PAN
+            else ("crosshair" if kind != "select" else ""))
+        self._status(f"已选择工具：{name}")
+
+    def _update_tool_buttons(self) -> None:
+        """Mark the tool that is in use."""
+        for kind, widget in self._shape_frames.items():
+            chosen = kind == self.tool
+            if isinstance(widget, tk.Frame):
+                widget.configure(
+                    highlightbackground="#ff7f0e" if chosen else "#c8c8c8",
+                    highlightthickness=2 if chosen else 1,
+                )
+            else:
+                widget.configure(relief=tk.SUNKEN if chosen else tk.FLAT)
 
     def _build_shape_tab(self, tab: ttk.Frame) -> None:
         tab.columnconfigure(1, weight=1)
@@ -3107,7 +3309,7 @@ class ComposePanel(tk.Frame):
         mask = Image.new("L", (w, h), 0)
         points = [(int((x - box.x0) * self._zoom),
                    int((y - box.y0) * self._zoom))
-                  for x, y in comp.shape_clip_points(shape, box)]
+                  for x, y in comp.shape_clip_points(shape.kind, box)]
         if points:
             ImageDraw.Draw(mask).polygon(points, fill=255)
         img.putalpha(mask)
@@ -4399,7 +4601,7 @@ class ComposePanel(tk.Frame):
                                           int(b * 255)))
 
     def _on_tool_changed(self, event=None) -> None:
-        """The tool dropdown changed.
+        """The tool changed.
 
         The event is accepted because Tk hands one to a callback bound to
         ``<<ComboboxSelected>>``; without it the handler would raise and
@@ -4409,6 +4611,7 @@ class ComposePanel(tk.Frame):
         self.canvas.configure(cursor="fleur" if self.tool == TOOL_PAN
                               else ("crosshair" if self.tool != "select"
                                     else ""))
+        self._update_tool_buttons()
         self._status("已选择工具：{}".format(self.var_tool.get()))
 
     def _choose_font_file(self) -> None:

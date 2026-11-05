@@ -165,7 +165,7 @@ def _pick_tool(win, name: str) -> None:
     take the argument fails exactly where the user is looking.
     """
     win.var_tool.set(name)
-    win.cmb_tool.event_generate("<<ComboboxSelected>>")
+    win._on_tool_changed()
     win.update()
 
 
@@ -402,7 +402,6 @@ def main() -> int:
     # it fails exactly where the user is looking, and the control silently
     # does nothing.
     callbacks = [
-        ("the tool dropdown", win.cmb_tool, win._on_tool_changed),
         ("the label font dropdown", win.cmb_label_font, win._on_label_changed),
         ("the text font dropdown", win.cmb_text_font, win._on_text_changed),
         ("the dash dropdown", win.cmb_shape_dash, win._on_shape_changed),
@@ -1570,6 +1569,19 @@ def main() -> int:
               len(grows) > 1, str(sorted(grows)[:6]))
     finally:
         gdoc.close()
+
+    # -- the gallery of elements --------------------------------------------
+    # The elements are shown as they look, so the user can see what a tool
+    # draws before picking it.
+    gallery = getattr(win, "_shape_frames", {})
+    check("every element is shown in the gallery",
+          len(gallery) >= 40, str(len(gallery)))
+    win._pick_tool_kind("star")
+    win.update()
+    check("an element can be picked from the gallery",
+          win.tool == "star", win.tool)
+    win._pick_tool_kind("select")
+    win.update()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
