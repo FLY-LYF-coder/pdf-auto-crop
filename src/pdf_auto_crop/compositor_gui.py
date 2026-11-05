@@ -1434,15 +1434,23 @@ class ComposePanel(tk.Frame):
             command=self._on_snap_changed)
         self.chk_snap.grid(row=0, column=19, padx=(10, 6), sticky="w")
 
+        # The page of the export is painted white, the way the sheet looks
+        # on the canvas.  Turn it off for a page with a transparent
+        # background.
+        self.var_white_bg = tk.BooleanVar(value=True)
+        self.chk_white_bg = ttk.Checkbutton(
+            bar, text="白底", variable=self.var_white_bg)
+        self.chk_white_bg.grid(row=0, column=20, padx=(0, 6), sticky="w")
+
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=20, padx=12, sticky="e")
+            row=0, column=21, padx=12, sticky="e")
 
         # The tools and the graphic elements are shown in the panel on the
         # left, each one as it looks -- a name in a list says much less
         # than a small picture of the element.
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=21, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=22, sticky="w", pady=(6, 0))
         ttk.Label(
             tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐",
             style="Hint.TLabel",
@@ -1617,6 +1625,16 @@ class ComposePanel(tk.Frame):
         ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
             row=6, column=0, sticky="ew", pady=2)
 
+        # The layout of the sheet, saved so that it can be worked on again
+        # later -- the figures, the graphic elements, the text, where
+        # everything stands and how it looks.
+        layout = ttk.Frame(right)
+        layout.grid(row=7, column=0, sticky="ew", pady=(8, 2))
+        ttk.Button(layout, text="保存布局…", width=9,
+                   command=self._save_layout).pack(side=tk.LEFT, padx=1)
+        ttk.Button(layout, text="打开布局…", width=9,
+                   command=self._open_layout).pack(side=tk.LEFT, padx=1)
+
         ttk.Label(
             right,
             text="拖动图体移动，橙点缩放\n编号可直接拖到任意位置\n"
@@ -1625,7 +1643,7 @@ class ComposePanel(tk.Frame):
                  "滚轮缩放画布，中键平移\n"
                  "方向键微调 · Delete 删除",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=7, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=8, column=0, sticky="w", pady=(10, 0))
 
     # -- the label tab ------------------------------------------------------
 
@@ -3293,6 +3311,13 @@ class ComposePanel(tk.Frame):
         r, g, b = placement.label_color
         style = label_style(placement.label_bold, placement.label_italic)
         size_px = placement.label_size * self._zoom
+        if placement.label_formula:
+            # Tk cannot typeset mathematics: the very PDF the export writes
+            # is rendered and shown instead.
+            if self._draw_formula(f"label{idx}", placement.label,
+                                  placement.label_size, anchor,
+                                  ("fig", str(idx))) is not None:
+                return
         # A font file the user picked: Tk cannot load a file, so the text is
         # drawn with Pillow -- from the very file the export embeds.
         if placement.label_fontfile and Path(placement.label_fontfile).is_file():
@@ -3336,6 +3361,57 @@ class ComposePanel(tk.Frame):
                                  anchor=tk.NW, tags=tags)
         return True
 
+    def _draw_formula(self, key: str, text: str, size: float,
+                      anchor: fitz.Point, tags: Tuple[str, ...]
+                      ) -> Optional[Tuple[float, float, float, float]]:
+        """Show a formula the way it will be printed.
+
+        Tk cannot typeset mathematics, so the very PDF the export writes is
+        rendered and shown instead -- the canvas and the file agree.
+
+        Returns:
+            The box the formula takes on the canvas, or ``None`` when it
+            cannot be rendered.
+        """
+        from .tex import render_math
+        rendered = render_math(text, size)
+        if rendered is None:
+            return None
+        doc = fitz.open(str(rendered))
+        try:
+            page = doc[0]
+            spans = [s for b in page.get_text("dict")["blocks"]
+                     for line in b.get("lines", []) for s in line["spans"]]
+            if not spans:
+                return None
+            box = (min(s["bbox"][0] for s in spans),
+                   min(s["bbox"][1] for s in spans),
+                   max(s["bbox"][2] for s in spans),
+                   max(s["bbox"][3] for s in spans))
+            origin = spans[0]["origin"]
+            # The picture has to match the zoom, so the formula is the same
+            # size on the canvas as it is on the sheet.
+            render_dpi = int(round(max(36.0, 72.0 * self._zoom)))
+            pix = page.get_pixmap(dpi=render_dpi, alpha=True)
+            img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+            scale = render_dpi / 72.0
+            # The ink, cropped out of the rendered page.
+            ink = img.crop((int(box[0] * scale), int(box[1] * scale),
+                            int(box[2] * scale) + 1,
+                            int(box[3] * scale) + 1))
+            photo = ImageTk.PhotoImage(ink)
+            self._photo_cache[key] = photo
+            # The baseline of the formula starts at the anchor, the way the
+            # exporter writes it.
+            px, py = self._to_canvas(anchor.x, anchor.y)
+            left = px + (origin[0] - box[0]) * scale
+            top = py + (origin[1] - box[1]) * scale
+            self.canvas.create_image(left, top, image=photo, anchor=tk.NW,
+                                     tags=tags)
+            return (left, top, left + ink.width, top + ink.height)
+        finally:
+            doc.close()
+
     def _draw_text(self, idx: int, item: comp.TextItem) -> None:
         """Draw a piece of free-standing text on the canvas."""
         x, y = self._to_canvas(item.position.x, item.position.y)
@@ -3354,6 +3430,15 @@ class ComposePanel(tk.Frame):
             # rendered and shown instead.
             self._draw_turned_text(idx, item)
             return
+        if item.formula:
+            # Tk cannot typeset mathematics either: the very PDF the export
+            # writes is rendered and shown instead.
+            box = self._draw_formula(f"text{idx}", item.text, item.size,
+                                     item.position, ("text", str(idx)))
+            if box is not None:
+                if selected:
+                    self._draw_selection_frame(*box, primary=True)
+                return
         r, g, b = item.color
         family = item.font or comp.LABEL_FONT_DEFAULT
         style = label_style(item.bold, item.italic)
@@ -5863,6 +5948,75 @@ class ComposePanel(tk.Frame):
         self._redraw()
         self._status(f"已{'横向' if mode == 'row' else '网格'}排列 {n} 个元素。")
 
+    # -- the layout of the sheet --------------------------------------------
+
+    def _save_layout(self) -> None:
+        """Save the layout of the sheet, so it can be worked on again later.
+
+        The file holds everything the sheet is made of: the figures and
+        where they stand, the graphic elements, the tables, the text, the
+        layers, and the material list to pick from.
+        """
+        path = filedialog.asksaveasfilename(
+            title="保存布局",
+            defaultextension=".json",
+            filetypes=[("布局文件", "*.json")],
+            initialfile="layout.json",
+        )
+        if not path:
+            return
+        try:
+            # The material list goes with it: the figures that are on offer
+            # are part of what the sheet is.
+            self.composition.palette = list(self.palette)
+            comp.save_composition(self.composition, Path(path))
+        except Exception as exc:  # noqa: BLE001
+            self._status(f"保存失败：{exc}")
+            messagebox.showerror("保存失败", str(exc))
+            return
+        self._status(f"已保存布局：{path}")
+
+    def _open_layout(self) -> None:
+        """Open a layout that was saved earlier."""
+        path = filedialog.askopenfilename(
+            title="打开布局",
+            filetypes=[("布局文件", "*.json"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            loaded = comp.load_composition(Path(path))
+        except Exception as exc:  # noqa: BLE001
+            self._status(f"打不开这个布局：{exc}")
+            messagebox.showerror("打不开布局", str(exc))
+            return
+        # The figures the layout was made from have to be on the disk, or
+        # they cannot be drawn again.
+        wanted = list(loaded.palette) + [p.figure for p in loaded.placements]
+        missing = [str(fig.path) for fig in wanted
+                   if not Path(fig.path).is_file()]
+        self.composition = loaded
+        self.palette = list(loaded.palette)
+        self.sheet_w, self.sheet_h = loaded.width, loaded.height
+        self.composition.width = loaded.width
+        self.composition.height = loaded.height
+        # The page of the layout has a size of its own.
+        self.var_sheet.set("自定义")
+        self.var_sheet_w.set(f"{pt_to_mm(loaded.width):.0f}")
+        self.var_sheet_h.set(f"{pt_to_mm(loaded.height):.0f}")
+        self._clear_selection()
+        # A sheet that has just been opened has no history yet.
+        self._undo.clear()
+        self._redo.clear()
+        self._refresh_palette()
+        self._sync_properties()
+        self._redraw()
+        self._update_count()
+        if missing:
+            self._status(f"已打开布局，但有 {len(missing)} 个原始文件找不到了。")
+        else:
+            self._status(f"已打开布局：{path}")
+
     # -- export -------------------------------------------------------------
 
     def _export(self) -> None:
@@ -5879,9 +6033,12 @@ class ComposePanel(tk.Frame):
         if not path:
             return
         mode = self.var_sheet.get()
+        white = bool(self.var_white_bg.get())
         try:
             if mode == "适应内容":
-                comp.export_composition(self.composition, Path(path), fit_to_content=True)
+                comp.export_composition(self.composition, Path(path),
+                                        fit_to_content=True,
+                                        white_background=white)
             else:
                 comp.export_composition(
                     self.composition, Path(path), fit_to_content=False,
@@ -5890,6 +6047,7 @@ class ComposePanel(tk.Frame):
                     # corner can stand anywhere on the canvas: the content
                     # is moved by how far the sheet stands from the origin.
                     offset=(-self.sheet_x, -self.sheet_y),
+                    white_background=white,
                 )
         except Exception as exc:  # noqa: BLE001
             self._status(f"导出失败：{exc}")

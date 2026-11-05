@@ -1651,7 +1651,10 @@ def test_the_border_style_reaches_the_pdf(tmp_path) -> None:
     try:
         drawings = doc[0].get_drawings()
         assert drawings, "nothing was drawn"
-        d = drawings[0]
+        # The page carries a background of its own; the shape is the one
+        # with the border colour.
+        d = next((x for x in drawings if x["color"] == (1.0, 0.0, 0.0)), None)
+        assert d is not None, [x["color"] for x in drawings]
         assert d["dashes"] and d["dashes"] != "[] 0", d.get("dashes")
         assert d["color"] == (1.0, 0.0, 0.0)
         assert d["fill"] == (0.0, 0.0, 1.0)

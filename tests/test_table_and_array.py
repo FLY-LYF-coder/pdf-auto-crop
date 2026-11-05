@@ -85,7 +85,9 @@ def test_the_table_is_written_as_lines_and_as_text(tmp_path) -> None:
     try:
         page = doc[0]
         assert len(page.get_images()) == 0, "the table became a picture"
-        assert len(page.get_drawings()) == 3, "the rules are missing"
+        # The rules are the lines; the page carries a background of its own.
+        rules = [d for d in page.get_drawings() if d["type"] == "s"]
+        assert len(rules) == 3, "the rules are missing"
         text = page.get_text()
         for cell in ("材料", "模量", "钢", "210", "铝", "70"):
             assert cell in text, text

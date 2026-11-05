@@ -377,6 +377,22 @@ def main() -> int:
           win.composition.placements[2].label == "(c1)",
           win.composition.placements[2].label)
 
+    # A number written like a formula is typeset as one -- on the canvas as
+    # well as in the file.
+    win.var_label.set("$x^2$")
+    win._on_label_changed()
+    win.update()
+    label_texts = [win.canvas.itemcget(i, "text")
+                   for i in win.canvas.find_all()
+                   if win.canvas.type(i) == "text"]
+    check("the canvas shows the number as a formula",
+          win.composition.placements[2].label_formula is True
+          and not any("$" in t for t in label_texts),
+          str(label_texts))
+    win.var_label.set("(c1)")
+    win._on_label_changed()
+    win.update()
+
     # -- auto numbering and layout ---------------------------------------
     win._auto_label()
     win.update()
@@ -822,6 +838,13 @@ def main() -> int:
     win.var_text_formula.set(True)
     win._on_text_changed()
     win.update()
+    # The canvas shows the formula, not the text it was written as.
+    canvas_texts = [win.canvas.itemcget(i, "text")
+                    for i in win.canvas.find_all()
+                    if win.canvas.type(i) == "text"]
+    check("the canvas shows the formula, not its source",
+          not any("$" in t for t in canvas_texts),
+          str(canvas_texts))
     _shot(win, "11_text.png")
 
     # -- aligning a mixed selection -----------------------------------------
@@ -953,6 +976,11 @@ def main() -> int:
               abs(page.rect.width - win.sheet_w) < 1
               and abs(page.rect.height - win.sheet_h) < 1,
               f"{page.rect.width:.0f}x{page.rect.height:.0f}")
+        # The sheet is white on the canvas, so the page is white too: a pale
+        # fill must not let the background through.
+        corner = page.get_pixmap(dpi=72, alpha=True).samples[0:4]
+        check("the exported page is white",
+              tuple(corner) == (255, 255, 255, 255), str(tuple(corner)))
         spans = [s for b in page.get_text("dict")["blocks"]
                  for line in b.get("lines", []) for s in line["spans"]]
         a_span = [s for s in spans if s["text"] == "(a)"]
@@ -1774,6 +1802,52 @@ def main() -> int:
               f"{len(doc[0].get_drawings())} drawings")
     finally:
         doc.close()
+
+    # -- the layout of the sheet can be saved and opened again -------------
+    # The file holds everything the sheet is made of, so the work can be
+    # picked up later where it was left.
+    layout_path = WORK / "layout.json"
+
+    def fake_save(*_a, **_k):
+        return str(layout_path)
+
+    def fake_open(*_a, **_k):
+        return str(layout_path)
+
+    save_button = _button("保存布局…")
+    open_button = _button("打开布局…")
+    check("there is a 保存布局 button", save_button is not None)
+    check("there is a 打开布局 button", open_button is not None)
+    original_save = compositor_gui.filedialog.asksaveasfilename
+    original_open = compositor_gui.filedialog.askopenfilename
+    compositor_gui.filedialog.asksaveasfilename = fake_save
+    compositor_gui.filedialog.askopenfilename = fake_open
+    try:
+        n_shapes = len(win.composition.shapes)
+        n_figs = len(win.composition.placements)
+        if save_button is not None:
+            save_button.invoke()
+            win.update()
+            check("the layout can be saved", layout_path.exists(),
+                  str(layout_path))
+        # The sheet is emptied first, so that opening it back is a real
+        # test and not a no-op.
+        win.composition.shapes.clear()
+        win.composition.placements.clear()
+        win.update()
+        if open_button is not None:
+            open_button.invoke()
+            win.update()
+            check("the layout can be opened again",
+                  len(win.composition.shapes) == n_shapes
+                  and len(win.composition.placements) == n_figs,
+                  f"{len(win.composition.shapes)} shapes, "
+                  f"{len(win.composition.placements)} figures")
+            check("the material list comes back too",
+                  len(win.palette) > 0, f"{len(win.palette)} entries")
+    finally:
+        compositor_gui.filedialog.asksaveasfilename = original_save
+        compositor_gui.filedialog.askopenfilename = original_open
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.

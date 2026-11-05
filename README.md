@@ -710,10 +710,14 @@ page.
 ### Formulas in a text box
 
 A text written the way a formula is written down is rendered as one: type
-`$E = mc^2$` (or `\[E = mc^2\]`) in a text box and it comes out as
-mathematics, drawn with vector glyphs whose text can still be searched.
-The **LaTeX 公式** box in the text panel says so, and a text that is not
-written like a formula can still be made one by ticking it.
+`$E = mc^2$` (or `\[E = mc^2\]`, or `$$E = mc^2$$`) in a text box and it
+comes out as mathematics, drawn with vector glyphs whose text can still be
+searched.  The **LaTeX 公式** box in the text panel says so, and a text that
+is not written like a formula can still be made one by ticking it.
+
+The canvas shows the formula as well — not the text it was written as — so
+what is on the sheet is what the file will hold.  The same goes for the
+number of a figure: a caption written like a formula is typeset as one.
 
 The mathematics is typeset by matplotlib's mathtext, which needs no TeX
 installation; when matplotlib is missing, the text is written as it stands.
@@ -727,6 +731,11 @@ selectable text.  The graphic elements are drawn as real vector paths.  Nothing
 is rasterised, so the result stays sharp at any zoom and the text can be
 searched and copied.
 
+The page is painted white before anything is put on it, the way the sheet
+looks on the canvas: a pale fill then does not let the background through.
+The **白底** button in the toolbar turns that off, and the page comes out
+transparent.
+
 **It goes straight into a LaTeX document.**  The exported PDF is a normal PDF:
 `\includegraphics` takes it, and both `pdflatex` and `xelatex` compile it
 without complaint — figures, dashed and translucent boxes, formulas, turned
@@ -736,6 +745,19 @@ TrueType font, so it needs no LaTeX package on your side.
 The exported page is either the sheet you arranged (A4 landscape or
 portrait) or, with **适应内容**, exactly as large as the content — which is
 what you want for a figure going into a manuscript.
+
+### Saving the layout
+
+The sheet can be saved as a **layout file** (JSON) and opened again later:
+**保存布局…** writes it, **打开布局…** reads it back.  The file holds
+everything the sheet is made of — the figures and where they stand, the
+graphic elements, the tables, the text, the layers and how everything looks,
+together with the material list to pick from.  The work can therefore be
+put down and picked up again, and the file can be read with any text
+editor.
+
+The figures are referred to by the PDF they were cut from, so those files
+have to be where they were: the layout says so when one of them is gone.
 
 ### Giving an old export the new face
 
@@ -1125,6 +1147,22 @@ sheet.shapes.append(result)
 `"bottom"`, `"up"` and `"down"` are the four moves.  A selection moves as one
 block.  `boolean_result` keeps the look of the base and carries the elements
 it was made from, so the result can still be moved, made bigger and turned.
+
+The export paints the page white, the way the sheet looks on the canvas;
+`white_background=False` leaves the page transparent:
+
+```python
+comp.export_composition(sheet, Path("composed.pdf"),
+                        white_background=False)
+```
+
+The layout of the sheet can be kept in a file and read back — this is what
+the **保存布局…** button writes:
+
+```python
+comp.save_composition(sheet, Path("layout.json"))
+back = comp.load_composition(Path("layout.json"))
+```
 
 The page is the sheet, and the sheet is a rectangle in the composition's
 frame.  Dragging one of the sheet's grips moves that edge and nothing else:

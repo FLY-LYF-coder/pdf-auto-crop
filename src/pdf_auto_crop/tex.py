@@ -34,8 +34,18 @@ def _math_source(text: str) -> str:
     Matplotlib's mathtext treats ``$...$`` as mathematics and everything
     else as ordinary text, so a formula typed without the dollars would
     come out as plain letters.
+
+    The delimiters are the user's, not mathtext's: ``\\[...\\]`` and
+    ``$$...$$`` are taken off before the text is handed over -- mathtext
+    would draw the brackets as letters, which is not what they mean.
     """
     body = (text or "").strip()
+    if not body:
+        return ""
+    if body.startswith("\\[") and body.endswith("\\]"):
+        body = body[2:-2].strip()
+    elif body.startswith("$$") and body.endswith("$$"):
+        body = body[2:-2].strip()
     if not body:
         return ""
     if body.startswith("$") and body.endswith("$"):

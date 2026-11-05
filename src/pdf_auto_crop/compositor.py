@@ -1504,6 +1504,10 @@ class Composition:
     texts: List[TextItem] = field(default_factory=list)
     #: Objects that travel together.
     groups: List[Group] = field(default_factory=list)
+    #: The figures that are on offer, ready to be placed again.  They are
+    #: kept with the sheet so that a saved layout can be opened later with
+    #: its material list.
+    palette: List[Figure] = field(default_factory=list)
     margin_pt: float = 0.0
 
     def group_of(self, kind: str, index: int) -> Optional[Group]:
@@ -1710,6 +1714,7 @@ class Composition:
             "tables": [t.to_dict() for t in self.tables],
             "texts": [t.to_dict() for t in self.texts],
             "groups": [g.to_dict() for g in self.groups],
+            "palette": [f.to_dict() for f in self.palette],
         }
 
     @classmethod
@@ -1723,6 +1728,7 @@ class Composition:
             tables=[Table.from_dict(t) for t in data.get("tables", [])],
             texts=[TextItem.from_dict(t) for t in data.get("texts", [])],
             groups=[Group.from_dict(g) for g in data.get("groups", [])],
+            palette=[Figure.from_dict(f) for f in data.get("palette", [])],
         )
 
 
@@ -3319,6 +3325,7 @@ def export_composition(
     fit_to_content: bool = True,
     page_size: Optional[Tuple[float, float]] = None,
     offset: Tuple[float, float] = (0.0, 0.0),
+    white_background: bool = True,
 ) -> Path:
     """Write the composition to a PDF.
 
@@ -3331,6 +3338,11 @@ def export_composition(
         page_size: ``(width_pt, height_pt)`` for a fixed-size page.
         offset: Where the sheet stands on the canvas.  The page is the sheet,
             so the content is moved by this much to sit on it.
+        white_background: When true the page is painted white before
+            anything is put on it, the way the sheet looks on the canvas.
+            A page without a background is transparent, and a pale fill
+            then shows the background through it -- which is not what the
+            canvas showed.
 
     Returns:
         ``out_path``, for chaining.
@@ -3356,20 +3368,24 @@ def export_composition(
         dx, dy = offset
     w, h = max(w, 1.0), max(h, 1.0)
 
-    _write_composition(comp, out_path, w, h, dx, dy, subset=True)
+    _write_composition(comp, out_path, w, h, dx, dy, subset=True,
+                       white_background=white_background)
     if not _labels_survived(out_path, comp):
         # The fonts were mangled on the way in -- the subsetting can lose a
         # label -- so the sheet is written again with the fonts whole.
-        _write_composition(comp, out_path, w, h, dx, dy, subset=False)
+        _write_composition(comp, out_path, w, h, dx, dy, subset=False,
+                           white_background=white_background)
     if not _labels_survived(out_path, comp):
         # The face itself cannot write the text: the built-in faces can.
         with builtin_faces():
-            _write_composition(comp, out_path, w, h, dx, dy, subset=False)
+            _write_composition(comp, out_path, w, h, dx, dy, subset=False,
+                               white_background=white_background)
     if not _content_on_the_page(out_path, comp):
         # The content did not land on the page -- an empty sheet is worse
         # than one in the wrong place -- so it is written again, put where
         # it belongs.
-        _write_composition(comp, out_path, w, h, 0.0, 0.0, subset=False)
+        _write_composition(comp, out_path, w, h, 0.0, 0.0, subset=False,
+                           white_background=white_background)
     return out_path
 
 
@@ -3465,13 +3481,21 @@ def _draw_label(page: fitz.Page, placement: Placement, h: float,
 
 
 def _write_composition(comp: "Composition", out_path: Path, w: float, h: float,
-                       dx: float, dy: float, subset: bool = True) -> Path:
+                       dx: float, dy: float, subset: bool = True,
+                       white_background: bool = True) -> Path:
     """Write the sheet itself."""
     out = fitz.open()
     try:
         page = out.new_page(width=w, height=h)
         #: What was written, by the font it was written with.
         written: Dict[str, str] = {}
+
+        if white_background:
+            # The sheet is white on the canvas, so the page is white too.
+            # Without it a pale fill would let the background through, and
+            # the page would not look the way the canvas looked.
+            page.draw_rect(fitz.Rect(0, 0, w, h), color=None,
+                           fill=(1.0, 1.0, 1.0), width=0)
 
         # Everything is drawn in the order of the layers: the bottom one
         # first, the top one last.  The label of a figure stands just above
