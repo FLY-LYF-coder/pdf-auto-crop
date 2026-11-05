@@ -609,6 +609,36 @@ the colour of a caption -- and gives it to the next object that is
 clicked.  The words and the place of the object are not touched: only the
 look is copied.  **Esc** puts the brush away.
 
+### The graphic elements
+
+The tools offer the shapes PowerPoint offers: the lines (straight, arrow,
+double arrow, arc), the rectangles, the basic shapes (triangle, right
+triangle, parallelogram, trapezoid, diamond, pentagon, hexagon, octagon,
+decagon, dodecagon, cross, teardrop, half moon), the arrows (the four block
+arrows, the cross arrow, the notched arrow), the equation shapes (plus,
+minus, times, divide, equal, greater, less), the flow chart shapes
+(document, multiple document, preparation, storage, delay, display,
+extract), the stars and banners (star, explosion, flag, scroll) and the
+callouts (cloud).  They are drawn as vector paths, so they stay sharp at
+any zoom.
+
+A graphic element can be filled with a **gradient**: tick **渐变填充**,
+pick the second colour and turn the **渐变角度**.  The gradient is a real
+PDF shading -- the element's outline is used as the clip and the gradient
+is painted into it -- so it stays vector and prints like the rest of the
+page.
+
+### Formulas in a text box
+
+A text written the way a formula is written down is rendered as one: type
+`$E = mc^2$` (or `\[E = mc^2\]`) in a text box and it comes out as
+mathematics, drawn with vector glyphs whose text can still be searched.
+The **LaTeX 公式** box in the text panel says so, and a text that is not
+written like a formula can still be made one by ticking it.
+
+The mathematics is typeset by matplotlib's mathtext, which needs no TeX
+installation; when matplotlib is missing, the text is written as it stands.
+
 ### What the output is
 
 The sheet is written with the same vector-preserving mechanism as the

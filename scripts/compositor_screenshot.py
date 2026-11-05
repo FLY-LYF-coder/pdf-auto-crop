@@ -444,7 +444,7 @@ def main() -> int:
         check("the new arrow is selected", win._selected_shape is not None)
 
     # A click alone is enough: the element is placed with a sensible size.
-    _pick_tool(win, "方框")
+    _pick_tool(win, "矩形")
     n_shapes = len(win.composition.shapes)
     _click(win, *at(0.20, 0.80))
     check("a click places an element",
@@ -466,8 +466,8 @@ def main() -> int:
         win.update()
 
     # A box, a circle and a triangle, to show the other tools work too.
-    for tool, fx0, fy0, fx1, fy1 in (("方框", 0.60, 0.36, 0.78, 0.48),
-                                     ("圆圈", 0.60, 0.52, 0.78, 0.64),
+    for tool, fx0, fy0, fx1, fy1 in (("矩形", 0.60, 0.36, 0.78, 0.48),
+                                     ("椭圆", 0.60, 0.52, 0.78, 0.64),
                                      ("三角形", 0.60, 0.68, 0.78, 0.80)):
         _pick_tool(win, tool)
         _drag(win, *at(fx0, fy0), *at(fx1, fy1))
@@ -768,6 +768,16 @@ def main() -> int:
           win.composition.texts[1].formula is True)
     check("the formula is a text box",
           win.composition.texts[1].box is True)
+    # A text written like a formula is one, without being told.
+    win._set_text_widget("$E = mc^2$")
+    win.txt_text.edit_modified(True)
+    win._on_text_changed("typed")
+    win.update()
+    check("a text written like a formula is recognised",
+          win.composition.texts[1].formula is True)
+    win.var_text_formula.set(True)
+    win._on_text_changed()
+    win.update()
     _shot(win, "11_text.png")
 
     # -- aligning a mixed selection -----------------------------------------
@@ -1518,6 +1528,48 @@ def main() -> int:
     _pick_tool(win, "选择/移动")
     win._zoom_fit()
     win.update()
+
+    # -- a shape from PowerPoint's catalogue, with a gradient --------------
+    # The star is one of the new shapes, and its fill is a gradient: the
+    # gradient has to come into the file as a gradient, not as a picture.
+    _pick_tool(win, "星形")
+    check("the star tool is active", win.tool == "star", win.tool)
+    n_shapes = len(win.composition.shapes)
+    _drag(win, *at(0.30, 0.60), *at(0.42, 0.72))
+    check("the star can be drawn",
+          len(win.composition.shapes) == n_shapes + 1,
+          f"{len(win.composition.shapes)} shapes")
+    star = win.composition.shapes[-1]
+    win._clear_selection()
+    win._sel_shapes = [len(win.composition.shapes) - 1]
+    win._sync_properties()
+    win.var_shape_gradient.set(True)
+    win.var_shape_gradient_color.set("#3060d0")
+    win._on_shape_changed()
+    win.update()
+    check("a graphic element can be filled with a gradient",
+          win.composition.shapes[-1].fill_gradient is not None,
+          str(win.composition.shapes[-1].fill_gradient))
+    gradient_out = WORK / "with_gradient.pdf"
+    comp.export_composition(
+        win.composition, gradient_out, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h),
+        offset=(-win.sheet_x, -win.sheet_y))
+    gdoc = fitz.open(str(gradient_out))
+    try:
+        gpage = gdoc[0]
+        check("the gradient stays vector",
+              len(gpage.get_images()) == 0,
+              str(len(gpage.get_images())))
+        gpix = gpage.get_pixmap(dpi=72)
+        gsamples = gpix.samples
+        gwidth = gpix.width
+        grows = {gsamples[(gwidth * 2 + x) * 3]
+                 for x in range(0, gwidth, 7)}
+        check("the gradient is painted into the page",
+              len(grows) > 1, str(sorted(grows)[:6]))
+    finally:
+        gdoc.close()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.

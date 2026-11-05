@@ -33,12 +33,13 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pymupdf as fitz
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 from . import compositor as comp
 from . import dpi
 from .config import CropConfig
 from .geometry import mm_to_pt, pt_to_mm
+from .tex import looks_like_math
 
 #: Working sheet size: A4 landscape, in points.
 SHEET_LANDSCAPE = (842.0, 595.0)
@@ -126,20 +127,56 @@ SHAPE_TOOLS = (comp.SHAPE_ARROW, comp.SHAPE_RECT, comp.SHAPE_ELLIPSE,
                comp.SHAPE_LINE)
 
 #: The shapes the toolbar offers, in the order they are listed.  The names
-#: are the ones PowerPoint uses, so the list reads the way a user expects.
+#: are the ones PowerPoint uses, so the list reads the way a user expects,
+#: and they are grouped the way PowerPoint groups them: the lines, the
+#: rectangles, the basic shapes, the arrows, the equation shapes, the flow
+#: chart, the stars and banners, and the callouts.
 SHAPE_CHOICES: Tuple[Tuple[str, str], ...] = (
-    ("方框", comp.SHAPE_RECT),
-    ("圆角框", comp.SHAPE_ROUNDRECT),
-    ("圆圈", comp.SHAPE_ELLIPSE),
-    ("三角形", comp.SHAPE_TRIANGLE),
-    ("菱形", comp.SHAPE_DIAMOND),
-    ("平行四边形", comp.SHAPE_PARALLELOGRAM),
+    ("直线", comp.SHAPE_LINE),
     ("箭头", comp.SHAPE_ARROW),
+    ("双箭头", comp.SHAPE_DOUBLE_ARROW),
+    ("弧线", comp.SHAPE_ARC),
+    ("矩形", comp.SHAPE_RECT),
+    ("圆角矩形", comp.SHAPE_ROUNDRECT),
+    ("椭圆", comp.SHAPE_ELLIPSE),
+    ("三角形", comp.SHAPE_TRIANGLE),
+    ("直角三角形", comp.SHAPE_RIGHT_TRIANGLE),
+    ("平行四边形", comp.SHAPE_PARALLELOGRAM),
+    ("梯形", comp.SHAPE_TRAPEZOID),
+    ("菱形", comp.SHAPE_DIAMOND),
+    ("五边形", comp.SHAPE_PENTAGON),
+    ("六边形", comp.SHAPE_HEXAGON),
+    ("八边形", comp.SHAPE_OCTAGON),
+    ("十边形", comp.SHAPE_DECAGON),
+    ("十二边形", comp.SHAPE_DODECAGON),
+    ("十字", comp.SHAPE_CROSS),
+    ("泪滴", comp.SHAPE_TEARDROP),
+    ("半月形", comp.SHAPE_HALFMOON),
     ("右箭头", comp.SHAPE_RIGHT_ARROW),
     ("左箭头", comp.SHAPE_LEFT_ARROW),
     ("上箭头", comp.SHAPE_UP_ARROW),
     ("下箭头", comp.SHAPE_DOWN_ARROW),
-    ("直线", comp.SHAPE_LINE),
+    ("十字箭头", comp.SHAPE_CROSS_ARROW),
+    ("燕尾箭头", comp.SHAPE_NOTCHED_ARROW),
+    ("加号", comp.SHAPE_MATH_PLUS),
+    ("减号", comp.SHAPE_MATH_MINUS),
+    ("乘号", comp.SHAPE_MATH_TIMES),
+    ("除号", comp.SHAPE_MATH_DIVIDE),
+    ("等号", comp.SHAPE_MATH_EQUAL),
+    ("大于号", comp.SHAPE_MATH_GREATER),
+    ("小于号", comp.SHAPE_MATH_LESS),
+    ("文档", comp.SHAPE_DOCUMENT),
+    ("多文档", comp.SHAPE_MULTIDOCUMENT),
+    ("准备", comp.SHAPE_PREPARATION),
+    ("存储", comp.SHAPE_STORAGE),
+    ("延迟", comp.SHAPE_DELAY),
+    ("显示", comp.SHAPE_DISPLAY),
+    ("提取", comp.SHAPE_EXTRACT),
+    ("星形", comp.SHAPE_STAR),
+    ("爆炸形", comp.SHAPE_BURST),
+    ("旗帜", comp.SHAPE_FLAG),
+    ("卷轴", comp.SHAPE_SCROLL),
+    ("云形", comp.SHAPE_CLOUD),
 )
 
 #: Every tool the toolbar offers: what it is called and what it draws.
@@ -967,6 +1004,9 @@ class ComposePanel(tk.Frame):
         self._sel_tables: List[int] = []
         #: The labels that are picked, by the figure they belong to.
         self._sel_labels: List[int] = []
+        #: The pictures of the gradients, kept so that Tk does not forget
+        #: them.
+        self._shape_photos: List[ImageTk.PhotoImage] = []
         self._drag_mode: Optional[str] = None
         self._drag_start: Optional[Tuple[float, float]] = None
         #: The grip of the box around the selection, while it is dragged.
@@ -1480,9 +1520,12 @@ class ComposePanel(tk.Frame):
             command=self._on_label_changed)
         self.chk_label_italic.pack(side=tk.LEFT, padx=6)
         self.var_label_formula = tk.BooleanVar(value=False)
+        #: Whether the user has ticked the formula box by hand: then the
+        #: text is not read as a formula any more.
+        self._label_formula_chosen = False
         self.chk_label_formula = ttk.Checkbutton(
             style_box, text="LaTeX 公式", variable=self.var_label_formula,
-            command=self._on_label_changed)
+            command=self._on_label_formula_toggled)
         self.chk_label_formula.pack(side=tk.LEFT)
 
         ttk.Label(tab, text="角度").grid(row=6, column=0, sticky="w", pady=3)
@@ -1508,6 +1551,12 @@ class ComposePanel(tk.Frame):
                  "取图范围：只保留框住的部分",
             style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
         ).grid(row=9, column=0, columnspan=3, sticky="w")
+
+        ttk.Label(
+            tab,
+            text="编号写成 $x^2$ 时会自动按 LaTeX 公式渲染。",
+            style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
+        ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # -- the free text tab --------------------------------------------------
 
@@ -1582,6 +1631,13 @@ class ComposePanel(tk.Frame):
             "write", lambda *_a: self._on_text_changed())
         ttk.Label(tab, text="度", style="Hint.TLabel").grid(
             row=5, column=2, sticky="w", padx=(4, 0))
+
+        ttk.Label(
+            tab,
+            text="写成 $x^2$ 或 \\[x^2\\] 的文本会自动按 LaTeX 公式渲染，\n"
+                 "排版成矢量图形，文字仍可检索。",
+            style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     # -- the graphic element tab --------------------------------------------
 
@@ -1693,11 +1749,36 @@ class ComposePanel(tk.Frame):
         self.ent_shape_h.grid(row=11, column=1, sticky="w", pady=3)
         self.var_shape_h.trace_add("write", lambda *_a: self._on_shape_changed())
 
+        ttk.Label(tab, text="渐变色").grid(row=12, column=0, sticky="w", pady=3)
+        self.var_shape_gradient = tk.BooleanVar(value=False)
+        self.chk_shape_gradient = ttk.Checkbutton(
+            tab, text="渐变填充", variable=self.var_shape_gradient,
+            command=self._on_shape_changed)
+        self.chk_shape_gradient.grid(row=12, column=1, sticky="w", pady=3)
+        self.var_shape_gradient_color = tk.StringVar(value="#3060d0")
+        self.btn_shape_gradient_color = tk.Button(
+            tab, width=6, background="#3060d0", relief=tk.RAISED,
+            borderwidth=2, command=self._choose_shape_gradient_color,
+        )
+        self.btn_shape_gradient_color.grid(row=13, column=1, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变角度").grid(row=13, column=0, sticky="w", pady=3)
+        self.var_shape_gradient_angle = tk.StringVar(value="0")
+        self.spin_shape_gradient_angle = ttk.Spinbox(
+            tab, from_=-180, to=180, increment=15,
+            textvariable=self.var_shape_gradient_angle, width=6,
+        )
+        self.spin_shape_gradient_angle.grid(row=14, column=1, sticky="w", pady=3)
+        self.var_shape_gradient_angle.trace_add(
+            "write", lambda *_a: self._on_shape_changed())
+        ttk.Label(tab, text="度", style="Hint.TLabel").grid(
+            row=14, column=2, sticky="w", padx=(4, 0))
+
         ttk.Label(
             tab,
-            text="选中时改选中图形的大小；未选中时是新建图形的大小。",
+            text="选中时改选中图形的大小；未选中时是新建图形的大小。\n"
+                 "渐变填充是矢量渐变，导出后仍可缩放。",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=12, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ).grid(row=15, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # -- the table tab -------------------------------------------------------
 
@@ -2502,6 +2583,8 @@ class ComposePanel(tk.Frame):
                         ch / 2 - ph / 2 + self._pan_y)
 
         self.canvas.delete("all")
+        # The gradient pictures are drawn again with everything else.
+        self._shape_photos.clear()
         # The sheet is a rectangle in the composition's frame; the view is
         # measured against its own frame, so the two can move apart.
         left, top, right, bottom = self._canvas_rect(self._sheet_rect())
@@ -2995,6 +3078,45 @@ class ComposePanel(tk.Frame):
         finally:
             doc.close()
 
+    def _draw_gradient_shape(self, shape: comp.Shape, box: fitz.Rect,
+                             left: float, top: float, tag: str) -> None:
+        """Draw a graphic element whose fill is a gradient.
+
+        Tk cannot fill with a gradient, so the gradient is painted into a
+        small picture and the element's silhouette is cut out of it.
+        """
+        w = max(1, int(round(box.width * self._zoom)))
+        h = max(1, int(round(box.height * self._zoom)))
+        if w * h > 4_000_000:
+            return
+        c0 = tuple(int(c * 255) for c in shape.fill_rgb)
+        c1 = tuple(int(c * 255) for c in (shape.fill_gradient or (0, 0, 0)))
+        angle = math.radians(shape.gradient_angle)
+        dx, dy = math.cos(angle), math.sin(angle)
+        img = Image.new("RGBA", (w, h))
+        pixels = img.load()
+        for y in range(h):
+            for x in range(w):
+                u = (x / max(1, w - 1) - 0.5) * dx + (y / max(1, h - 1) - 0.5) * dy
+                t = min(1.0, max(0.0, u + 0.71))
+                pixels[x, y] = (
+                    int(c0[0] + (c1[0] - c0[0]) * t),
+                    int(c0[1] + (c1[1] - c0[1]) * t),
+                    int(c0[2] + (c1[2] - c0[2]) * t), 255)
+        # The silhouette of the element is cut out of the gradient.
+        mask = Image.new("L", (w, h), 0)
+        points = [(int((x - box.x0) * self._zoom),
+                   int((y - box.y0) * self._zoom))
+                  for x, y in comp.shape_clip_points(shape, box)]
+        if points:
+            ImageDraw.Draw(mask).polygon(points, fill=255)
+        img.putalpha(mask)
+        photo = ImageTk.PhotoImage(img)
+        # The picture has to be kept: Tk forgets it otherwise.
+        self._shape_photos.append(photo)
+        self.canvas.create_image(left, top, image=photo, anchor=tk.NW,
+                                 tags=("shape", tag))
+
     def _draw_shape(self, idx: int, shape: comp.Shape) -> None:
         """Draw a graphic element on the canvas."""
         x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
@@ -3026,6 +3148,11 @@ class ComposePanel(tk.Frame):
             )
 
         box = fitz.Rect(left, top, right, bottom)
+        if shape.fill and shape.fill_gradient is not None:
+            # A gradient is a picture of its own; the element is only
+            # outlined here, so that the outline lies on top of it.
+            self._draw_gradient_shape(shape, box, left, top, tag)
+            fill_colour = ""
         if shape.kind == comp.SHAPE_LINE:
             item = self.canvas.create_line(
                 p0.x, p0.y, p1.x, p1.y, fill=colour, width=width, dash=dash,
@@ -4217,6 +4344,10 @@ class ComposePanel(tk.Frame):
             self.var_shape_rotation.set(f"{shape.rotation:g}")
             self.var_shape_text.set(shape.text)
             self.var_shape_text_size.set(f"{shape.text_size:g}")
+            self.var_shape_gradient.set(shape.fill_gradient is not None)
+            self.var_shape_gradient_color.set(
+                rgb_to_hex(shape.fill_gradient or (0.0, 0.4, 0.8)))
+            self.var_shape_gradient_angle.set(f"{shape.gradient_angle:g}")
             # The size of the element, in the unit the panel shows.
             self.var_shape_w.set(f"{pt_to_mm(shape.rect.width):.1f}")
             self.var_shape_h.set(f"{pt_to_mm(shape.rect.height):.1f}")
@@ -4317,6 +4448,15 @@ class ComposePanel(tk.Frame):
         self.var_shape_fill_color.set(hexv)
         self._on_shape_changed()
 
+    def _choose_shape_gradient_color(self) -> None:
+        """Pick the second colour of the gradient."""
+        rgb, hexv = colorchooser.askcolor(
+            color=self.var_shape_gradient_color.get(), title="渐变颜色")
+        if not hexv:
+            return
+        self.var_shape_gradient_color.set(hexv)
+        self._on_shape_changed()
+
     @_action
     def _on_shape_changed(self, event=None) -> None:
         """Apply the style panel to every selected graphic element.
@@ -4339,6 +4479,9 @@ class ComposePanel(tk.Frame):
         rotation = self._shape_rotation()
         text = self.var_shape_text.get()
         text_size = self._shape_text_size()
+        gradient = bool(self.var_shape_gradient.get())
+        gradient_color = hex_to_rgb(self.var_shape_gradient_color.get())
+        gradient_angle = self._shape_gradient_angle()
         size = self._shape_size()
         for i in self._sel_shapes:
             if not 0 <= i < len(self.composition.shapes):
@@ -4354,6 +4497,12 @@ class ComposePanel(tk.Frame):
             shape.rotation = rotation
             shape.text = text
             shape.text_size = text_size
+            shape.fill_gradient = gradient_color if gradient else None
+            shape.gradient_angle = gradient_angle
+            if gradient:
+                # A gradient needs a fill to show up in.
+                shape.fill = True
+                fill = True
             if size is not None:
                 # The element is made the size the panel asks for, about
                 # its own middle: the middle is what the user can see.
@@ -4393,6 +4542,13 @@ class ComposePanel(tk.Frame):
             return max(4.0, min(48.0, float(self.var_shape_text_size.get())))
         except ValueError:
             return 9.0
+
+    def _shape_gradient_angle(self) -> float:
+        """The direction of the gradient, in degrees."""
+        try:
+            return float(self.var_shape_gradient_angle.get()) % 360.0
+        except ValueError:
+            return 0.0
 
     def _on_figure_changed(self) -> None:
         """Apply the figure's angle to every selected figure."""
@@ -4872,6 +5028,15 @@ class ComposePanel(tk.Frame):
                  "top": "顶对齐", "vcenter": "垂直居中", "bottom": "底对齐"}
         self._status(f"已{ names.get(mode, mode) } {len(units)} 个元素。")
 
+    def _on_label_formula_toggled(self) -> None:
+        """The formula box was ticked or unticked by hand.
+
+        After that the text is not read as a formula any more: the user has
+        said what it is.
+        """
+        self._label_formula_chosen = True
+        self._on_label_changed()
+
     @_action
     def _on_label_changed(self, event=None) -> None:
         """Apply the label panel to the selected figure.
@@ -4888,6 +5053,11 @@ class ComposePanel(tk.Frame):
             return
         p = self.composition.placements[self._selected]
         p.label = self.var_label.get()
+        if looks_like_math(p.label) and not self._label_formula_chosen:
+            # A caption written the way a formula is written is one,
+            # whatever the box says.
+            p.label_formula = True
+            self.var_label_formula.set(True)
         try:
             p.label_size = max(4.0, min(48.0, float(self.var_label_size.get())))
         except ValueError:
@@ -4933,6 +5103,11 @@ class ComposePanel(tk.Frame):
         bold = bool(self.var_text_bold.get())
         italic = bool(self.var_text_italic.get())
         formula = bool(self.var_text_formula.get())
+        if event is not None and looks_like_math(text):
+            # A text written the way a formula is written is one, whatever
+            # the box says.  The box can still be unticked by hand.
+            formula = True
+            self.var_text_formula.set(True)
         box = bool(self.var_text_box.get())
         try:
             rotation = float(self.var_text_rotation.get()) % 360.0

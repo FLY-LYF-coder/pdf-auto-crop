@@ -159,25 +159,87 @@ SHAPE_LEFT_ARROW = "leftarrow"
 SHAPE_UP_ARROW = "uparrow"
 SHAPE_DOWN_ARROW = "downarrow"
 
+#: The basic shapes, in the order PowerPoint lists them.
+SHAPE_RIGHT_TRIANGLE = "righttriangle"
+SHAPE_TRAPEZOID = "trapezoid"
+SHAPE_PENTAGON = "pentagon"
+SHAPE_HEXAGON = "hexagon"
+SHAPE_OCTAGON = "octagon"
+SHAPE_DECAGON = "decagon"
+SHAPE_DODECAGON = "dodecagon"
+SHAPE_CROSS = "cross"
+SHAPE_TEARDROP = "teardrop"
+SHAPE_HALFMOON = "halfmoon"
+SHAPE_ARC = "arc"
+
+#: The equation shapes: the signs a formula is written with.
+SHAPE_MATH_PLUS = "mathplus"
+SHAPE_MATH_MINUS = "mathminus"
+SHAPE_MATH_TIMES = "mathtimes"
+SHAPE_MATH_DIVIDE = "mathdivide"
+SHAPE_MATH_EQUAL = "mathequal"
+SHAPE_MATH_GREATER = "mathgreater"
+SHAPE_MATH_LESS = "mathless"
+
+#: The arrows, besides the four block arrows.
+SHAPE_DOUBLE_ARROW = "doublearrow"
+SHAPE_CROSS_ARROW = "crossarrow"
+SHAPE_NOTCHED_ARROW = "notchedarrow"
+
+#: The flow chart shapes.
+SHAPE_DOCUMENT = "document"
+SHAPE_MULTIDOCUMENT = "multidocument"
+SHAPE_PREPARATION = "preparation"
+SHAPE_STORAGE = "storage"
+SHAPE_DELAY = "delay"
+SHAPE_DISPLAY = "display"
+SHAPE_EXTRACT = "extract"
+
+#: The stars and the banners.
+SHAPE_STAR = "star"
+SHAPE_BURST = "burst"
+SHAPE_FLAG = "flag"
+SHAPE_SCROLL = "scroll"
+
+#: The callouts.
+SHAPE_CLOUD = "cloud"
+
 SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ROUNDRECT,
                                  SHAPE_ELLIPSE, SHAPE_TRIANGLE, SHAPE_DIAMOND,
                                  SHAPE_PARALLELOGRAM, SHAPE_LINE,
                                  SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
-                                 SHAPE_UP_ARROW, SHAPE_DOWN_ARROW)
+                                 SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
+                                 SHAPE_RIGHT_TRIANGLE, SHAPE_TRAPEZOID,
+                                 SHAPE_PENTAGON, SHAPE_HEXAGON,
+                                 SHAPE_OCTAGON, SHAPE_DECAGON,
+                                 SHAPE_DODECAGON, SHAPE_CROSS,
+                                 SHAPE_TEARDROP, SHAPE_HALFMOON, SHAPE_ARC,
+                                 SHAPE_MATH_PLUS, SHAPE_MATH_MINUS,
+                                 SHAPE_MATH_TIMES, SHAPE_MATH_DIVIDE,
+                                 SHAPE_MATH_EQUAL, SHAPE_MATH_GREATER,
+                                 SHAPE_MATH_LESS, SHAPE_DOUBLE_ARROW,
+                                 SHAPE_CROSS_ARROW, SHAPE_NOTCHED_ARROW,
+                                 SHAPE_DOCUMENT, SHAPE_MULTIDOCUMENT,
+                                 SHAPE_PREPARATION, SHAPE_STORAGE,
+                                 SHAPE_DELAY, SHAPE_DISPLAY, SHAPE_EXTRACT,
+                                 SHAPE_STAR, SHAPE_BURST, SHAPE_FLAG,
+                                 SHAPE_SCROLL, SHAPE_CLOUD)
 
 #: The shapes whose two points span a box they are inscribed in.
 SHAPE_BOX_KINDS: Tuple[str, ...] = (
     SHAPE_RECT, SHAPE_ROUNDRECT, SHAPE_ELLIPSE, SHAPE_TRIANGLE,
     SHAPE_DIAMOND, SHAPE_PARALLELOGRAM, SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
     SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
-)
+) + tuple(k for k in SHAPE_KINDS
+          if k not in (SHAPE_ARROW, SHAPE_LINE))
 
 #: The shapes that can carry a caption, like a PowerPoint shape can.
 SHAPE_TEXT_KINDS: Tuple[str, ...] = (
     SHAPE_RECT, SHAPE_ROUNDRECT, SHAPE_ELLIPSE, SHAPE_TRIANGLE,
     SHAPE_DIAMOND, SHAPE_PARALLELOGRAM, SHAPE_RIGHT_ARROW, SHAPE_LEFT_ARROW,
     SHAPE_UP_ARROW, SHAPE_DOWN_ARROW,
-)
+) + tuple(k for k in SHAPE_KINDS
+          if k not in (SHAPE_ARROW, SHAPE_LINE))
 
 #: The colour a new shape is drawn in.
 SHAPE_COLOR_DEFAULT: Tuple[float, float, float] = (0.85, 0.1, 0.1)
@@ -841,6 +903,12 @@ class Shape:
     fill: bool = False
     #: The fill colour; the border colour when empty.
     fill_color: Optional[Tuple[float, float, float]] = None
+    #: The second colour of a gradient fill.  When it is empty the fill is
+    #: a plain colour.
+    fill_gradient: Optional[Tuple[float, float, float]] = None
+    #: The direction of the gradient, in degrees: 0 runs from the first
+    #: colour to the second, from left to right.
+    gradient_angle: float = 0.0
     #: How opaque the fill is, 0..1.
     fill_opacity: float = SHAPE_FILL_OPACITY_DEFAULT
     #: How opaque the border is, 0..1.
@@ -862,6 +930,9 @@ class Shape:
         self.color = tuple(float(c) for c in self.color)[:3]
         if self.fill_color is not None:
             self.fill_color = tuple(float(c) for c in self.fill_color)[:3]
+        if self.fill_gradient is not None:
+            self.fill_gradient = tuple(float(c) for c in self.fill_gradient)[:3]
+        self.gradient_angle = float(self.gradient_angle) % 360.0
         if self.text_color is not None:
             self.text_color = tuple(float(c) for c in self.text_color)[:3]
         self.width = max(0.1, float(self.width))
@@ -903,6 +974,9 @@ class Shape:
             "fill": self.fill,
             "fill_color": (list(self.fill_color)
                            if self.fill_color is not None else None),
+            "fill_gradient": (list(self.fill_gradient)
+                              if self.fill_gradient is not None else None),
+            "gradient_angle": self.gradient_angle,
             "fill_opacity": self.fill_opacity,
             "stroke_opacity": self.stroke_opacity,
             "dash": self.dash,
@@ -925,6 +999,9 @@ class Shape:
             width=float(data.get("width", SHAPE_WIDTH_DEFAULT)),
             fill=bool(data.get("fill", False)),
             fill_color=(tuple(fill_color) if fill_color is not None else None),
+            fill_gradient=(tuple(data["fill_gradient"])
+                           if data.get("fill_gradient") is not None else None),
+            gradient_angle=float(data.get("gradient_angle", 0.0)),
             fill_opacity=float(
                 data.get("fill_opacity", SHAPE_FILL_OPACITY_DEFAULT)),
             stroke_opacity=float(data.get("stroke_opacity", 1.0)),
@@ -1235,7 +1312,8 @@ FORMAT_FIELDS: Dict[str, Tuple[str, ...]] = {
     "figure": ("label_font", "label_fontfile", "label_size", "label_color",
                "label_bold", "label_italic", "label_formula", "rotation"),
     "shape": ("color", "width", "fill", "fill_color", "fill_opacity",
-              "stroke_opacity", "dash", "rotation", "text_size", "text_color"),
+              "fill_gradient", "gradient_angle", "stroke_opacity", "dash",
+              "rotation", "text_size", "text_color"),
     "text": ("font", "fontfile", "size", "color", "bold", "italic",
              "formula", "box", "box_color", "box_width"),
     "table": ("style", "font_size", "font", "fontfile", "header", "color",
@@ -2030,6 +2108,166 @@ _ARROW_OUTLINE: Tuple[Tuple[float, float], ...] = (
     (0.60, 1.0), (0.60, 0.70), (0.0, 0.70),
 )
 
+#: The outlines of the shapes that are plain polygons, in unit coordinates
+#: of the box they are drawn in: ``u`` grows to the right, ``v`` downwards.
+#: They are the shapes PowerPoint offers, in the same order.
+_POLYGON_OUTLINES: Dict[str, Tuple[Tuple[float, float], ...]] = {
+    # -- the basic shapes
+    "righttriangle": ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+    "trapezoid": ((0.22, 0.0), (0.78, 0.0), (1.0, 1.0), (0.0, 1.0)),
+    "pentagon": ((0.5, 0.0), (1.0, 0.38), (0.82, 1.0), (0.18, 1.0),
+                 (0.0, 0.38)),
+    "hexagon": ((0.25, 0.0), (0.75, 0.0), (1.0, 0.5), (0.75, 1.0),
+                (0.25, 1.0), (0.0, 0.5)),
+    "octagon": ((0.29, 0.0), (0.71, 0.0), (1.0, 0.29), (1.0, 0.71),
+                (0.71, 1.0), (0.29, 1.0), (0.0, 0.71), (0.0, 0.29)),
+    "cross": ((0.35, 0.0), (0.65, 0.0), (0.65, 0.35), (1.0, 0.35),
+              (1.0, 0.65), (0.65, 0.65), (0.65, 1.0), (0.35, 1.0),
+              (0.35, 0.65), (0.0, 0.65), (0.0, 0.35), (0.35, 0.35)),
+    # -- the equation shapes
+    "mathplus": ((0.35, 0.0), (0.65, 0.0), (0.65, 0.35), (1.0, 0.35),
+                  (1.0, 0.65), (0.65, 0.65), (0.65, 1.0), (0.35, 1.0),
+                  (0.35, 0.65), (0.0, 0.65), (0.0, 0.35), (0.35, 0.35)),
+    "mathminus": ((0.0, 0.4), (1.0, 0.4), (1.0, 0.6), (0.0, 0.6)),
+    "mathtimes": ((0.05, 0.12), (0.22, 0.0), (0.5, 0.3), (0.78, 0.0),
+                  (0.95, 0.12), (0.62, 0.5), (0.95, 0.88), (0.78, 1.0),
+                  (0.5, 0.7), (0.22, 1.0), (0.05, 0.88), (0.38, 0.5)),
+    "mathdivide": ((0.0, 0.45), (1.0, 0.45), (1.0, 0.58), (0.0, 0.58)),
+    "mathequal": ((0.0, 0.3), (1.0, 0.3), (1.0, 0.44), (0.0, 0.44)),
+    "mathgreater": ((0.75, 0.08), (0.95, 0.08), (0.35, 0.5), (0.95, 0.92),
+                    (0.75, 0.92), (0.15, 0.5)),
+    "mathless": ((0.25, 0.08), (0.05, 0.08), (0.65, 0.5), (0.05, 0.92),
+                  (0.25, 0.92), (0.85, 0.5)),
+    # -- the arrows
+    "doublearrow": ((0.0, 0.5), (0.30, 0.08), (0.30, 0.35), (0.70, 0.35),
+                     (0.70, 0.08), (1.0, 0.5), (0.70, 0.92), (0.70, 0.65),
+                     (0.30, 0.65), (0.30, 0.92)),
+    "crossarrow": ((0.35, 0.0), (0.65, 0.0), (0.65, 0.2), (0.8, 0.2),
+                   (0.8, 0.35), (1.0, 0.35), (1.0, 0.65), (0.8, 0.65),
+                   (0.8, 0.8), (0.65, 0.8), (0.65, 1.0), (0.35, 1.0),
+                   (0.35, 0.8), (0.2, 0.8), (0.2, 0.65), (0.0, 0.65),
+                   (0.0, 0.35), (0.2, 0.35), (0.2, 0.2), (0.35, 0.2)),
+    "notchedarrow": ((0.0, 0.3), (0.55, 0.3), (0.55, 0.0), (1.0, 0.5),
+                     (0.55, 1.0), (0.55, 0.7), (0.0, 0.7), (0.22, 0.5)),
+    # -- the flow chart
+    "document": ((0.0, 0.0), (0.75, 0.0), (1.0, 0.22), (1.0, 1.0), (0.0, 1.0)),
+    "multidocument": ((0.0, 0.0), (1.0, 0.0), (1.0, 0.78), (0.75, 0.9),
+                      (0.5, 0.78), (0.25, 0.9), (0.0, 0.78)),
+    "preparation": ((0.25, 0.0), (0.75, 0.0), (1.0, 0.5), (0.75, 1.0),
+                    (0.25, 1.0), (0.0, 0.5)),
+    "storage": ((0.25, 0.0), (0.75, 0.0), (1.0, 0.25), (1.0, 0.75),
+                (0.75, 1.0), (0.25, 1.0), (0.0, 0.75), (0.0, 0.25)),
+    "delay": ((0.0, 0.0), (0.55, 0.0), (1.0, 0.5), (0.55, 1.0), (0.0, 1.0)),
+    "display": ((0.1, 0.0), (0.35, 0.0), (0.35, 0.85), (0.75, 1.0),
+                (0.55, 1.0), (0.15, 0.9), (0.15, 0.1)),
+    "extract": ((0.0, 0.0), (1.0, 0.0), (0.5, 1.0)),
+    # -- the stars and the banners
+    "flag": ((0.0, 0.0), (1.0, 0.12), (0.82, 0.5), (1.0, 0.88), (0.0, 1.0)),
+    "scroll": ((0.12, 0.0), (0.88, 0.0), (0.88, 0.1), (1.0, 0.1),
+               (1.0, 0.9), (0.88, 0.9), (0.88, 1.0), (0.12, 1.0),
+               (0.12, 0.9), (0.0, 0.9), (0.0, 0.1), (0.12, 0.1)),
+}
+
+
+def _regular_polygon(sides: int) -> Tuple[Tuple[float, float], ...]:
+    """The corners of a regular polygon, in unit coordinates.
+
+    The first corner is at the top, the way PowerPoint draws them.
+    """
+    out: List[Tuple[float, float]] = []
+    for n in range(sides):
+        angle = math.radians(-90.0 + 360.0 * n / sides)
+        out.append((0.5 + 0.5 * math.cos(angle), 0.5 + 0.5 * math.sin(angle)))
+    return tuple(out)
+
+
+def _star(points: int = 5, inner: float = 0.42) -> Tuple[Tuple[float, float], ...]:
+    """The corners of a star, in unit coordinates."""
+    out: List[Tuple[float, float]] = []
+    for n in range(points * 2):
+        angle = math.radians(-90.0 + 180.0 * n / points)
+        r = 0.5 if n % 2 == 0 else 0.5 * inner
+        out.append((0.5 + r * math.cos(angle), 0.5 + r * math.sin(angle)))
+    return tuple(out)
+
+
+def _burst(spikes: int = 12, depth: float = 0.62) -> Tuple[Tuple[float, float], ...]:
+    """The corners of an explosion, in unit coordinates."""
+    out: List[Tuple[float, float]] = []
+    for n in range(spikes * 2):
+        angle = math.radians(-90.0 + 180.0 * n / spikes)
+        r = 0.5 if n % 2 == 0 else 0.5 * depth
+        out.append((0.5 + r * math.cos(angle), 0.5 + r * math.sin(angle)))
+    return tuple(out)
+
+
+def _arc_shape(start: float, span: float, steps: int = 16,
+               centre: Tuple[float, float] = (0.5, 0.5),
+               radius: float = 0.5) -> List[Tuple[float, float]]:
+    """The points of a circular arc, in unit coordinates.
+
+    ``start`` and ``span`` are in degrees; the angle grows clockwise on the
+    sheet, the way the page is drawn.
+    """
+    out: List[Tuple[float, float]] = []
+    for n in range(steps + 1):
+        angle = math.radians(start + span * n / steps)
+        out.append((centre[0] + radius * math.cos(angle),
+                    centre[1] + radius * math.sin(angle)))
+    return out
+
+
+def _teardrop(steps: int = 20) -> Tuple[Tuple[float, float], ...]:
+    """The corners of a teardrop: a circle with one corner pulled out."""
+    out: List[Tuple[float, float]] = [(1.0, 0.0)]
+    out.extend(_arc_shape(-40.0, -280.0, steps))
+    return tuple(out)
+
+
+def _halfmoon(steps: int = 20) -> Tuple[Tuple[float, float], ...]:
+    """The corners of a half moon: a disc with a disc taken out of it.
+
+    The two arcs meet at the same two points, so the shape comes out as a
+    crescent rather than as two circles crossing.
+    """
+    out: List[Tuple[float, float]] = []
+    # The rim of the big disc, from the upper point round the left.
+    out.extend(_arc_shape(-50.0, -260.0, steps))
+    # The rim of the disc that was taken out: the part of it that lies
+    # inside the big disc, so the hollow opens to the right.
+    out.extend(_arc_shape(108.6, 142.8, steps, centre=(0.95, 0.5),
+                           radius=0.404))
+    return tuple(out)
+
+
+def _cloud(steps: int = 40) -> Tuple[Tuple[float, float], ...]:
+    """The corners of a cloud, in unit coordinates.
+
+    A circle with a few bumps on top: it is what a callout looks like.
+    """
+    out: List[Tuple[float, float]] = []
+    bumps = 5
+    for n in range(steps):
+        angle = 2.0 * math.pi * n / steps
+        # The top of the cloud is wider than the bottom.
+        r = 0.42 if math.sin(angle) < 0 else 0.36
+        r *= 1.0 + 0.16 * math.cos(bumps * angle)
+        out.append((0.5 + r * math.cos(angle), 0.55 + r * math.sin(angle)))
+    return tuple(out)
+
+
+#: The shapes whose outline is worked out rather than written down.
+_COMPUTED_OUTLINES: Dict[str, Callable[[], Tuple[Tuple[float, float], ...]]] = {
+    "decagon": lambda: _regular_polygon(10),
+    "dodecagon": lambda: _regular_polygon(12),
+    "star": lambda: _star(5),
+    "burst": lambda: _burst(12),
+    "teardrop": _teardrop,
+    "halfmoon": _halfmoon,
+    "cloud": _cloud,
+    "arc": lambda: tuple(_arc_shape(-90.0, 90.0) + [(1.0, 0.0)]),
+}
+
 
 def shape_outline(kind: str, rect: fitz.Rect) -> List[fitz.Point]:
     """The outline of a polygon-shaped graphic element.
@@ -2064,7 +2302,188 @@ def shape_outline(kind: str, rect: fitz.Rect) -> List[fitz.Point]:
         elif kind == SHAPE_DOWN_ARROW:
             points = [(1.0 - v, u) for u, v in points]
         return [place(u, v) for u, v in points]
+    written = _POLYGON_OUTLINES.get(kind)
+    if written is not None:
+        return [place(u, v) for u, v in written]
+    worked_out = _COMPUTED_OUTLINES.get(kind)
+    if worked_out is not None:
+        return [place(u, v) for u, v in worked_out()]
     return []
+
+
+def _rounded_rect_points(box: fitz.Rect, radius: float,
+                         steps: int = 6) -> List[Tuple[float, float]]:
+    """The points of a rounded rectangle."""
+    r = max(0.0, min(radius, min(box.width, box.height) / 2))
+    if r <= 0.01:
+        return [(box.x0, box.y0), (box.x1, box.y0),
+                (box.x1, box.y1), (box.x0, box.y1)]
+    out: List[Tuple[float, float]] = []
+    corners = (
+        (box.x1 - r, box.y0 + r, -90.0),      # the top right corner
+        (box.x1 - r, box.y1 - r, 0.0),       # the bottom right corner
+        (box.x0 + r, box.y1 - r, 90.0),      # the bottom left corner
+        (box.x0 + r, box.y0 + r, 180.0),     # the top left corner
+    )
+    for cx, cy, start in corners:
+        for n in range(steps + 1):
+            angle = math.radians(start + 90.0 * n / steps)
+            out.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    return out
+
+
+def shape_clip_points(shape: Shape, box: fitz.Rect) -> List[Tuple[float, float]]:
+    """The points of a graphic element's outline, whatever kind it is."""
+    if shape.kind == SHAPE_ELLIPSE:
+        cx = (box.x0 + box.x1) / 2
+        cy = (box.y0 + box.y1) / 2
+        rx = (box.x1 - box.x0) / 2
+        ry = (box.y1 - box.y0) / 2
+        return [(cx + rx * math.cos(math.radians(-90.0 + 360.0 * n / 48)),
+                 cy + ry * math.sin(math.radians(-90.0 + 360.0 * n / 48)))
+                for n in range(48)]
+    if shape.kind == SHAPE_ROUNDRECT:
+        return _rounded_rect_points(box, 0.15 * min(box.width, box.height))
+    if shape.kind == SHAPE_RECT:
+        return [(box.x0, box.y0), (box.x1, box.y0),
+                (box.x1, box.y1), (box.x0, box.y1)]
+    return [(p.x, p.y) for p in shape_outline(shape.kind, box)]
+
+
+def _shape_path_operators(shape: Shape, box: fitz.Rect,
+                          page_height: float) -> str:
+    """The PDF operators that trace a graphic element's outline.
+
+    The coordinates are in the PDF's own frame, where the y grows upwards.
+    """
+    points = shape_clip_points(shape, box)
+    if not points:
+        return ""
+    def pt(x: float, y: float) -> str:
+        return f"{x:.3f} {page_height - y:.3f}"
+
+    out = [f"{pt(*points[0])} m"]
+    out.extend(f"{pt(x, y)} l" for x, y in points[1:])
+    out.append("h")
+    return " ".join(out)
+
+
+def _page_resource(page: fitz.Page, kind: str, value: str) -> None:
+    """Add an entry to a page's resources.
+
+    The resources may live in the page itself or in a dictionary of their
+    own; both are handled here, so that the caller does not have to know.
+    """
+    doc = page.parent
+    res = doc.xref_get_key(page.xref, "Resources")
+    if isinstance(res, tuple):
+        # The key comes back as (type, value).
+        res = res[1] if len(res) > 1 else ""
+    res = str(res or "")
+    if not res or res == "null":
+        doc.xref_set_key(page.xref, "Resources", f"<< /{kind} << {value} >> >>")
+        return
+    if res.startswith("<<"):
+        doc.xref_set_key(page.xref, "Resources",
+                         res[:-2].rstrip() + f" /{kind} << {value} >> >>")
+        return
+    # The resources are a dictionary of their own.
+    num = int(res.split()[0])
+    existing = doc.xref_get_key(num, kind)
+    if isinstance(existing, tuple):
+        existing = existing[1] if len(existing) > 1 else ""
+    existing = str(existing or "")
+    if existing.startswith("<<"):
+        # The value already carries its own name, so it is only added.
+        doc.xref_set_key(num, kind,
+                         existing[:-2].rstrip() + f" {value} >>")
+    else:
+        # A shading resource is a dictionary, not a list.
+        doc.xref_set_key(num, kind, f"<< {value} >>")
+
+
+def _shading_object(doc: fitz.Document, c0: Tuple[float, float, float],
+                     c1: Tuple[float, float, float],
+                     coords: Tuple[float, float, float, float]) -> int:
+    """Make the shading that carries a gradient."""
+    xref = doc.get_new_xref()
+    doc.update_object(xref, (
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB "
+        f"/Coords [{coords[0]:.3f} {coords[1]:.3f} "
+        f"{coords[2]:.3f} {coords[3]:.3f}] /Extend [true true] "
+        "/Function << /FunctionType 2 /Domain [0 1] "
+        f"/C0 [{c0[0]:.3f} {c0[1]:.3f} {c0[2]:.3f}] "
+        f"/C1 [{c1[0]:.3f} {c1[1]:.3f} {c1[2]:.3f}] /N 1 >> >>"
+    ))
+    return xref
+
+
+def draw_gradient_fill(page: fitz.Page, shape: Shape, box: fitz.Rect,
+                        page_height: float) -> bool:
+    """Paint a gradient into a graphic element's outline.
+
+    PyMuPDF cannot fill with a gradient, so the gradient is written into the
+    page by hand: a shading is made, the outline is used as the clip, and
+    the shading is painted into it.  The outline itself is stroked as usual.
+
+    Returns:
+        Whether the gradient was painted.
+    """
+    if shape.fill_gradient is None:
+        return False
+    path = _shape_path_operators(shape, box, page_height)
+    if not path:
+        return False
+    doc = page.parent
+    # The gradient runs across the element, at the angle the user chose.
+    angle = math.radians(shape.gradient_angle)
+    cx = (box.x0 + box.x1) / 2
+    cy = page_height - (box.y0 + box.y1) / 2
+    half = max(box.width, box.height) / 2
+    dx = math.cos(angle) * half
+    dy = math.sin(angle) * half
+    xref = _shading_object(
+        doc, shape.fill_rgb, shape.fill_gradient,
+        (cx - dx, cy - dy, cx + dx, cy + dy))
+    # Every gradient needs a name of its own: two shadings under one name
+    # would be a dictionary with a key twice, which is not a dictionary.
+    _page_resource(page, "Shading", f"/Sh{xref} {xref} 0 R")
+    alpha = max(0.0, min(1.0, shape.fill_opacity))
+    gs_xref = None
+    if alpha < 1.0:
+        gs_xref = doc.get_new_xref()
+        doc.update_object(
+            gs_xref,
+            f"<< /Type /ExtGState /ca {alpha:.3f} /CA {alpha:.3f} >>")
+        _page_resource(page, "ExtGState", f"/GS{gs_xref} {gs_xref} 0 R")
+    content = "q "
+    if gs_xref is not None:
+        content += f"/GS{gs_xref} gs "
+    content += f"{path} W n /Sh{xref} sh Q"
+    _append_to_page(page, content.encode("ascii"))
+    return True
+
+
+def _append_to_page(page: fitz.Page, data: bytes) -> None:
+    """Put a piece of content at the end of what the page already holds.
+
+    The outline is stroked afterwards, so it lies on top of the gradient.
+    """
+    doc = page.parent
+    xrefs = page.get_contents()
+    if not xrefs:
+        # The page has no content yet: a stream is made for it.
+        xref = doc.get_new_xref()
+        doc.update_object(xref, "<< >>")
+        doc.update_stream(xref, data, new=0)
+        page.set_contents(xref)
+        return
+    last = xrefs[-1]
+    try:
+        old = doc.xref_stream(last)
+    except Exception:  # noqa: BLE001 -- a content stream that cannot be read
+        old = b""
+    doc.update_stream(last, old + data, new=0)
 
 
 def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
@@ -2094,6 +2513,13 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
     p1 = rotate_point(p1, centre, shape.rotation)
     box = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
                     max(p0.x, p1.x), max(p0.y, p1.y))
+
+    # A gradient is painted into the outline by hand, so the plain fill is
+    # left out.
+    if shape.fill and shape.fill_gradient is not None:
+        draw_gradient_fill(page, shape, box, page_height)
+        fill = None
+        fill_opacity = 0.0
 
     if shape.kind == SHAPE_LINE:
         page.draw_line(p0, p1, color=color, width=width, dashes=dashes,

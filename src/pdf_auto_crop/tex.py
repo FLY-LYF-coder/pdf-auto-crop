@@ -43,6 +43,27 @@ def _math_source(text: str) -> str:
     return f"${body}$"
 
 
+def looks_like_math(text: str) -> bool:
+    """Whether a text is written the way a formula is written.
+
+    ``$...$`` and ``\\[...\\]`` are how a formula is written down, and they
+    are recognised on sight: the user does not have to say that the text is
+    mathematics.
+
+    Args:
+        text: The text the user wrote.
+
+    Returns:
+        Whether the text is written like a formula.
+    """
+    body = (text or "").strip()
+    if len(body) > 2 and body.startswith("$") and body.endswith("$"):
+        return True
+    if body.startswith("\\[") and body.endswith("\\]"):
+        return True
+    return False
+
+
 def render_math(text: str, size: float = 12.0) -> Optional[Path]:
     """Render a formula to a single-page PDF.
 
@@ -109,4 +130,4 @@ def math_available() -> bool:
     return True
 
 
-__all__ = ["MATH_FONTSET", "math_available", "render_math"]
+__all__ = ["MATH_FONTSET", "looks_like_math", "math_available", "render_math"]
