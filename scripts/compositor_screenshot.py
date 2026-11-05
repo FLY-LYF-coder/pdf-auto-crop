@@ -628,6 +628,46 @@ def main() -> int:
     check("a group can be dissolved",
           not win.composition.groups, str(win.composition.groups))
 
+    # -- two groups are lined up as two things ------------------------------
+    # A group is one thing: lining two of them up moves the groups, and
+    # each group keeps the shape it had.
+    if len(win.composition.placements) >= 2 and len(win.composition.shapes) >= 2:
+        win._clear_selection()
+        win._sel_figs = [0]
+        win._sel_shapes = [0]
+        win._group_selected()
+        win._sel_figs = [1]
+        win._sel_shapes = [1]
+        win._group_selected()
+        # Both groups are picked: their members.
+        win._sel_figs = [0, 1]
+        win._sel_shapes = [0, 1]
+        win.update()
+        units = win._selection_units()
+        check("two groups are two things", len(units) == 2, str(len(units)))
+        before = [(fitz.Rect(win.composition.placements[i].rect),
+                   fitz.Rect(win.composition.shapes[i].rect)) for i in (0, 1)]
+        win._align(comp.ALIGN_LEFT)
+        win.update()
+        after = [(fitz.Rect(win.composition.placements[i].rect),
+                  fitz.Rect(win.composition.shapes[i].rect)) for i in (0, 1)]
+        check("a group keeps its shape when it is lined up",
+              all(abs((a[0].x0 - a[1].x0) - (b[0].x0 - b[1].x0)) < 0.5
+                  for a, b in zip(after, before)),
+              str([(round(a[0].x0 - a[1].x0, 1),
+                    round(b[0].x0 - b[1].x0, 1))
+                   for a, b in zip(after, before)]))
+        g1 = after[0][0] | after[0][1]
+        g2 = after[1][0] | after[1][1]
+        check("the groups are lined up against each other",
+              abs(g1.x0 - g2.x0) < 0.5, f"{g1.x0:.1f} vs {g2.x0:.1f}")
+        # The layout is put back, so that the checks that follow see what
+        # they expect.
+        win.canvas.event_generate("<Control-z>")
+        win.update()
+        win._ungroup_selected()
+        win._clear_selection()
+
     # -- spreading a group out --------------------------------------------
     # Three free-standing boxes: on a grid the figures overlap, so there is
     # nothing sensible to spread there.

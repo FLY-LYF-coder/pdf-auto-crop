@@ -585,6 +585,15 @@ on that box make the whole selection bigger or smaller with one drag: a
 group of figures is scaled as a whole, and the figures in it keep their
 proportions.
 
+### Groups are one thing
+
+A group is not a handful of objects that happen to sit together: it is
+one object.  Lining two groups up moves the groups, and each group keeps
+the shape it had; spreading them out, giving them the same size and
+putting them in a grid treat them as one thing each.  A rubber band that
+catches one member of a group catches the whole group, so a group cannot
+come apart by accident, and a copy of a group is a group as well.
+
 ### Moving the canvas
 
 The **移动画布** tool drags the canvas itself, so a figure that is larger

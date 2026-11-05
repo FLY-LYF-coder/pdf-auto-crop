@@ -1265,6 +1265,42 @@ def with_format(obj: Any, fmt: Dict[str, Any]) -> Any:
     return dataclasses.replace(obj, **fmt)
 
 
+def selection_units(composition: "Composition",
+                    boxes: Sequence[Tuple[str, int, fitz.Rect]]
+                    ) -> List[Tuple[str, int, fitz.Rect]]:
+    """The picked things, one entry for each of them.
+
+    A group is one thing: however many of its members are picked, the group
+    counts once, and its box is the box around the whole of it.  The tools
+    that work on boxes -- lining up, spreading, making the same size,
+    arranging -- have to see it that way, or a group would come apart when
+    it is lined up.
+
+    Args:
+        composition: The sheet the objects are on.
+        boxes: ``(kind, index, box)`` for every picked object.
+
+    Returns:
+        ``(kind, index, box)`` for every picked thing.  The kind of a group
+        is ``"group"`` and its index is the number of the group.
+    """
+    units: List[Tuple[str, int, fitz.Rect]] = []
+    counted = set()
+    for gi, group in enumerate(composition.groups):
+        members = [(k, i, r) for k, i, r in boxes if group.holds(k, i)]
+        if not members:
+            continue
+        box = fitz.Rect(members[0][2])
+        for _, _, r in members[1:]:
+            box |= fitz.Rect(r)
+        units.append(("group", gi, box))
+        counted.update((k, i) for k, i, _ in members)
+    for kind, index, rect in boxes:
+        if (kind, index) not in counted:
+            units.append((kind, index, fitz.Rect(rect)))
+    return units
+
+
 @dataclass
 class Group:
     """A set of objects that travel together.

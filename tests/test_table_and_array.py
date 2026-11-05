@@ -226,6 +226,58 @@ def test_the_look_of_a_figure_is_the_look_of_its_label(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Groups as one thing
+# ---------------------------------------------------------------------------
+
+
+def test_a_group_counts_once_however_many_of_its_members_are_picked() -> None:
+    """A group is one thing, not a handful of things."""
+    sheet = comp.Composition(width=842, height=595)
+    sheet.groups.append(comp.Group(figs=[0, 1], shapes=[0]))
+    boxes = [
+        ("figure", 0, fitz.Rect(10, 10, 50, 50)),
+        ("figure", 1, fitz.Rect(60, 10, 100, 50)),
+        ("shape", 0, fitz.Rect(20, 60, 40, 80)),
+    ]
+    units = comp.selection_units(sheet, boxes)
+    assert len(units) == 1, units
+    kind, index, box = units[0]
+    assert kind == "group"
+    assert index == 0
+    # The box of the group is the box around all of it.
+    assert box.x0 == pytest.approx(10)
+    assert box.x1 == pytest.approx(100)
+    assert box.y1 == pytest.approx(80)
+
+
+def test_two_groups_are_two_things() -> None:
+    sheet = comp.Composition(width=842, height=595)
+    sheet.groups.append(comp.Group(figs=[0, 1]))
+    sheet.groups.append(comp.Group(figs=[2, 3]))
+    boxes = [
+        ("figure", 0, fitz.Rect(10, 10, 50, 50)),
+        ("figure", 1, fitz.Rect(60, 10, 100, 50)),
+        ("figure", 2, fitz.Rect(10, 100, 50, 140)),
+        ("figure", 3, fitz.Rect(60, 100, 100, 140)),
+    ]
+    units = comp.selection_units(sheet, boxes)
+    assert [k for k, _, _ in units] == ["group", "group"]
+    assert [i for _, i, _ in units] == [0, 1]
+
+
+def test_an_object_outside_a_group_is_a_thing_of_its_own() -> None:
+    sheet = comp.Composition(width=842, height=595)
+    sheet.groups.append(comp.Group(figs=[0, 1]))
+    boxes = [
+        ("figure", 0, fitz.Rect(10, 10, 50, 50)),
+        ("figure", 1, fitz.Rect(60, 10, 100, 50)),
+        ("shape", 0, fitz.Rect(200, 10, 220, 30)),
+    ]
+    units = comp.selection_units(sheet, boxes)
+    assert [k for k, _, _ in units] == ["group", "shape"]
+
+
+# ---------------------------------------------------------------------------
 # The rubber band
 # ---------------------------------------------------------------------------
 

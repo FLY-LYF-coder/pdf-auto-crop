@@ -2636,19 +2636,9 @@ class ComposePanel(tk.Frame):
         new = self._selection_locked(new, corner)
         if new.width <= 0 or new.height <= 0:
             return
-        sx = new.width / base.width
-        sy = new.height / base.height
-        for kind, index, rect in self._selected_boxes():
-            if kind == "label":
-                # A label travels with its figure; it has no size of its own.
-                continue
-            r = fitz.Rect(rect)
-            self._set_box(kind, index, fitz.Rect(
-                new.x0 + (r.x0 - base.x0) * sx,
-                new.y0 + (r.y0 - base.y0) * sy,
-                new.x0 + (r.x1 - base.x0) * sx,
-                new.y0 + (r.y1 - base.y0) * sy,
-            ), resize=True)
+        members = [(k, i, r) for k, i, r in self._selected_boxes()
+                   if k != "label"]
+        self._scale_members(members, base, new)
         self._redraw()
 
     def _selection_locked(self, rect: fitz.Rect, anchor: Tuple[float, float]
@@ -2847,19 +2837,22 @@ class ComposePanel(tk.Frame):
                 )
 
     def _group_box(self) -> Optional[fitz.Rect]:
-        """The box around a selection of several objects, if there is one.
+        """The box around a selection of several things, if there is one.
 
         A selection of one object is resized by the grips of the object
-        itself; a selection of several -- a group, or a rubber band -- is
-        resized by the grips of the box around it.
+        itself; a group -- or a selection of several objects -- is resized
+        by the grips of the box around it.
         """
-        boxes = [rect for kind, _, rect in self._selected_boxes()
-                 if kind != "label"]
-        if len(boxes) < 2:
+        units = [u for u in self._selection_units() if u[0] != "label"]
+        if not units:
             return None
-        out = fitz.Rect(boxes[0])
-        for b in boxes[1:]:
-            out |= fitz.Rect(b)
+        if len(units) == 1:
+            kind, _, rect = units[0]
+            # A group of several objects is resized by the box around it.
+            return fitz.Rect(rect) if kind == "group" else None
+        out = fitz.Rect(units[0][2])
+        for _, _, rect in units[1:]:
+            out |= fitz.Rect(rect)
         return out
 
     def _draw_label(self, idx: int, placement: comp.Placement) -> None:
@@ -3257,6 +3250,14 @@ class ComposePanel(tk.Frame):
             self._sync_properties()
             return
         caught = comp.select_in_band(band, self.composition.object_boxes())
+        # A group is one thing: catching one of its members catches all of
+        # them, or the group would come apart the moment it is dragged.
+        expanded: Dict[str, set] = {}
+        for kind, indices in caught.items():
+            for index in indices:
+                for member in self._expand_to_group(kind, index):
+                    expanded.setdefault(kind, set()).add(member)
+        caught = {kind: sorted(members) for kind, members in expanded.items()}
         if additive:
             # Ctrl (or Shift) adds to the selection instead of replacing it.
             for kind, key in (("figure", "_sel_figs"),
@@ -4517,6 +4518,77 @@ class ComposePanel(tk.Frame):
                     items.append(("label", i, comp.free_label_rect(placement)))
         return items
 
+    def _selection_units(self) -> List[Tuple[str, int, fitz.Rect]]:
+        """The picked things, one entry for each of them.
+
+        A group is one thing: however many of its members are picked, the
+        group counts once, and its box is the box around the whole of it.
+        That is what the tools that work on boxes -- lining up, spreading,
+        making the same size, arranging -- have to see, or a group would
+        come apart when it is lined up.
+        """
+        return comp.selection_units(self.composition, self._selected_boxes())
+
+    def _unit_members(self, unit: Tuple[str, int, fitz.Rect]
+                      ) -> List[Tuple[str, int, fitz.Rect]]:
+        """The objects a picked thing is made of."""
+        kind, index, _ = unit
+        if kind != "group":
+            return [(kind, index, fitz.Rect(unit[2]))]
+        group = self.composition.groups[index]
+        return [(k, i, fitz.Rect(r)) for k, i, r in self._selected_boxes()
+                if group.holds(k, i)]
+
+    def _box_of(self, unit: Tuple[str, int, fitz.Rect]) -> fitz.Rect:
+        """The box of a picked thing."""
+        return fitz.Rect(unit[2])
+
+    def _move_unit(self, unit: Tuple[str, int, fitz.Rect],
+                   rect: fitz.Rect) -> None:
+        """Put a picked thing -- a group or a single object -- where it goes.
+
+        A group keeps its shape: all of its members move by the same
+        amount.
+        """
+        if unit[0] != "group":
+            self._set_box(unit[0], unit[1], rect)
+            return
+        old = self._box_of(unit)
+        dx = rect.x0 - old.x0
+        dy = rect.y0 - old.y0
+        for kind, index, member in self._unit_members(unit):
+            self._set_box(kind, index, fitz.Rect(
+                member.x0 + dx, member.y0 + dy,
+                member.x1 + dx, member.y1 + dy))
+
+    def _resize_unit(self, unit: Tuple[str, int, fitz.Rect],
+                     rect: fitz.Rect) -> None:
+        """Make a picked thing take up another box.
+
+        A group is scaled as a whole: its members keep their places
+        inside it.
+        """
+        if unit[0] != "group":
+            self._set_box(unit[0], unit[1], rect, resize=True)
+            return
+        self._scale_members(self._unit_members(unit), self._box_of(unit), rect)
+
+    def _scale_members(self, members: Sequence[Tuple[str, int, fitz.Rect]],
+                       old: fitz.Rect, new: fitz.Rect) -> None:
+        """Make a set of objects take up another box."""
+        sx = new.width / old.width if old.width else 1.0
+        sy = new.height / old.height if old.height else 1.0
+        for kind, index, member in members:
+            if kind == "label":
+                # A label travels with its figure; it has no size of its own.
+                continue
+            r = fitz.Rect(member)
+            self._set_box(kind, index, fitz.Rect(
+                new.x0 + (r.x0 - old.x0) * sx,
+                new.y0 + (r.y0 - old.y0) * sy,
+                new.x0 + (r.x1 - old.x0) * sx,
+                new.y0 + (r.y1 - old.y0) * sy), resize=True)
+
     def _set_box(self, kind: str, index: int, rect: fitz.Rect,
                  resize: bool = False) -> None:
         """Put an object where its box says it is.
@@ -4577,18 +4649,19 @@ class ComposePanel(tk.Frame):
 
     @_action
     def _match_size(self, how: str) -> None:
-        """Make the first selected object the size of the second.
+        """Make the first selected thing the size of the second.
 
-        "width" and "height" keep the object's own proportions; "both" makes
-        it exactly the other's size, which may stretch it.
+        "width" and "height" keep the thing's own proportions; "both" makes
+        it exactly the other's size, which may stretch it.  A group is made
+        the size of the other as a whole.
         """
-        items = self._selected_boxes()
-        if len(items) < 2:
+        units = self._selection_units()
+        if len(units) < 2:
             self._status("选中两个元素：先选的要改，后选的是参照。")
             return
-        (kind_a, index_a, box_a), (kind_b, index_b, box_b) = items[0], items[1]
-        source = box_b
-        target = box_a
+        unit_a, unit_b = units[0], units[1]
+        source = self._box_of(unit_b)
+        target = self._box_of(unit_a)
         if how == "width":
             scale = source.width / target.width if target.width else 1.0
             new = fitz.Rect(target.x0, target.y0,
@@ -4602,17 +4675,17 @@ class ComposePanel(tk.Frame):
             new = fitz.Rect(target.x0, target.y0,
                             target.x0 + source.width,
                             target.y0 + source.height)
-        self._set_box(kind_a, index_a, new, resize=True)
+        self._resize_unit(unit_a, new)
         self._redraw()
         name = {"width": "同宽", "height": "同高", "both": "等大"}[how]
         kind_name = {"figure": "图", "shape": "图形", "text": "文字",
-                     "label": "标签"}[kind_a]
+                     "label": "标签", "group": "组合"}[unit_a[0]]
         self._status(f"已把{kind_name}改为与参照元素{name}。")
 
     def _array_dialog(self) -> None:
         """Ask how many rows and columns the array should have."""
-        items = self._selected_boxes()
-        _ArrayDialog(self, max(1, len(items)), self._apply_array)
+        units = self._selection_units()
+        _ArrayDialog(self, max(1, len(units)), self._apply_array)
 
     def _apply_array(self, columns: int, rows: int,
                      gap: float = mm_to_pt(4.0)) -> None:
@@ -4621,40 +4694,46 @@ class ComposePanel(tk.Frame):
         The objects that are selected are moved into the grid -- figures,
         graphic elements, free text and tables alike.  A figure fills its
         cell, as it always did, so that a panel of figures comes out
-        even; the others keep their own size.
+        even; the others keep their own size.  A group is one cell: the
+        whole of it is put there.
         """
-        items = self._selected_boxes()
-        if not items:
+        units = self._selection_units()
+        if not units:
             self._status("先选中要排成阵列的元素。")
             return
         if columns < 1 or rows < 1:
             return
         needed = columns * rows
-        if needed < len(items):
-            self._status(f"{columns}×{rows} 放不下 {len(items)} 个元素。")
+        if needed < len(units):
+            self._status(f"{columns}×{rows} 放不下 {len(units)} 个元素。")
             return
-        cell_w = max(rect.width for _, _, rect in items)
-        cell_h = max(rect.height for _, _, rect in items)
+        cell_w = max(rect.width for _, _, rect in units)
+        cell_h = max(rect.height for _, _, rect in units)
         total_w = columns * cell_w + (columns - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
         x0 = self.sheet_x + (self.sheet_w - total_w) / 2
         y0 = self.sheet_y + (self.sheet_h - total_h) / 2
-        for (kind, index, rect), (px, py) in zip(
-                items, comp.array_positions(len(items), columns, rows,
+        for unit, (px, py) in zip(
+                units, comp.array_positions(len(units), columns, rows,
                                            cell_w, cell_h, gap, x0, y0)):
-            self._set_box(kind, index,
-                          fitz.Rect(px, py, px + cell_w, py + cell_h),
-                          resize=(kind == "figure"))
+            cell = fitz.Rect(px, py, px + cell_w, py + cell_h)
+            if unit[0] in ("figure", "group"):
+                # A figure fills its cell, as it always did; a group is
+                # scaled into it as a whole.
+                self._resize_unit(unit, cell)
+            else:
+                self._move_unit(unit, fitz.Rect(
+                    px, py, px + unit[2].width, py + unit[2].height))
         self._redraw()
         self._status(f"已排成 {columns}×{rows} 的阵列。")
 
     def _array_copy_dialog(self) -> None:
         """Ask how big a matrix of copies the user wants."""
-        items = self._selected_boxes()
-        if not items:
+        units = self._selection_units()
+        if not units:
             self._status("先选中要复制的元素。")
             return
-        _ArrayDialog(self, max(1, len(items)), self._array_copy,
+        _ArrayDialog(self, max(1, len(units)), self._array_copy,
                      title="阵列复制")
 
     def _array_copy(self, columns: int, rows: int,
@@ -4664,18 +4743,19 @@ class ComposePanel(tk.Frame):
         The objects that are selected stay where they are and become the
         first cell of the matrix; every other cell holds a copy of them.
         The copies are the same objects -- a copy of a figure is the same
-        picture -- so the matrix looks like the original, repeated.
+        picture -- so the matrix looks like the original, repeated.  A
+        group is copied as a group.
         """
-        items = self._selected_boxes()
-        if not items:
+        units = self._selection_units()
+        if not units:
             self._status("先选中要复制的元素。")
             return
         if columns < 1 or rows < 1:
             return
-        block_x0 = min(rect.x0 for _, _, rect in items)
-        block_y0 = min(rect.y0 for _, _, rect in items)
-        block_w = max(rect.x1 for _, _, rect in items) - block_x0
-        block_h = max(rect.y1 for _, _, rect in items) - block_y0
+        block_x0 = min(rect.x0 for _, _, rect in units)
+        block_y0 = min(rect.y0 for _, _, rect in units)
+        block_w = max(rect.x1 for _, _, rect in units) - block_x0
+        block_h = max(rect.y1 for _, _, rect in units) - block_y0
         # The matrix starts where the originals are: the originals are the
         # first cell of it, and the copies fill the cells to the right of
         # them and below them.
@@ -4692,9 +4772,9 @@ class ComposePanel(tk.Frame):
                 continue
             dx = px - block_x0
             dy = py - block_y0
-            for kind, index, rect in items:
-                self._copy_object(kind, index, dx, dy,
-                                  new_figs, new_shapes, new_texts, new_tables)
+            for unit in units:
+                self._copy_unit(unit, dx, dy,
+                                new_figs, new_shapes, new_texts, new_tables)
         self._sel_figs = new_figs
         self._sel_shapes = new_shapes
         self._sel_texts = new_texts
@@ -4703,6 +4783,31 @@ class ComposePanel(tk.Frame):
         self._redraw()
         n = len(new_figs) + len(new_shapes) + len(new_texts) + len(new_tables)
         self._status(f"已复制出 {n} 个副本，排在 {columns}×{rows} 的阵列里。")
+
+    def _copy_unit(self, unit: Tuple[str, int, fitz.Rect], dx: float,
+                   dy: float, new_figs: List[int], new_shapes: List[int],
+                   new_texts: List[int], new_tables: List[int]) -> None:
+        """Put a copy of a picked thing a little to the side.
+
+        A group is copied as a group: the copy holds copies of the
+        members, and they travel together.
+        """
+        if unit[0] != "group":
+            kind, index, _ = unit
+            self._copy_object(kind, index, dx, dy,
+                              new_figs, new_shapes, new_texts, new_tables)
+            return
+        before = (len(new_figs), len(new_shapes), len(new_texts),
+                  len(new_tables))
+        for kind, index, _ in self._unit_members(unit):
+            self._copy_object(kind, index, dx, dy,
+                              new_figs, new_shapes, new_texts, new_tables)
+        copy = comp.Group(
+            figs=new_figs[before[0]:],
+            shapes=new_shapes[before[1]:],
+            texts=new_texts[before[2]:],
+        )
+        self.composition.groups.append(copy)
 
     def _copy_object(self, kind: str, index: int, dx: float, dy: float,
                      new_figs: List[int], new_shapes: List[int],
@@ -4749,22 +4854,23 @@ class ComposePanel(tk.Frame):
     def _align(self, mode: str) -> None:
         """Line the selection up.
 
-        With several objects selected they are lined up against each other;
-        with a single one it is pushed against the edge of the sheet.
+        With several things selected they are lined up against each other;
+        with a single one it is pushed against the edge of the sheet.  A
+        group is lined up as a whole.
         """
-        items = self._selected_boxes()
-        if not items:
+        units = self._selection_units()
+        if not units:
             self._status("先选中要对齐的元素（Ctrl+点击 可多选）。")
             return
         bounds = self._sheet_rect()
-        target = comp.align_target([r for _, _, r in items], mode, bounds)
-        for kind, index, rect in items:
-            new = comp.aligned_rect(rect, mode, target)
-            self._set_box(kind, index, new)
+        target = comp.align_target([r for _, _, r in units], mode, bounds)
+        for unit in units:
+            new = comp.aligned_rect(self._box_of(unit), mode, target)
+            self._move_unit(unit, new)
         self._redraw()
         names = {"left": "左对齐", "hcenter": "水平居中", "right": "右对齐",
                  "top": "顶对齐", "vcenter": "垂直居中", "bottom": "底对齐"}
-        self._status(f"已{ names.get(mode, mode) } {len(items)} 个元素。")
+        self._status(f"已{ names.get(mode, mode) } {len(units)} 个元素。")
 
     @_action
     def _on_label_changed(self, event=None) -> None:
@@ -4871,65 +4977,24 @@ class ComposePanel(tk.Frame):
 
     # -- distribution -------------------------------------------------------
 
+    @_action
     def _distribute(self, axis: str) -> None:
         """Spread the selection out evenly.
 
-        The two outermost objects stay where they are; the ones in between
-        are moved so that the gaps between them come out equal.
+        The two outermost things stay where they are; the ones in between
+        are moved so that the gaps between them come out equal.  A group is
+        spread as a whole.
         """
-        items: List[Tuple[str, int, fitz.Rect]] = []
-        for i in self._sel_figs:
-            if 0 <= i < len(self.composition.placements):
-                items.append(("figure", i,
-                              fitz.Rect(self.composition.placements[i].rect)))
-        for i in self._sel_shapes:
-            if 0 <= i < len(self.composition.shapes):
-                items.append(("shape", i,
-                              fitz.Rect(self.composition.shapes[i].rect)))
-        for i in self._sel_texts:
-            if 0 <= i < len(self.composition.texts):
-                items.append(("text", i,
-                              fitz.Rect(self.composition.texts[i].rect())))
-        for i in self._sel_tables:
-            if 0 <= i < len(self.composition.tables):
-                items.append(("table", i,
-                              fitz.Rect(self.composition.tables[i].rect)))
-        if len(items) < 3:
+        units = self._selection_units()
+        if len(units) < 3:
             self._status("至少选中 3 个元素才能分布。")
             return
-        spread = comp.distribute_rects([r for _, _, r in items], axis)
-        for (kind, index, rect), new in zip(items, spread):
-            dx = new.x0 - rect.x0
-            dy = new.y0 - rect.y0
-            if kind == "figure":
-                p = self.composition.placements[index]
-                p.rect = self._clamp_to_sheet(fitz.Rect(
-                    p.rect.x0 + dx, p.rect.y0 + dy,
-                    p.rect.x1 + dx, p.rect.y1 + dy))
-            elif kind == "shape":
-                shape = self.composition.shapes[index]
-                self.composition.shapes[index] = dataclasses.replace(
-                    shape,
-                    start=fitz.Point(shape.start.x + dx, shape.start.y + dy),
-                    end=fitz.Point(shape.end.x + dx, shape.end.y + dy),
-                )
-            elif kind == "table":
-                table = self.composition.tables[index]
-                self.composition.tables[index] = dataclasses.replace(
-                    table,
-                    rect=fitz.Rect(table.rect.x0 + dx, table.rect.y0 + dy,
-                                   table.rect.x1 + dx, table.rect.y1 + dy),
-                )
-            else:
-                item = self.composition.texts[index]
-                self.composition.texts[index] = dataclasses.replace(
-                    item,
-                    position=fitz.Point(item.position.x + dx,
-                                        item.position.y + dy),
-                )
+        spread = comp.distribute_rects([r for _, _, r in units], axis)
+        for unit, new in zip(units, spread):
+            self._move_unit(unit, new)
         self._redraw()
         name = "水平" if axis == comp.DISTRIBUTE_HORIZONTAL else "垂直"
-        self._status(f"已{name}等间距分布 {len(items)} 个元素。")
+        self._status(f"已{name}等间距分布 {len(units)} 个元素。")
 
     def _on_label_mode_changed(self) -> None:
         # The label may be picked on its own, or the figure may be picked
@@ -5101,17 +5166,17 @@ class ComposePanel(tk.Frame):
         way it always was.  With a selection the selected objects are --
         graphic elements, free text and tables included.
         """
-        items = self._selected_boxes()
-        if not any(kind != "figure" for kind, _, _ in items):
+        units = self._selection_units()
+        if not any(kind != "figure" for kind, _, _ in units):
             # Only figures are picked (or nothing is): then every figure on
             # the sheet is laid out, the way it always was.  A selection
             # that holds a graphic element, a table or a free text is laid
             # out as it stands.
-            items = [("figure", i, fitz.Rect(p.rect))
+            units = [("figure", i, fitz.Rect(p.rect))
                      for i, p in enumerate(self.composition.placements)]
-        if not items:
+        if not units:
             return
-        n = len(items)
+        n = len(units)
         gap = mm_to_pt(4.0)
         if mode == "row":
             cols, rows = n, 1
@@ -5120,8 +5185,8 @@ class ComposePanel(tk.Frame):
             rows = int((n + cols - 1) / cols)
         # Every cell gets the size of the largest object in it, so the layout
         # is even instead of ragged.
-        cell_w = max((rect.width for _, _, rect in items), default=100.0)
-        cell_h = max((rect.height for _, _, rect in items), default=100.0)
+        cell_w = max((rect.width for _, _, rect in units), default=100.0)
+        cell_h = max((rect.height for _, _, rect in units), default=100.0)
         total_w = cols * cell_w + (cols - 1) * gap
         total_h = rows * cell_h + (rows - 1) * gap
         # A figure that was made bigger than the sheet must not push the
@@ -5129,7 +5194,7 @@ class ComposePanel(tk.Frame):
         # Room is kept under the bottom row for the labels, which sit below
         # their figures by default.
         label_room = 0.0
-        for kind, index, _ in items:
+        for kind, index, _ in units:
             if kind != "figure":
                 continue
             p = self.composition.placements[index]
@@ -5146,12 +5211,17 @@ class ComposePanel(tk.Frame):
         x0 = self.sheet_x + (self.sheet_w - total_w) / 2
         # The block of objects stands above the room kept for the labels.
         y0 = self.sheet_y + (self.sheet_h - label_room - total_h) / 2 + label_room
-        for (kind, index, rect), (px, py) in zip(
-                items, comp.array_positions(n, cols, rows, cell_w, cell_h,
+        for unit, (px, py) in zip(
+                units, comp.array_positions(n, cols, rows, cell_w, cell_h,
                                            gap, x0, y0)):
-            self._set_box(kind, index,
-                          fitz.Rect(px, py, px + cell_w, py + cell_h),
-                          resize=(kind == "figure"))
+            cell = fitz.Rect(px, py, px + cell_w, py + cell_h)
+            if unit[0] in ("figure", "group"):
+                # A figure fills its cell, as it always did; a group is
+                # scaled into it as a whole.
+                self._resize_unit(unit, cell)
+            else:
+                self._move_unit(unit, fitz.Rect(
+                    px, py, px + unit[2].width, py + unit[2].height))
         self._redraw()
         self._status(f"已{'横向' if mode == 'row' else '网格'}排列 {n} 个元素。")
 
