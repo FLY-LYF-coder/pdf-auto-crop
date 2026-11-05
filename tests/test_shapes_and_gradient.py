@@ -92,6 +92,43 @@ def test_the_catalogue_grew() -> None:
         assert kind in comp.SHAPE_KINDS
 
 
+def test_the_braces_are_drawn_as_open_paths() -> None:
+    """A brace is a stroke, not a filled shape."""
+    for kind in (comp.SHAPE_BRACE_LEFT, comp.SHAPE_BRACE_RIGHT):
+        points = comp.shape_outline(kind, fitz.Rect(0, 0, 100, 100))
+        assert len(points) >= 7, kind
+        assert kind in comp.SHAPE_OPEN_KINDS
+        # The two braces are mirror images of one another.
+    left = comp.shape_outline(comp.SHAPE_BRACE_LEFT, fitz.Rect(0, 0, 100, 100))
+    right = comp.shape_outline(comp.SHAPE_BRACE_RIGHT, fitz.Rect(0, 0, 100, 100))
+    for a, b in zip(left, right):
+        assert a.x == pytest.approx(100.0 - b.x)
+        assert a.y == pytest.approx(b.y)
+
+
+def test_the_braces_come_into_the_file_as_strokes(tmp_path) -> None:
+    """The brace is written as an open path, without a fill."""
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=120)
+    shape = comp.Shape(comp.SHAPE_BRACE_LEFT, fitz.Point(20, 20),
+                       fitz.Point(80, 100), color=(0, 0, 0), width=1.0)
+    comp.draw_shape(page, shape, 120)
+    out = tmp_path / "brace.pdf"
+    doc.save(str(out))
+    doc.close()
+    doc = fitz.open(str(out))
+    try:
+        page = doc[0]
+        assert len(page.get_images()) == 0
+        # The path is drawn: there is ink on the page.
+        pix = page.get_pixmap(dpi=72)
+        ink = sum(1 for i in range(0, len(pix.samples), 3)
+                  if pix.samples[i] < 200)
+        assert ink > 20, ink
+    finally:
+        doc.close()
+
+
 # ---------------------------------------------------------------------------
 # The gradient fill
 # ---------------------------------------------------------------------------

@@ -1570,6 +1570,41 @@ def main() -> int:
     finally:
         gdoc.close()
 
+    # -- the wheel over the canvas does not move the gallery -----------------
+    before = win._gallery.canvas.yview()[0]
+    win.canvas.event_generate("<MouseWheel>", delta=-120, x=400, y=300)
+    win.update()
+    check("the wheel over the canvas does not scroll the gallery",
+          win._gallery.canvas.yview()[0] == before,
+          f"{before} -> {win._gallery.canvas.yview()[0]}")
+
+    # -- an element can be turned by the grip above it ----------------------
+    _pick_tool(win, "选择/移动")
+    win._clear_selection()
+    win._sel_figs = [0]
+    win._sync_properties()
+    win._redraw()
+    win.update()
+    target = win._rotation_target()
+    check("the picked element has a grip to turn it",
+          target is not None, str(target))
+    if target is not None:
+        hx, hy = win._rotation_handle(target[2])
+        before = win.composition.placements[0].rotation
+        _drag(win, int(hx), int(hy), int(hx) + 40, int(hy) + 40)
+        after = win.composition.placements[0].rotation
+        check("a figure can be turned by its grip",
+              abs(after - before) > 5, f"{before:.0f} -> {after:.0f}")
+
+    # -- the braces are there -----------------------------------------------
+    _pick_tool(win, "左花括号")
+    n_braces = len(win.composition.shapes)
+    _drag(win, *at(0.30, 0.60), *at(0.42, 0.72))
+    check("the brace can be drawn",
+          len(win.composition.shapes) == n_braces + 1,
+          f"{len(win.composition.shapes)} shapes")
+    _pick_tool(win, "选择/移动")
+
     # -- the gallery of elements --------------------------------------------
     # The elements are shown as they look, so the user can see what a tool
     # draws before picking it.

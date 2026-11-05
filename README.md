@@ -619,6 +619,25 @@ groups them, and the name of an element appears when the cursor rests on
 it.  The tools that are not elements -- 选择/移动, 移动画布, 文本, 文本框 --
 stand at the top of the same tab.
 
+### Turning an element
+
+An element that is picked gets a small grip above it: drag that grip and
+the element turns about its own middle, the way it turns in PowerPoint.
+Figures, graphic elements and free text can all be turned; the angle is
+still written in the panel as well.
+
+### The braces
+
+The **左花括号** and **右花括号** of PowerPoint's basic shapes are there
+too.  A brace is drawn as a stroke and not as a filled shape, so it looks
+the way a brace looks.
+
+### The window
+
+The window opens as large as the screen allows.  A window whose lower
+edge lies off-screen cannot have its border dragged, and the user is left
+with a window that will not budge.
+
 ### The graphic elements
 
 The tools offer the shapes PowerPoint offers: the lines (straight, arrow,

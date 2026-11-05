@@ -204,6 +204,14 @@ SHAPE_SCROLL = "scroll"
 #: The callouts.
 SHAPE_CLOUD = "cloud"
 
+#: The braces.  They are drawn as open paths: a brace is a stroke, not a
+#: filled shape.
+SHAPE_BRACE_LEFT = "braceleft"
+SHAPE_BRACE_RIGHT = "braceright"
+
+#: The kinds whose outline is an open path rather than a closed one.
+SHAPE_OPEN_KINDS: Tuple[str, ...] = (SHAPE_BRACE_LEFT, SHAPE_BRACE_RIGHT)
+
 SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ROUNDRECT,
                                  SHAPE_ELLIPSE, SHAPE_TRIANGLE, SHAPE_DIAMOND,
                                  SHAPE_PARALLELOGRAM, SHAPE_LINE,
@@ -223,7 +231,8 @@ SHAPE_KINDS: Tuple[str, ...] = (SHAPE_ARROW, SHAPE_RECT, SHAPE_ROUNDRECT,
                                  SHAPE_PREPARATION, SHAPE_STORAGE,
                                  SHAPE_DELAY, SHAPE_DISPLAY, SHAPE_EXTRACT,
                                  SHAPE_STAR, SHAPE_BURST, SHAPE_FLAG,
-                                 SHAPE_SCROLL, SHAPE_CLOUD)
+                                 SHAPE_SCROLL, SHAPE_CLOUD,
+                                 SHAPE_BRACE_LEFT, SHAPE_BRACE_RIGHT)
 
 #: The shapes whose two points span a box they are inscribed in.
 SHAPE_BOX_KINDS: Tuple[str, ...] = (
@@ -2161,6 +2170,13 @@ _POLYGON_OUTLINES: Dict[str, Tuple[Tuple[float, float], ...]] = {
     "display": ((0.1, 0.0), (0.35, 0.0), (0.35, 0.85), (0.75, 1.0),
                 (0.55, 1.0), (0.15, 0.9), (0.15, 0.1)),
     "extract": ((0.0, 0.0), (1.0, 0.0), (0.5, 1.0)),
+    # -- the braces, drawn as an open path
+    "braceleft": ((0.85, 0.0), (0.50, 0.0), (0.50, 0.30), (0.42, 0.42),
+                  (0.20, 0.50), (0.42, 0.58), (0.50, 0.70), (0.50, 1.0),
+                  (0.85, 1.0)),
+    "braceright": ((0.15, 0.0), (0.50, 0.0), (0.50, 0.30), (0.58, 0.42),
+                   (0.80, 0.50), (0.58, 0.58), (0.50, 0.70), (0.50, 1.0),
+                   (0.15, 1.0)),
     # -- the stars and the banners
     "flag": ((0.0, 0.0), (1.0, 0.12), (0.82, 0.5), (1.0, 0.88), (0.0, 1.0)),
     "scroll": ((0.12, 0.0), (0.88, 0.0), (0.88, 0.1), (1.0, 0.1),
@@ -2542,6 +2558,12 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
                        lineCap=line_cap, stroke_opacity=stroke_opacity)
         _draw_arrow_head(page, p1, p0, color, width, dashes, line_cap,
                          stroke_opacity)
+    elif shape.kind in SHAPE_OPEN_KINDS:
+        # A brace is a stroke, not a filled shape.
+        points = shape_outline(shape.kind, box)
+        if points:
+            page.draw_polyline(points, color=color, width=width, dashes=dashes,
+                               lineCap=line_cap, stroke_opacity=stroke_opacity)
     else:
         # A polygon shape: its outline is inscribed in the box it spans.
         points = shape_outline(shape.kind, box)

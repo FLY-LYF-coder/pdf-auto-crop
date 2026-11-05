@@ -234,8 +234,14 @@ class App(tk.Tk):
         # The window is sized in physical pixels, so on a high-DPI display the
         # geometry has to be scaled to come out the same size on screen.
         scale = dpi.scale_factor(self)
-        self.geometry(f"{int(1280 * scale)}x{int(860 * scale)}")
-        self.minsize(int(1000 * scale), int(660 * scale))
+        # The window has to fit on the screen: a window whose lower edge
+        # lies off-screen cannot have its border dragged, and the user is
+        # left with a window that will not budge.
+        width = min(int(1280 * scale), self.winfo_screenwidth() - 40)
+        height = min(int(860 * scale), self.winfo_screenheight() - 80)
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(int(1000 * scale), width),
+                     min(int(660 * scale), height))
 
         self._doc: Optional[fitz.Document] = None
         self._src_path: Optional[Path] = None

@@ -152,6 +152,8 @@ SHAPE_CHOICES: Tuple[Tuple[str, str], ...] = (
     ("十字", comp.SHAPE_CROSS),
     ("泪滴", comp.SHAPE_TEARDROP),
     ("半月形", comp.SHAPE_HALFMOON),
+    ("左花括号", comp.SHAPE_BRACE_LEFT),
+    ("右花括号", comp.SHAPE_BRACE_RIGHT),
     ("右箭头", comp.SHAPE_RIGHT_ARROW),
     ("左箭头", comp.SHAPE_LEFT_ARROW),
     ("上箭头", comp.SHAPE_UP_ARROW),
@@ -1012,6 +1014,10 @@ def draw_shape_icon(canvas: tk.Canvas, kind: str, width: int = 30,
     flat: List[float] = []
     for x, y in points:
         flat.extend((x, y))
+    if kind in comp.SHAPE_OPEN_KINDS:
+        # A brace is a stroke, not a filled shape.
+        canvas.create_line(flat, fill=colour, width=1)
+        return
     canvas.create_polygon(flat, fill="#cfe0f5", outline=colour, width=1)
 
 
@@ -1025,7 +1031,7 @@ class _ScrollableFrame(ttk.Frame):
     def __init__(self, master: tk.Misc, **kwargs: Any) -> None:
         super().__init__(master, **kwargs)
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0,
-                               background="#f0f0f0")
+                               background="#f0f0f0", height=220)
         self.scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL,
                                       command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
@@ -1036,14 +1042,27 @@ class _ScrollableFrame(ttk.Frame):
                                                  anchor=tk.NW)
         self.body.bind("<Configure>", self._on_body)
         self.canvas.bind("<Configure>", self._on_canvas)
-        self.canvas.bind("<Enter>", lambda _e: self._wheel())
-        self.canvas.bind("<Leave>",
-                         lambda _e: self.canvas.unbind("<MouseWheel>"))
-
-    def _wheel(self) -> None:
+        # The wheel is caught everywhere, because the pictures of the
+        # elements are canvases of their own and the wheel does not reach
+        # the frame they stand in.  It only scrolls the gallery when the
+        # cursor is over it -- the sheet's own wheel zooms the sheet.
         self.canvas.bind_all("<MouseWheel>", self._on_wheel)
 
+    def _is_inside(self, widget: Optional[tk.Misc]) -> bool:
+        """Whether a widget stands in this frame."""
+        while widget is not None:
+            if widget is self:
+                return True
+            widget = getattr(widget, "master", None)
+        return False
+
     def _on_wheel(self, event: tk.Event) -> None:
+        # The widget the event was delivered to is the one under the cursor.
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            widget = self.winfo_containing(event.x_root, event.y_root)
+        if not self._is_inside(widget):
+            return
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_body(self, _event: tk.Event) -> None:
@@ -1064,16 +1083,19 @@ SHAPE_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
     ("矩形", ("矩形", "圆角矩形", "椭圆")),
     ("基本形状", ("三角形", "直角三角形", "平行四边形", "梯形", "菱形",
                "五边形", "六边形", "八边形", "十边形", "十二边形",
-               "十字", "泪滴", "半月形")),
+               "十字", "泪滴", "半月形", "左花括号", "右花括号")),
     ("箭头", ("右箭头", "左箭头", "上箭头", "下箭头", "十字箭头", "燕尾箭头")),
     ("公式形状", ("加号", "减号", "乘号", "除号", "等号", "大于号", "小于号")),
     ("流程图", ("文档", "多文档", "准备", "存储", "延迟", "显示", "提取")),
     ("星与旗帜", ("星形", "爆炸形", "旗帜", "卷轴")),
     ("标注", ("云形",)),
 )
-
 #: How many elements are shown in a row of the gallery.
 SHAPE_GALLERY_COLUMNS = 5
+
+
+#: How far above the object the grip that turns it stands, in pixels.
+ROTATE_HANDLE_PX = 22.0
 
 
 class ComposePanel(tk.Frame):
@@ -1788,6 +1810,7 @@ class ComposePanel(tk.Frame):
 
         gallery = _ScrollableFrame(parent)
         gallery.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._gallery = gallery
         body = gallery.body
         row = 0
         for group, names in SHAPE_GROUPS:
@@ -2815,6 +2838,7 @@ class ComposePanel(tk.Frame):
             # the grips that make the whole selection bigger or smaller.
             left, top, right, bottom = self._canvas_rect(group)
             self._draw_selection_frame(left, top, right, bottom, primary=True)
+        self._draw_rotation_handle()
         if self._shape_preview is not None:
             self._draw_shape(-1, self._shape_preview)
         if self._marquee is not None:
@@ -3050,6 +3074,76 @@ class ComposePanel(tk.Frame):
         if obj is None:
             return
         self._set_object(kind, index, comp.with_format(obj, fmt))
+
+    def _rotation_target(self) -> Optional[Tuple[str, int, fitz.Rect]]:
+        """The object that can be turned, with its box on the canvas.
+
+        A figure, a graphic element or a piece of free text: whatever the
+        property panel is editing.
+        """
+        if self._sel_figs:
+            index = self._sel_figs[-1]
+            if 0 <= index < len(self.composition.placements):
+                p = self.composition.placements[index]
+                return ("figure", index, fitz.Rect(self._canvas_rect(p.rect)))
+        if self._sel_shapes:
+            index = self._sel_shapes[-1]
+            if 0 <= index < len(self.composition.shapes):
+                s = self.composition.shapes[index]
+                return ("shape", index, fitz.Rect(self._canvas_rect(s.rect)))
+        if self._sel_texts:
+            index = self._sel_texts[-1]
+            if 0 <= index < len(self.composition.texts):
+                t = self.composition.texts[index]
+                return ("text", index, fitz.Rect(self._canvas_rect(t.rect())))
+        return None
+
+    def _rotation_handle(self, box: fitz.Rect) -> Tuple[float, float]:
+        """Where the grip that turns an object stands."""
+        return ((box.x0 + box.x1) / 2, box.y0 - ROTATE_HANDLE_PX)
+
+    def _draw_rotation_handle(self) -> None:
+        """Draw the grip that turns the object that is picked."""
+        target = self._rotation_target()
+        if target is None:
+            return
+        _, _, box = target
+        hx, hy = self._rotation_handle(box)
+        self.canvas.create_line((hx, box.y0), (hx, hy), fill="#ff7f0e",
+                                width=1, dash=(2, 2), tags=("rotate",))
+        self.canvas.create_oval(hx - 4, hy - 4, hx + 4, hy + 4, fill="#ff7f0e",
+                                outline="white", width=1, tags=("rotate",))
+
+    def _hit_rotation_handle(self, cx: float, cy: float) -> bool:
+        """Whether the cursor is on the grip that turns the object."""
+        target = self._rotation_target()
+        if target is None:
+            return False
+        hx, hy = self._rotation_handle(target[2])
+        return abs(cx - hx) <= 7 and abs(cy - hy) <= 7
+
+    def _drag_rotate(self, event: tk.Event) -> None:
+        """Turn the object that is picked.
+
+        The grip follows the cursor, and the object turns about its own
+        middle -- the same way it turns in PowerPoint.
+        """
+        target = self._rotation_target()
+        if target is None:
+            return
+        kind, index, box = target
+        cx = (box.x0 + box.x1) / 2
+        cy = (box.y0 + box.y1) / 2
+        # The canvas counts downwards, so the angle comes out clockwise.
+        angle = math.degrees(math.atan2(event.y - cy, event.x - cx))
+        rotation = (angle + 90.0) % 360.0
+        if kind == "figure":
+            self.composition.placements[index].rotation = rotation
+        elif kind == "shape":
+            self.composition.shapes[index].rotation = rotation
+        else:
+            self.composition.texts[index].rotation = rotation
+        self._redraw()
 
     def _draw_selection_frame(self, left: float, top: float, right: float,
                               bottom: float, primary: bool = False) -> None:
@@ -3355,6 +3449,17 @@ class ComposePanel(tk.Frame):
             # outlined here, so that the outline lies on top of it.
             self._draw_gradient_shape(shape, box, left, top, tag)
             fill_colour = ""
+        if shape.kind in comp.SHAPE_OPEN_KINDS:
+            # A brace is a stroke, not a filled shape.
+            points = comp.shape_outline(shape.kind, box)
+            if points:
+                flat = []
+                for p in points:
+                    flat.extend((p.x, p.y))
+                self.canvas.create_line(flat, fill=colour, width=width,
+                                        dash=dash, tags=("shape", tag))
+            self.canvas.addtag_withtag("shape", tag)
+            return
         if shape.kind == comp.SHAPE_LINE:
             item = self.canvas.create_line(
                 p0.x, p0.y, p1.x, p1.y, fill=colour, width=width, dash=dash,
@@ -3707,6 +3812,14 @@ class ComposePanel(tk.Frame):
             self._redraw()
             return
 
+        if self._hit_rotation_handle(event.x, event.y) and self.tool == "select":
+            # The grip above the object turns it.
+            self._drag_mode = "rotate"
+            self._drag_start = (event.x, event.y)
+            self._remember()
+            self._redraw()
+            return
+
         if sheet_handle is not None and self.tool == "select":
             # A grip of the sheet itself: the page is resized, not its
             # contents.
@@ -3989,6 +4102,9 @@ class ComposePanel(tk.Frame):
             return
         if self._drag_mode == "selection-handle":
             self._drag_selection_handle(event)
+            return
+        if self._drag_mode == "rotate":
+            self._drag_rotate(event)
             return
         if self._drag_mode == "shape":
             ux, uy = self._to_user(event.x, event.y)
@@ -5651,8 +5767,13 @@ class ComposeWindow(tk.Toplevel):
         # The window is sized in physical pixels, so on a high-DPI display
         # the geometry has to be scaled to come out the same size on screen.
         scale = dpi.scale_factor(self)
-        self.geometry(f"{int(1240 * scale)}x{int(820 * scale)}")
-        self.minsize(int(1000 * scale), int(680 * scale))
+        # The window has to fit on the screen: a window whose lower edge
+        # lies off-screen cannot have its border dragged.
+        width = min(int(1240 * scale), self.winfo_screenwidth() - 40)
+        height = min(int(820 * scale), self.winfo_screenheight() - 80)
+        self.geometry(f"{width}x{height}")
+        self.minsize(min(int(1000 * scale), width),
+                     min(int(680 * scale), height))
         self.panel = ComposePanel(self, cfg)
         self.panel.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
