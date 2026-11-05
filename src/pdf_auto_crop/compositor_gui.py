@@ -2027,50 +2027,61 @@ class ComposePanel(tk.Frame):
         self.var_shape_text_size.trace_add(
             "write", lambda *_a: self._on_shape_changed())
 
+        # The caption may hold mathematics, the way the text panel does it.
+        self.var_shape_formula = tk.BooleanVar(value=False)
+        #: Whether the user has ticked the formula box by hand: then the
+        #: caption is not read as a formula any more.
+        self._shape_formula_chosen = False
+        self.chk_shape_formula = ttk.Checkbutton(
+            tab, text="LaTeX 公式", variable=self.var_shape_formula,
+            command=self._on_shape_formula_toggled)
+        self.chk_shape_formula.grid(row=10, column=0, sticky="w", pady=3)
+
         # The size of the element: the width and the height, in millimetres,
         # so it can be set exactly instead of being dragged out by hand.
-        ttk.Label(tab, text="宽 mm").grid(row=10, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="宽 mm").grid(row=11, column=0, sticky="w", pady=3)
         self.var_shape_w = tk.StringVar(value="")
         self.ent_shape_w = ttk.Entry(tab, textvariable=self.var_shape_w, width=6)
-        self.ent_shape_w.grid(row=10, column=1, sticky="w", pady=3)
+        self.ent_shape_w.grid(row=11, column=1, sticky="w", pady=3)
         self.var_shape_w.trace_add("write", lambda *_a: self._on_shape_changed())
 
-        ttk.Label(tab, text="高 mm").grid(row=11, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="高 mm").grid(row=12, column=0, sticky="w", pady=3)
         self.var_shape_h = tk.StringVar(value="")
         self.ent_shape_h = ttk.Entry(tab, textvariable=self.var_shape_h, width=6)
-        self.ent_shape_h.grid(row=11, column=1, sticky="w", pady=3)
+        self.ent_shape_h.grid(row=12, column=1, sticky="w", pady=3)
         self.var_shape_h.trace_add("write", lambda *_a: self._on_shape_changed())
 
-        ttk.Label(tab, text="渐变色").grid(row=12, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变色").grid(row=13, column=0, sticky="w", pady=3)
         self.var_shape_gradient = tk.BooleanVar(value=False)
         self.chk_shape_gradient = ttk.Checkbutton(
             tab, text="渐变填充", variable=self.var_shape_gradient,
             command=self._on_shape_changed)
-        self.chk_shape_gradient.grid(row=12, column=1, sticky="w", pady=3)
+        self.chk_shape_gradient.grid(row=13, column=1, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变色").grid(row=14, column=0, sticky="w", pady=3)
         self.var_shape_gradient_color = tk.StringVar(value="#3060d0")
         self.btn_shape_gradient_color = tk.Button(
             tab, width=6, background="#3060d0", relief=tk.RAISED,
             borderwidth=2, command=self._choose_shape_gradient_color,
         )
-        self.btn_shape_gradient_color.grid(row=13, column=1, sticky="w", pady=3)
-        ttk.Label(tab, text="渐变角度").grid(row=13, column=0, sticky="w", pady=3)
+        self.btn_shape_gradient_color.grid(row=14, column=1, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变角度").grid(row=15, column=0, sticky="w", pady=3)
         self.var_shape_gradient_angle = tk.StringVar(value="0")
         self.spin_shape_gradient_angle = ttk.Spinbox(
             tab, from_=-180, to=180, increment=15,
             textvariable=self.var_shape_gradient_angle, width=6,
         )
-        self.spin_shape_gradient_angle.grid(row=14, column=1, sticky="w", pady=3)
+        self.spin_shape_gradient_angle.grid(row=15, column=1, sticky="w", pady=3)
         self.var_shape_gradient_angle.trace_add(
             "write", lambda *_a: self._on_shape_changed())
         ttk.Label(tab, text="度", style="Hint.TLabel").grid(
-            row=14, column=2, sticky="w", padx=(4, 0))
+            row=15, column=2, sticky="w", padx=(4, 0))
 
         ttk.Label(
             tab,
             text="选中时改选中图形的大小；未选中时是新建图形的大小。\n"
                  "渐变填充是矢量渐变，导出后仍可缩放。",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=15, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ).grid(row=16, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # -- the table tab -------------------------------------------------------
 
@@ -3741,14 +3752,28 @@ class ComposePanel(tk.Frame):
         self.canvas.itemconfigure(item, tags=("shape", tag))
 
         if shape.text:
-            tw, th = comp.text_width(shape.text, "helv", shape.text_size), \
-                shape.text_size * 1.25
-            self.canvas.create_text(
-                (left + right) / 2, (top + bottom) / 2, text=shape.text,
-                fill="#%02x%02x%02x" % tuple(
-                    int(c * 255) for c in shape.caption_rgb),
-                font=tk_font("Helvetica", shape.text_size * self._zoom),
-                anchor=tk.CENTER, tags=("shape", tag))
+            if shape.formula:
+                # Tk cannot typeset mathematics: the very PDF the export
+                # writes is rendered and shown instead.
+                box = self._draw_formula(f"caption{idx}", shape.text,
+                                         shape.text_size,
+                                         fitz.Point((left + right) / 2,
+                                                    (top + bottom) / 2),
+                                         ("shape", tag))
+                if box is None:
+                    self.canvas.create_text(
+                        (left + right) / 2, (top + bottom) / 2, text=shape.text,
+                        fill="#%02x%02x%02x" % tuple(
+                            int(c * 255) for c in shape.caption_rgb),
+                        font=tk_font("Helvetica", shape.text_size * self._zoom),
+                        anchor=tk.CENTER, tags=("shape", tag))
+            else:
+                self.canvas.create_text(
+                    (left + right) / 2, (top + bottom) / 2, text=shape.text,
+                    fill="#%02x%02x%02x" % tuple(
+                        int(c * 255) for c in shape.caption_rgb),
+                    font=tk_font("Helvetica", shape.text_size * self._zoom),
+                    anchor=tk.CENTER, tags=("shape", tag))
 
         if selected:
             # Every picked element shows its frame, so that a selection of
@@ -4992,6 +5017,7 @@ class ComposePanel(tk.Frame):
                 f"{round(shape.fill_opacity * 100):g}")
             self.var_shape_rotation.set(f"{shape.rotation:g}")
             self.var_shape_text.set(shape.text)
+            self.var_shape_formula.set(bool(shape.formula))
             self.var_shape_text_size.set(f"{shape.text_size:g}")
             self.var_shape_gradient.set(shape.fill_gradient is not None)
             self.var_shape_gradient_color.set(
@@ -5129,6 +5155,12 @@ class ComposePanel(tk.Frame):
         rotation = self._shape_rotation()
         text = self.var_shape_text.get()
         text_size = self._shape_text_size()
+        formula = bool(self.var_shape_formula.get())
+        if looks_like_math(text) and not self._shape_formula_chosen:
+            # A caption written the way a formula is written is one,
+            # whatever the box says.
+            formula = True
+            self.var_shape_formula.set(True)
         gradient = bool(self.var_shape_gradient.get())
         gradient_color = hex_to_rgb(self.var_shape_gradient_color.get())
         gradient_angle = self._shape_gradient_angle()
@@ -5147,6 +5179,7 @@ class ComposePanel(tk.Frame):
             shape.rotation = rotation
             shape.text = text
             shape.text_size = text_size
+            shape.formula = formula
             shape.fill_gradient = gradient_color if gradient else None
             shape.gradient_angle = gradient_angle
             if gradient:
@@ -5168,7 +5201,6 @@ class ComposePanel(tk.Frame):
 
     def _shape_size(self) -> Optional[Tuple[float, float]]:
         """The size the panel asks for, in points.
-
         ``None`` when the panel does not say -- then a new element gets the
         size the sheet suggests.
         """
@@ -5681,6 +5713,15 @@ class ComposePanel(tk.Frame):
         """
         self._label_formula_chosen = True
         self._on_label_changed()
+
+    def _on_shape_formula_toggled(self) -> None:
+        """The formula box of a graphic element was ticked or unticked.
+
+        After that the caption is not read as a formula any more: the user
+        has said what it is.
+        """
+        self._shape_formula_chosen = True
+        self._on_shape_changed()
 
     @_action
     def _on_label_changed(self, event=None) -> None:

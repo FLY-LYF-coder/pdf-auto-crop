@@ -1919,6 +1919,25 @@ def main() -> int:
         compositor_gui.filedialog.asksaveasfilename = original_save
         compositor_gui.filedialog.askopenfilename = original_open
 
+    # -- a shape can carry a caption, and a caption can be a formula --------
+    _pick_tool(win, "选择/移动")
+    win._clear_selection()
+    win._sel_shapes = [0]
+    win._last_kind = "shape"
+    win.var_shape_formula.set(False)
+    win._shape_formula_chosen = False
+    win._sync_properties()
+    win.update()
+    for form in ("$E = mc^2$", "\\[E = mc^2\\]", "$$E = mc^2$$"):
+        win.var_shape_text.set(form)
+        win._on_shape_changed()
+        win.update()
+        check(f"the caption {form} is read as a formula",
+              win.composition.shapes[0].formula is True, form)
+    win.var_shape_text.set("Note")
+    win._on_shape_changed()
+    win.update()
+
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
     n_palette = len(win.palette)

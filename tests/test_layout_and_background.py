@@ -128,6 +128,27 @@ def test_the_two_dollar_signs_are_one_formula() -> None:
     assert tex.math_parts("$$E = mc^2$$") is not None
 
 
+@pytest.mark.parametrize("text", ["$E = mc^2$", "\\[E = mc^2\\]", "$$E = mc^2$$"])
+def test_a_caption_may_hold_a_formula(text, tmp_path) -> None:
+    """The caption of a graphic element may be mathematics too."""
+    sheet = comp.Composition(width=200.0, height=200.0)
+    sheet.shapes.append(comp.Shape(
+        comp.SHAPE_RECT, fitz.Point(40, 40), fitz.Point(160, 120),
+        color=(0, 0, 0), width=1.0, text=text, text_size=14.0, formula=True))
+    out = tmp_path / "caption.pdf"
+    comp.export_composition(sheet, out, fit_to_content=False,
+                            page_size=(200.0, 200.0))
+    doc = fitz.open(str(out))
+    try:
+        page = doc[0]
+        written = page.get_text().strip()
+        assert "$" not in written, written
+        assert "\\" not in written, written
+        assert len(page.get_images()) == 0, "the formula became a picture"
+    finally:
+        doc.close()
+
+
 def test_a_formula_is_recognised_however_it_is_written() -> None:
     """The user does not have to say that the text is mathematics."""
     assert tex.looks_like_math("$x^2$")

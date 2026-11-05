@@ -731,6 +731,11 @@ chose, and the mathematics is typeset — the two stand side by side on the
 baseline.  (Chinese between the dollar signs is ordinary text: the
 mathematics cannot write it.)
 
+A formula may be written in three places, and they all behave the same:
+the **内容** of a graphic element, the **编号** of a figure, and a piece of
+free text.  In each of them `$...$`, `\[...\]` and `$$...$$` mean the same
+thing, and none of the delimiters reaches the file.
+
 The canvas shows the formula as well — not the text it was written as — so
 what is on the sheet is what the file will hold, and where it stands.  The
 same goes for the number of a figure: a caption written like a formula is

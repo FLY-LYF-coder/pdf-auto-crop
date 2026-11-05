@@ -959,6 +959,8 @@ class Shape:
     text_size: float = 9.0
     #: The caption's colour; the border colour when empty.
     text_color: Optional[Tuple[float, float, float]] = None
+    #: Whether the caption is mathematics rather than ordinary text.
+    formula: bool = False
     #: The layer the shape stands on: the bigger the number, the nearer the
     #: top.
     z: float = 0.0
@@ -1038,6 +1040,7 @@ class Shape:
             "text_size": self.text_size,
             "text_color": (list(self.text_color)
                            if self.text_color is not None else None),
+            "formula": self.formula,
             "z": self.z,
             "op": self.op,
             "parts": [p.to_dict() for p in self.parts],
@@ -1066,6 +1069,7 @@ class Shape:
             text=str(data.get("text", "")),
             text_size=float(data.get("text_size", 9.0)),
             text_color=(tuple(text_color) if text_color is not None else None),
+            formula=bool(data.get("formula", False)),
             z=float(data.get("z", 0.0)),
             op=str(data.get("op", "")),
             parts=list(data.get("parts", []) or []),
@@ -3192,7 +3196,21 @@ def draw_boolean(page: fitz.Page, shape: Shape, dx: float, dy: float,
 def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
                         page_height: float,
                         written: Optional[Dict[str, str]] = None) -> None:
-    """Write a caption in the middle of a shape, as PowerPoint does."""
+    """Write a caption in the middle of a shape, as PowerPoint does.
+
+    A caption that holds mathematics is typeset, the way the text panel
+    does it, so that the three places a formula can be written behave the
+    same.
+    """
+    if shape.formula:
+        from .tex import render_math
+        rendered = render_math(shape.text, shape.text_size)
+        if rendered is not None:
+            width = formula_width(rendered)
+            anchor = fitz.Point((box.x0 + box.x1) / 2 - width / 2,
+                                (box.y0 + box.y1) / 2 + shape.text_size * 0.35)
+            draw_formula(page, rendered, anchor, page_height)
+            return
     fontname, fontfile = resolve_label_font(shape.text, "", "")
     width = text_width(shape.text, fontname, shape.text_size, fontfile)
     baseline = fitz.Point(
