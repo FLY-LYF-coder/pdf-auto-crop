@@ -475,6 +475,11 @@ The styles apply to every selected element at once.  Elements can be dragged,
 nudged with the arrow keys, copied (复制), flipped (水平/垂直翻转) and deleted
 with `Delete`.
 
+**角度** turns an element: it keeps its own shape, so a rectangle that is
+turned is still a rectangle and not the box around it.  The same field
+turns a figure (in the 标签 tab), a piece of free text and a graphic
+element.  A turned element may also be turned by the grip above it.
+
 Only the *stroke* of an element is grabbable, so a translucent box drawn over
 a figure does not stop you from selecting the figure underneath it.  When the
 cursor is on both, the element wins — it is the thing drawn on top.
@@ -720,9 +725,16 @@ comes out as mathematics, drawn with vector glyphs whose text can still be
 searched.  The **LaTeX 公式** box in the text panel says so, and a text that
 is not written like a formula can still be made one by ticking it.
 
+A formula does not have to be the whole text: **公式：$\times 10$** is
+recognised as well.  The words are written as words, in the face the user
+chose, and the mathematics is typeset — the two stand side by side on the
+baseline.  (Chinese between the dollar signs is ordinary text: the
+mathematics cannot write it.)
+
 The canvas shows the formula as well — not the text it was written as — so
-what is on the sheet is what the file will hold.  The same goes for the
-number of a figure: a caption written like a formula is typeset as one.
+what is on the sheet is what the file will hold, and where it stands.  The
+same goes for the number of a figure: a caption written like a formula is
+typeset as one.
 
 The mathematics is typeset by matplotlib's mathtext, which needs no TeX
 installation; when matplotlib is missing, the text is written as it stands.
@@ -754,12 +766,12 @@ what you want for a figure going into a manuscript.
 ### Saving the layout
 
 The sheet can be saved as a **layout file** (JSON) and opened again later:
-**保存布局…** writes it, **打开布局…** reads it back.  The file holds
-everything the sheet is made of — the figures and where they stand, the
-graphic elements, the tables, the text, the layers and how everything looks,
-together with the material list to pick from.  The work can therefore be
-put down and picked up again, and the file can be read with any text
-editor.
+**保存布局…** writes it, **打开布局…** reads it back.  Both buttons are in
+the toolbar, next to **导出 PDF…**.  The file holds everything the sheet is
+made of — the figures and where they stand, the graphic elements, the
+tables, the text, the layers and how everything looks, together with the
+material list to pick from.  The work can therefore be put down and picked
+up again, and the file can be read with any text editor.
 
 The figures are referred to by the PDF they were cut from, so those files
 have to be where they were: the layout says so when one of them is gone.

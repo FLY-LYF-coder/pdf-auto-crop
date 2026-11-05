@@ -851,6 +851,18 @@ def main() -> int:
           item.color == pytest.approx((0.416, 0.051, 0.678), abs=0.02),
           str(item.color))
 
+    # A text can be picked up and put somewhere else.
+    _pick_tool(win, "选择/移动")
+    tx, ty = win._to_canvas(item.position.x, item.position.y)
+    text_before = fitz.Point(item.position)
+    _drag(win, int(tx), int(ty) - 4, int(tx) + 40, int(ty) - 4)
+    win.update()
+    text_after = win.composition.texts[0].position
+    check("a text can be dragged",
+          abs(text_after.x - text_before.x) > 5
+          or abs(text_after.y - text_before.y) > 5,
+          f"{text_before} -> {text_after}")
+
     # A LaTeX formula, drawn as vector mathematics.
     _pick_tool(win, "文本框")
     fx, fy = win._to_canvas(750, 460)
@@ -1857,6 +1869,17 @@ def main() -> int:
     open_button = _button("打开布局…")
     check("there is a 保存布局 button", save_button is not None)
     check("there is a 打开布局 button", open_button is not None)
+    # The buttons are in the toolbar, next to the export: that is where a
+    # user looks for them.
+    toolbar_texts = []
+    for w in win.chk_snap.master.winfo_children():
+        try:
+            toolbar_texts.append(str(w.cget("text")))
+        except Exception:  # noqa: BLE001 -- a widget without text
+            pass
+    check("the layout buttons are in the toolbar",
+          "保存布局…" in toolbar_texts and "打开布局…" in toolbar_texts,
+          str(toolbar_texts))
     original_save = compositor_gui.filedialog.asksaveasfilename
     original_open = compositor_gui.filedialog.askopenfilename
     compositor_gui.filedialog.asksaveasfilename = fake_save

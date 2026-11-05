@@ -2624,20 +2624,32 @@ def _shading_object(doc: fitz.Document, c0: Tuple[float, float, float],
     return xref
 
 
-def draw_gradient_fill(page: fitz.Page, shape: Shape, box: fitz.Rect,
-                        page_height: float) -> bool:
+def draw_gradient_fill(page: fitz.Page, shape: Shape,
+                       outline: Any, page_height: float) -> bool:
     """Paint a gradient into a graphic element's outline.
 
     PyMuPDF cannot fill with a gradient, so the gradient is written into the
     page by hand: a shading is made, the outline is used as the clip, and
     the shading is painted into it.  The outline itself is stroked as usual.
 
+    ``outline`` is either the box the element stands in or the points of its
+    outline -- a turned shape has points of its own.
+
     Returns:
         Whether the gradient was painted.
     """
     if shape.fill_gradient is None:
         return False
-    path = _shape_path_operators(shape, box, page_height)
+    if isinstance(outline, fitz.Rect):
+        box = outline
+        path = _shape_path_operators(shape, outline, page_height)
+    else:
+        points = list(outline)
+        if not points:
+            return False
+        box = fitz.Rect(min(p.x for p in points), min(p.y for p in points),
+                        max(p.x for p in points), max(p.y for p in points))
+        path = _path_from_points(points, page_height)
     if not path:
         return False
     doc = page.parent
@@ -2694,6 +2706,37 @@ def _append_to_page(page: fitz.Page, data: bytes) -> None:
     doc.update_stream(last, old + b"\n" + data, new=0)
 
 
+def shape_outline_turned(shape: Shape, box: fitz.Rect, rotation: float
+                         ) -> List[fitz.Point]:
+    """The outline of a shape, turned about the middle of its own box.
+
+    The points come back in the frame of ``box``: the page's, with the y
+    growing downwards.  A shape that is turned keeps its own shape -- a
+    rectangle stays a rectangle instead of becoming the box around it.
+    """
+    points = [fitz.Point(x, y)
+              for x, y in shape_clip_points(shape.kind, box)]
+    if not points:
+        return []
+    centre = fitz.Point((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2)
+    return [rotate_point(p, centre, rotation) for p in points]
+
+
+def _path_from_points(points: Sequence[fitz.Point],
+                      page_height: float) -> str:
+    """The PDF operators that trace a closed path.
+
+    The points are in the page's frame, where the y grows downwards; the
+    PDF counts upwards, so they are turned over here.
+    """
+    if not points:
+        return ""
+    out = [f"{points[0].x:.3f} {page_height - points[0].y:.3f} m"]
+    out.extend(f"{p.x:.3f} {page_height - p.y:.3f} l" for p in points[1:])
+    out.append("h")
+    return " ".join(out)
+
+
 def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
               written: Optional[Dict[str, str]] = None) -> None:
     """Draw one graphic element on a page.
@@ -2713,6 +2756,9 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
         return
     p0 = fitz.Point(shape.start.x, page_height - shape.start.y)
     p1 = fitz.Point(shape.end.x, page_height - shape.end.y)
+    # The box the shape was drawn in, before it was turned.
+    plain = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
+                      max(p0.x, p1.x), max(p0.y, p1.y))
     color = shape.color
     width = shape.width
     dashes, line_cap = dash_pattern(shape.dash)
@@ -2729,10 +2775,37 @@ def draw_shape(page: fitz.Page, shape: Shape, page_height: float,
     box = fitz.Rect(min(p0.x, p1.x), min(p0.y, p1.y),
                     max(p0.x, p1.x), max(p0.y, p1.y))
 
+    if (abs(shape.rotation) > 1e-6
+            and shape.kind not in (SHAPE_LINE, SHAPE_ARROW)):
+        # A turned shape keeps its own shape: the outline is turned, not the
+        # box it stands in.
+        points = shape_outline_turned(shape, plain, shape.rotation)
+        if not points:
+            return
+        # A gradient is painted into the outline by hand, so the plain fill
+        # is left out.
+        if shape.fill and shape.fill_gradient is not None:
+            draw_gradient_fill(page, shape, points, page_height)
+            fill = None
+            fill_opacity = 0.0
+        if shape.kind in SHAPE_OPEN_KINDS:
+            # A brace is a stroke, not a filled shape.
+            page.draw_polyline(points, color=color, width=width,
+                               dashes=dashes, lineCap=line_cap,
+                               stroke_opacity=stroke_opacity)
+        else:
+            page.draw_polyline(points + [points[0]], color=color, fill=fill,
+                               width=width, dashes=dashes, lineCap=line_cap,
+                               stroke_opacity=stroke_opacity,
+                               fill_opacity=fill_opacity)
+        if shape.text:
+            _draw_shape_caption(page, shape, box, page_height, written)
+        return
+
     # A gradient is painted into the outline by hand, so the plain fill is
     # left out.
     if shape.fill and shape.fill_gradient is not None:
-        draw_gradient_fill(page, shape, box, page_height)
+        draw_gradient_fill(page, shape, plain, page_height)
         fill = None
         fill_opacity = 0.0
 
@@ -3217,24 +3290,52 @@ def render_text_pdf(item: "TextItem") -> Optional[Path]:
     return out_path if out_path.exists() else None
 
 
+def formula_width(rendered: Path) -> float:
+    """How wide a rendered formula is, from where its baseline starts."""
+    doc = fitz.open(str(rendered))
+    try:
+        page = doc[0]
+        spans = [s for b in page.get_text("dict")["blocks"]
+                 for line in b.get("lines", []) for s in line["spans"]]
+        if not spans:
+            return 0.0
+        return max(s["bbox"][2] for s in spans) - spans[0]["origin"][0]
+    finally:
+        doc.close()
+
+
 def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
                   written: Optional[Dict[str, str]] = None) -> None:
     """Draw one piece of free-standing text on a page.
 
     A formula is drawn from its rendered PDF, so it keeps its mathematics;
-    plain text is inserted as real, selectable text.
+    plain text is inserted as real, selectable text.  A text that holds
+    mathematics in the middle of it -- "公式：$x^2$" -- is written in parts:
+    the ordinary words as text, the mathematics as mathematics.
     """
     if not item.text:
         return
+    from . import tex
     anchor = fitz.Point(item.position.x, page_height - item.position.y)
 
     if item.formula:
-        from .tex import render_math
-        rendered = render_math(item.text, item.size)
-        if rendered is not None:
-            draw_formula(page, rendered, anchor, page_height, item.rotation)
-            _draw_text_frame(page, item, anchor, page_height)
+        parts = tex.math_parts(item.text, item.size)
+        if parts is not None and len(parts) > 1:
+            # A text that holds words and mathematics: it is written in
+            # parts, one after the other.
+            _draw_text_with_math(page, item, parts, page_height, written)
             return
+        if parts is not None:
+            from .tex import render_math
+            rendered = render_math(item.text, item.size)
+            if rendered is not None:
+                # The anchor is in the composition's own frame: the place
+                # that puts it on the page turns it over once, and once
+                # only.
+                draw_formula(page, rendered, item.position, page_height,
+                             item.rotation)
+                _draw_text_frame(page, item, anchor, page_height)
+                return
 
     if abs(item.rotation) > 1e-6:
         # A turned text is written on its own page and then placed with an
@@ -3258,6 +3359,45 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
         page.draw_rect(
             fitz.Rect(item.position.x, anchor.y,
                        item.position.x + width, anchor.y + height),
+            color=item.box_rgb, width=item.box_width,
+        )
+
+
+def _draw_text_with_math(page: fitz.Page, item: TextItem,
+                         parts: Sequence[Tuple[str, bool]],
+                         page_height: float,
+                         written: Optional[Dict[str, str]] = None) -> None:
+    """Write a text that holds mathematics in the middle of it.
+
+    The ordinary words are written as text, in the face the user chose, and
+    the mathematics is typeset.  The parts follow one another along the
+    baseline, the way they are written.
+    """
+    from .tex import render_math
+    fontname, fontfile = item.font_info()
+    x = item.position.x
+    baseline = item.position.y
+    for text, is_math in parts:
+        if not is_math:
+            width = text_width(text, fontname, item.size, fontfile)
+            _note_font(written, fontname, text)
+            page.insert_text(
+                fitz.Point(x, page_height - baseline), text,
+                fontsize=item.size, fontname=fontname,
+                fontfile=fontfile or None, color=item.color,
+            )
+            x += width
+            continue
+        rendered = render_math(text, item.size)
+        if rendered is None:
+            continue
+        draw_formula(page, rendered, fitz.Point(x, baseline), page_height)
+        x += formula_width(rendered)
+    if item.box:
+        width, height = item.text_size()
+        page.draw_rect(
+            fitz.Rect(item.position.x, baseline,
+                      item.position.x + width, baseline + height),
             color=item.box_rgb, width=item.box_width,
         )
 

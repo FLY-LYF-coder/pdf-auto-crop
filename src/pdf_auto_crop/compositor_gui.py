@@ -37,6 +37,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 from . import compositor as comp
 from . import dpi
+from . import tex
 from .config import CropConfig
 from .geometry import mm_to_pt, pt_to_mm
 from .tex import looks_like_math
@@ -474,6 +475,16 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
     elif kind == "label" and index in labels:
         mode = "label"
     return figs, shapes, texts, labels, mode
+
+
+def _box_around(box: Optional[Tuple[float, float, float, float]],
+                other: Tuple[float, float, float, float]
+                ) -> Tuple[float, float, float, float]:
+    """The box that holds both of them."""
+    if box is None:
+        return other
+    return (min(box[0], other[0]), min(box[1], other[1]),
+            max(box[2], other[2]), max(box[3], other[3]))
 
 
 class _TextEditDialog(tk.Toplevel):
@@ -1453,15 +1464,22 @@ class ComposePanel(tk.Frame):
             bar, text="白底", variable=self.var_white_bg)
         self.chk_white_bg.grid(row=0, column=20, padx=(0, 6), sticky="w")
 
+        # The layout of the sheet, so that the work can be put down and
+        # picked up again.  It sits in the toolbar where the export is:
+        # the buttons are there to be found.
+        ttk.Button(bar, text="保存布局…", command=self._save_layout).grid(
+            row=0, column=21, padx=6, sticky="e")
+        ttk.Button(bar, text="打开布局…", command=self._open_layout).grid(
+            row=0, column=22, padx=6, sticky="e")
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=21, padx=12, sticky="e")
+            row=0, column=23, padx=12, sticky="e")
 
         # The tools and the graphic elements are shown in the panel on the
         # left, each one as it looks -- a name in a list says much less
         # than a small picture of the element.
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=22, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=24, sticky="w", pady=(6, 0))
         ttk.Label(
             tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐",
             style="Hint.TLabel",
@@ -1636,16 +1654,6 @@ class ComposePanel(tk.Frame):
         ttk.Button(right, text="清空画布", command=self._clear_sheet).grid(
             row=6, column=0, sticky="ew", pady=2)
 
-        # The layout of the sheet, saved so that it can be worked on again
-        # later -- the figures, the graphic elements, the text, where
-        # everything stands and how it looks.
-        layout = ttk.Frame(right)
-        layout.grid(row=7, column=0, sticky="ew", pady=(8, 2))
-        ttk.Button(layout, text="保存布局…", width=9,
-                   command=self._save_layout).pack(side=tk.LEFT, padx=1)
-        ttk.Button(layout, text="打开布局…", width=9,
-                   command=self._open_layout).pack(side=tk.LEFT, padx=1)
-
         ttk.Label(
             right,
             text="拖动图体移动，橙点缩放\n编号可直接拖到任意位置\n"
@@ -1654,7 +1662,7 @@ class ComposePanel(tk.Frame):
                  "滚轮缩放画布，中键平移\n"
                  "方向键微调 · Delete 删除",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
-        ).grid(row=8, column=0, sticky="w", pady=(10, 0))
+        ).grid(row=7, column=0, sticky="w", pady=(10, 0))
 
     # -- the label tab ------------------------------------------------------
 
@@ -3442,8 +3450,17 @@ class ComposePanel(tk.Frame):
             self._draw_turned_text(idx, item)
             return
         if item.formula:
-            # Tk cannot typeset mathematics either: the very PDF the export
-            # writes is rendered and shown instead.
+            # A text that holds words and mathematics is written in parts,
+            # the way the exporter writes it.
+            parts = tex.math_parts(item.text, item.size)
+            if parts is not None and len(parts) > 1:
+                box = self._draw_text_parts(idx, item, parts)
+                if box is not None:
+                    if selected:
+                        self._draw_selection_frame(*box, primary=True)
+                    return
+            # Tk cannot typeset mathematics: the very PDF the export writes
+            # is rendered and shown instead.
             box = self._draw_formula(f"text{idx}", item.text, item.size,
                                      item.position, ("text", str(idx)))
             if box is not None:
@@ -3473,6 +3490,51 @@ class ComposePanel(tk.Frame):
                 anchor=tk.SW, tags=("text", str(idx)))
         if selected:
             self._draw_selection_frame(x, y - h, x + w, y, primary=True)
+
+    def _draw_text_parts(self, idx: int, item: comp.TextItem,
+                         parts: Sequence[Tuple[str, bool]]
+                         ) -> Optional[Tuple[float, float, float, float]]:
+        """Draw a text that holds words and mathematics.
+
+        The ordinary words are drawn as text and the mathematics is drawn
+        from the very PDF the export writes, so the sheet and the file
+        agree -- the parts follow one another along the baseline.
+
+        Returns:
+            The box the text takes on the canvas, or ``None``.
+        """
+        from .tex import render_math
+        fontname, fontfile = item.font_info()
+        family = item.font or comp.LABEL_FONT_DEFAULT
+        style = label_style(item.bold, item.italic)
+        size_px = item.size * self._zoom
+        r, g, b = item.color
+        colour = "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+        x = item.position.x
+        box: Optional[Tuple[float, float, float, float]] = None
+        for text, is_math in parts:
+            if is_math:
+                rendered = render_math(text, item.size)
+                if rendered is None:
+                    continue
+                ink = self._draw_formula(f"text{idx}", text, item.size,
+                                         fitz.Point(x, item.position.y),
+                                         ("text", str(idx)))
+                if ink is None:
+                    continue
+                x += comp.formula_width(rendered)
+                box = _box_around(box, ink)
+                continue
+            px, py = self._to_canvas(x, item.position.y)
+            width = comp.text_width(text, fontname, item.size, fontfile)
+            font = tk_font(family, size_px, style)
+            self.canvas.create_text(
+                px, py + font_descent_px(font), text=text, fill=colour,
+                font=font, anchor=tk.SW, tags=("text", str(idx)))
+            x += width
+            box = _box_around(box, (px, py - item.size * self._zoom,
+                                    px + width * self._zoom, py))
+        return box
 
     def _draw_turned_text(self, idx: int, item: comp.TextItem) -> None:
         """Show a turned text the way it will be printed."""
@@ -3518,15 +3580,20 @@ class ComposePanel(tk.Frame):
         finally:
             doc.close()
 
-    def _draw_gradient_shape(self, shape: comp.Shape, box: fitz.Rect,
-                             left: float, top: float, tag: str) -> None:
+    def _draw_gradient_shape(self, shape: comp.Shape, outline: Any,
+                             box: fitz.Rect, left: float, top: float,
+                             tag: str) -> None:
         """Draw a graphic element whose fill is a gradient.
 
         Tk cannot fill with a gradient, so the gradient is painted into a
         small picture and the element's silhouette is cut out of it.
+
+        The box is already in canvas pixels, so the picture is that size
+        and the silhouette is cut out of it where it is -- counting the
+        zoom twice would let the gradient out of the shape.
         """
-        w = max(1, int(round(box.width * self._zoom)))
-        h = max(1, int(round(box.height * self._zoom)))
+        w = max(1, int(round(box.width)))
+        h = max(1, int(round(box.height)))
         if w * h > 4_000_000:
             return
         c0 = tuple(int(c * 255) for c in shape.fill_rgb)
@@ -3545,9 +3612,12 @@ class ComposePanel(tk.Frame):
                     int(c0[2] + (c1[2] - c0[2]) * t), 255)
         # The silhouette of the element is cut out of the gradient.
         mask = Image.new("L", (w, h), 0)
-        points = [(int((x - box.x0) * self._zoom),
-                   int((y - box.y0) * self._zoom))
-                  for x, y in comp.shape_clip_points(shape.kind, box)]
+        if isinstance(outline, fitz.Rect):
+            points = [(int(x - box.x0), int(y - box.y0))
+                      for x, y in comp.shape_clip_points(shape.kind, outline)]
+        else:
+            points = [(int(p.x - box.x0), int(p.y - box.y0))
+                      for p in outline]
         if points:
             ImageDraw.Draw(mask).polygon(points, fill=255)
         img.putalpha(mask)
@@ -3565,6 +3635,8 @@ class ComposePanel(tk.Frame):
             return
         x0, y0 = self._to_canvas(shape.start.x, shape.start.y)
         x1, y1 = self._to_canvas(shape.end.x, shape.end.y)
+        # The box the element was drawn in, before it was turned.
+        plain = fitz.Rect(min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
         # A turned shape is turned about the middle of its own box -- the
         # canvas counts downwards, the same way the exported page does.
         centre = fitz.Point((x0 + x1) / 2, (y0 + y1) / 2)
@@ -3592,10 +3664,38 @@ class ComposePanel(tk.Frame):
             )
 
         box = fitz.Rect(left, top, right, bottom)
+        if (abs(shape.rotation) > 1e-6
+                and shape.kind not in (comp.SHAPE_LINE, comp.SHAPE_ARROW)):
+            # A turned shape keeps its own shape: the outline is turned,
+            # not the box it stands in.
+            points = comp.shape_outline_turned(shape, plain, shape.rotation)
+            flat: List[float] = []
+            for point in points:
+                flat.extend((point.x, point.y))
+            if shape.fill and shape.fill_gradient is not None:
+                self._draw_gradient_shape(shape, points, box, left, top, tag)
+                fill_colour = ""
+            if flat:
+                item = self.canvas.create_polygon(
+                    flat, outline=colour, width=width, fill=fill_colour,
+                    dash=dash, tags=("shape", tag))
+                self.canvas.addtag_withtag("shape", item)
+                self.canvas.itemconfigure(item, tags=("shape", tag))
+            if shape.text:
+                self.canvas.create_text(
+                    (left + right) / 2, (top + bottom) / 2, text=shape.text,
+                    fill="#%02x%02x%02x" % tuple(
+                        int(c * 255) for c in shape.caption_rgb),
+                    font=tk_font("Helvetica", shape.text_size * self._zoom),
+                    anchor=tk.CENTER, tags=("shape", tag))
+            if selected:
+                self._draw_selection_frame(left, top, right, bottom,
+                                           primary=primary)
+            return
         if shape.fill and shape.fill_gradient is not None:
             # A gradient is a picture of its own; the element is only
             # outlined here, so that the outline lies on top of it.
-            self._draw_gradient_shape(shape, box, left, top, tag)
+            self._draw_gradient_shape(shape, box, box, left, top, tag)
             fill_colour = ""
         if shape.kind in comp.SHAPE_OPEN_KINDS:
             # A brace is a stroke, not a filled shape.

@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 #: The font set mathtext uses.  "stix" is the Times-like set, which matches
 #: the body font of most papers.
@@ -54,11 +54,12 @@ def _math_source(text: str) -> str:
 
 
 def looks_like_math(text: str) -> bool:
-    """Whether a text is written the way a formula is written.
+    """Whether a text holds mathematics.
 
-    ``$...$`` and ``\\[...\\]`` are how a formula is written down, and they
-    are recognised on sight: the user does not have to say that the text is
-    mathematics.
+    A formula is written between dollar signs, and it is recognised on
+    sight: the user does not have to say that the text is mathematics.
+    The formula does not have to be the whole text -- "公式：$x^2$" holds
+    mathematics as well.
 
     Args:
         text: The text the user wrote.
@@ -71,7 +72,54 @@ def looks_like_math(text: str) -> bool:
         return True
     if body.startswith("\\[") and body.endswith("\\]"):
         return True
-    return False
+    return any(is_math for _, is_math in split_math(body))
+
+
+def _has_cjk(text: str) -> bool:
+    """Whether the text holds Chinese characters.
+
+    Matplotlib's mathtext cannot write them -- it puts a dummy symbol in
+    their place -- so a stretch of text that holds them is ordinary text,
+    even when it is between dollar signs.
+    """
+    return any("一" <= ch <= "鿿" for ch in text)
+
+
+def split_math(text: str) -> List[Tuple[str, bool]]:
+    """The text in parts: ordinary text and mathematics.
+
+    "公式：$\\times 10$" comes back as ``("公式：", False)`` and
+    ``("$\\times 10$", True)``.  The two kinds are drawn differently: the
+    ordinary text is written as text, in the face the user chose, and the
+    mathematics is typeset.
+
+    A formula that is written between ``\\[`` and ``\\]`` stands on its own,
+    so it is one part.
+    """
+    body = (text or "").strip()
+    if not body:
+        return []
+    if body.startswith("\\[") and body.endswith("\\]"):
+        return [(body, True)]
+    parts: List[Tuple[str, bool]] = []
+    pos = 0
+    while pos < len(body):
+        start = body.find("$", pos)
+        if start < 0:
+            break
+        end = body.find("$", start + 1)
+        if end < 0:
+            break
+        if start > pos:
+            parts.append((body[pos:start], False))
+        span = body[start:end + 1]
+        # Chinese between the dollar signs is ordinary text: mathtext
+        # cannot write it.
+        parts.append((span, not _has_cjk(span)))
+        pos = end + 1
+    if pos < len(body):
+        parts.append((body[pos:], False))
+    return [(t, is_math) for t, is_math in parts if t]
 
 
 def render_math(text: str, size: float = 12.0) -> Optional[Path]:
@@ -129,6 +177,23 @@ def render_math(text: str, size: float = 12.0) -> Optional[Path]:
         except Exception:  # noqa: BLE001
             pass
     return out_path if out_path.exists() else None
+
+
+def math_parts(text: str, size: float = 12.0
+               ) -> Optional[List[Tuple[str, bool]]]:
+    """The parts of a text that holds mathematics, when they all render.
+
+    Returns ``None`` when the text holds no mathematics, or when the
+    mathematics cannot be typeset -- "价格 $5 和 $10" is ordinary text with
+    a dollar sign in it, not a formula.
+    """
+    parts = split_math(text)
+    if not any(is_math for _, is_math in parts):
+        return None
+    for body, is_math in parts:
+        if is_math and render_math(body, size) is None:
+            return None
+    return parts
 
 
 def math_available() -> bool:
