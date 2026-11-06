@@ -480,9 +480,12 @@ turned is still a rectangle and not the box around it.  The same field
 turns a figure (in the 标签 tab), a piece of free text and a graphic
 element.  A turned element may also be turned by the grip above it.
 
-Only the *stroke* of an element is grabbable, so a translucent box drawn over
-a figure does not stop you from selecting the figure underneath it.  When the
-cursor is on both, the element wins — it is the thing drawn on top.
+An element that is **filled** is caught by its fill, so a box that is painted
+can be grabbed in the middle — clicking inside it picks it up.  An element
+that is not filled is caught by its *stroke* only, so a translucent box
+drawn over a figure does not stop you from selecting the figure underneath
+it.  When the cursor is on both, the element wins — it is the thing drawn on
+top.
 
 A figure — an embedded PDF page — cannot be mirrored: doing so would mean
 rasterising it, and giving up the vector output the tool is about.  Turning

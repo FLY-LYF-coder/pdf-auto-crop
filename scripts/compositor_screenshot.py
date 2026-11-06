@@ -1917,6 +1917,14 @@ def main() -> int:
                   len(win.palette) > 0, f"{len(win.palette)} entries")
             check("the tool goes back to moving things",
                   win.tool == "select", win.tool)
+            # A filled element is caught by its inside, not only by its edge.
+            if win.composition.shapes:
+                filled = win.composition.shapes[0]
+                fx, fy = win._to_canvas((filled.start.x + filled.end.x) / 2,
+                                        (filled.start.y + filled.end.y) / 2)
+                check("a filled element is caught by its inside",
+                      win._hit_shape(int(fx), int(fy)) is not None,
+                      str(win._hit_shape(int(fx), int(fy))))
             # What came back can be worked on again.
             if win.composition.shapes:
                 win._clear_selection()

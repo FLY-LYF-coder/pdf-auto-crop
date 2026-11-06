@@ -477,6 +477,25 @@ def update_selection(sel_figs: List[int], sel_shapes: List[int],
     return figs, shapes, texts, labels, mode
 
 
+def _inside_polygon(cx: float, cy: float,
+                    points: Sequence[fitz.Point]) -> bool:
+    """Whether a point is inside a closed outline.
+
+    The outline is crossed an odd number of times when the point is inside
+    it, and an even number when it is outside.
+    """
+    inside = False
+    count = len(points)
+    for i in range(count):
+        a = points[i]
+        b = points[(i + 1) % count]
+        if (a.y > cy) != (b.y > cy):
+            x = a.x + (cy - a.y) * (b.x - a.x) / (b.y - a.y)
+            if cx < x:
+                inside = not inside
+    return inside
+
+
 def _box_around(box: Optional[Tuple[float, float, float, float]],
                 other: Tuple[float, float, float, float]
                 ) -> Tuple[float, float, float, float]:
@@ -3903,6 +3922,9 @@ class ComposePanel(tk.Frame):
 
         Only the *stroke* of an element is grabbable, so a translucent box
         drawn over a figure does not stop the figure from being selected.
+        An element that is *filled* is caught by its fill as well: a box
+        that is painted is a thing one grabs, not an outline one has to aim
+        at.
         """
         # The element on top is the one that is picked, so the layers are
         # walked from the top down.
@@ -3924,6 +3946,9 @@ class ComposePanel(tk.Frame):
                 r = math.hypot((cx - cxr) / rx, (cy - cyr) / ry)
                 if abs(r - 1.0) * min(rx, ry) <= SHAPE_HIT_PX:
                     return i
+                if shape.fill and r <= 1.0:
+                    # A painted ellipse is caught by its inside.
+                    return i
             elif shape.kind in (comp.SHAPE_LINE, comp.SHAPE_ARROW):
                 if distance_to_segment(cx, cy, p0.x, p0.y, p1.x, p1.y) \
                         <= SHAPE_HIT_PX:
@@ -3936,6 +3961,9 @@ class ComposePanel(tk.Frame):
                     fitz.Point(left, top), fitz.Point(right, top),
                     fitz.Point(right, bottom), fitz.Point(left, bottom),
                 ]
+                if shape.fill and _inside_polygon(cx, cy, points):
+                    # A painted shape is caught by its inside.
+                    return i
                 for j in range(len(points)):
                     a = points[j]
                     b = points[(j + 1) % len(points)]
@@ -6201,8 +6229,12 @@ class ComposePanel(tk.Frame):
         self._clear_selection()
         # The sheet that was opened is looked at, not drawn on: the tool goes
         # back to moving things, or a click would draw a new one instead of
-        # picking up what is there.
+        # picking up what is there.  The format painter is put away as well,
+        # for the same reason.
         self._pick_tool_kind("select")
+        if self.var_format_brush.get():
+            self.var_format_brush.set(False)
+            self._format_brush = None
         # A sheet that has just been opened has no history yet.
         self._undo.clear()
         self._redo.clear()
