@@ -26,7 +26,9 @@ import copy
 import dataclasses
 import functools
 import math
+import queue
 import sys
+import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import colorchooser, filedialog, messagebox, ttk
@@ -1215,6 +1217,15 @@ class ComposePanel(tk.Frame):
         #: moves by one offset instead of by one offset per motion event.
         self._drag_rects: Dict[int, fitz.Rect] = {}
         self._drag_shapes: Dict[int, comp.Shape] = {}
+        #: The import that is running in the background, and what it has
+        #: found so far.
+        self._import_thread: Optional[threading.Thread] = None
+        self._import_queue: "queue.Queue[Tuple[str, str, Any]]" = queue.Queue()
+        self._import_total = 0
+        self._import_done = 0
+        self._import_added = 0
+        self._import_empty: List[str] = []
+        self._import_failed: List[str] = []
         self._drag_texts: Dict[int, comp.TextItem] = {}
         #: The same, for a selection that holds several kinds: every object
         #: in it, with the box it had when the drag began.
@@ -1413,51 +1424,53 @@ class ComposePanel(tk.Frame):
 
         ttk.Button(bar, text="导入 PDF…", command=self._import_pdf).grid(
             row=0, column=0, sticky="w")
-        ttk.Button(bar, text="导入图片…", command=self._import_images).grid(
+        ttk.Button(bar, text="导入文件夹…", command=self._import_folder).grid(
             row=0, column=1, padx=6, sticky="w")
-        ttk.Button(bar, text="导入整页…", command=self._import_whole_pages).grid(
+        ttk.Button(bar, text="导入图片…", command=self._import_images).grid(
             row=0, column=2, padx=6, sticky="w")
-        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+        ttk.Button(bar, text="导入整页…", command=self._import_whole_pages).grid(
             row=0, column=3, padx=6, sticky="w")
+        ttk.Button(bar, text="导入已裁剪的图…", command=self._import_cropped).grid(
+            row=0, column=4, padx=6, sticky="w")
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=4, sticky="ns", padx=8)
+            row=0, column=5, sticky="ns", padx=8)
 
-        ttk.Label(bar, text="纸张").grid(row=0, column=5, padx=(0, 4), sticky="e")
+        ttk.Label(bar, text="纸张").grid(row=0, column=6, padx=(0, 4), sticky="e")
         self.var_sheet = tk.StringVar(value="A4 横向")
         ttk.Combobox(
             bar, textvariable=self.var_sheet, state="readonly", width=10,
             values=["A4 横向", "A4 纵向", "适应内容", "自定义"],
-        ).grid(row=0, column=6, sticky="w")
+        ).grid(row=0, column=7, sticky="w")
         self.var_sheet.trace_add("write", lambda *_a: self._on_sheet_changed())
 
         # The custom page size, in millimetres.
-        ttk.Label(bar, text="宽").grid(row=0, column=7, padx=(12, 2), sticky="e")
+        ttk.Label(bar, text="宽").grid(row=0, column=8, padx=(12, 2), sticky="e")
         self.var_sheet_w = tk.StringVar(value="297")
         self.ent_sheet_w = ttk.Entry(bar, textvariable=self.var_sheet_w, width=6)
-        self.ent_sheet_w.grid(row=0, column=8, sticky="w")
+        self.ent_sheet_w.grid(row=0, column=9, sticky="w")
         self.var_sheet_w.trace_add("write", lambda *_a: self._on_sheet_changed())
-        ttk.Label(bar, text="高 mm").grid(row=0, column=9, padx=(6, 2), sticky="e")
+        ttk.Label(bar, text="高 mm").grid(row=0, column=10, padx=(6, 2), sticky="e")
         self.var_sheet_h = tk.StringVar(value="210")
         self.ent_sheet_h = ttk.Entry(bar, textvariable=self.var_sheet_h, width=6)
-        self.ent_sheet_h.grid(row=0, column=10, sticky="w")
+        self.ent_sheet_h.grid(row=0, column=11, sticky="w")
         self.var_sheet_h.trace_add("write", lambda *_a: self._on_sheet_changed())
 
-        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=11, padx=(12, 4), sticky="e")
+        ttk.Label(bar, text="边距 (mm)").grid(row=0, column=12, padx=(12, 4), sticky="e")
         self.var_margin = tk.StringVar(value="3")
         ttk.Entry(bar, textvariable=self.var_margin, width=6).grid(
-            row=0, column=12, sticky="w")
+            row=0, column=13, sticky="w")
         self.var_margin.trace_add("write", lambda *_a: self._on_margin_changed())
 
         ttk.Separator(bar, orient=tk.VERTICAL).grid(
-            row=0, column=13, sticky="ns", padx=8)
+            row=0, column=14, sticky="ns", padx=8)
         ttk.Button(bar, text="自动编号", command=self._auto_label).grid(
-            row=0, column=14, padx=(0, 6), sticky="w")
+            row=0, column=15, padx=(0, 6), sticky="w")
         ttk.Button(bar, text="横向排列", command=lambda: self._arrange("row")).grid(
-            row=0, column=15, padx=6, sticky="w")
-        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=16, padx=6, sticky="w")
-        ttk.Button(bar, text="表格…", command=self._insert_table).grid(
+        ttk.Button(bar, text="网格排列", command=lambda: self._arrange("grid")).grid(
             row=0, column=17, padx=6, sticky="w")
+        ttk.Button(bar, text="表格…", command=self._insert_table).grid(
+            row=0, column=18, padx=6, sticky="w")
 
         # The format painter: it gives the look of the object that is picked
         # to the next object that is clicked.
@@ -1465,7 +1478,7 @@ class ComposePanel(tk.Frame):
         self.chk_format_brush = ttk.Checkbutton(
             bar, text="格式刷", variable=self.var_format_brush,
             command=self._on_format_brush)
-        self.chk_format_brush.grid(row=0, column=18, padx=(6, 0), sticky="w")
+        self.chk_format_brush.grid(row=0, column=19, padx=(6, 0), sticky="w")
 
         # The snapping: a dragged object is pulled onto its neighbour.  It is
         # on by default, and the button says so.
@@ -1473,7 +1486,7 @@ class ComposePanel(tk.Frame):
         self.chk_snap = ttk.Checkbutton(
             bar, text="吸附", variable=self.var_snap,
             command=self._on_snap_changed)
-        self.chk_snap.grid(row=0, column=19, padx=(10, 6), sticky="w")
+        self.chk_snap.grid(row=0, column=20, padx=(10, 6), sticky="w")
 
         # The page of the export is painted white, the way the sheet looks
         # on the canvas.  Turn it off for a page with a transparent
@@ -1481,17 +1494,17 @@ class ComposePanel(tk.Frame):
         self.var_white_bg = tk.BooleanVar(value=True)
         self.chk_white_bg = ttk.Checkbutton(
             bar, text="白底", variable=self.var_white_bg)
-        self.chk_white_bg.grid(row=0, column=20, padx=(0, 6), sticky="w")
+        self.chk_white_bg.grid(row=0, column=21, padx=(0, 6), sticky="w")
 
         # The layout of the sheet, so that the work can be put down and
         # picked up again.  It sits in the toolbar where the export is:
         # the buttons are there to be found.
         ttk.Button(bar, text="保存布局…", command=self._save_layout).grid(
-            row=0, column=21, padx=6, sticky="e")
-        ttk.Button(bar, text="打开布局…", command=self._open_layout).grid(
             row=0, column=22, padx=6, sticky="e")
+        ttk.Button(bar, text="打开布局…", command=self._open_layout).grid(
+            row=0, column=23, padx=6, sticky="e")
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=23, padx=12, sticky="e")
+            row=0, column=24, padx=12, sticky="e")
 
         # The tools and the graphic elements are shown in the panel on the
         # left, each one as it looks -- a name in a list says much less
@@ -2343,6 +2356,10 @@ class ComposePanel(tk.Frame):
                     ) -> Tuple[int, List[str], List[str]]:
         """Import the figures of several PDFs into the palette.
 
+        The work is done in the background: a PDF that carries forty
+        thousand vector paths takes a minute to look at, and the window has
+        to stay alive while it does.
+
         Args:
             paths: The files to read.
 
@@ -2355,9 +2372,11 @@ class ComposePanel(tk.Frame):
         empty: List[str] = []
         failed: List[str] = []
         margin = self._detect_margin()
+        cfg = self.cfg
+        found_all: List[comp.Figure] = []
         for path in paths:
             try:
-                found = comp.detect_figures(Path(path), self.cfg)
+                found = comp.detect_figures(Path(path), cfg)
             except Exception as exc:  # noqa: BLE001 -- shown to the user
                 failed.append(f"{Path(path).name}：{exc}")
                 continue
@@ -2372,12 +2391,103 @@ class ComposePanel(tk.Frame):
                     fig.region = fitz.Rect(
                         fig.region.x0 - margin, fig.region.y0 - margin,
                         fig.region.x1 + margin, fig.region.y1 + margin)
-                self.palette.append(fig)
+                found_all.append(fig)
             added += len(found)
         if added:
+            self.palette.extend(found_all)
             self._refresh_palette()
             self._update_count()
         return added, empty, failed
+
+    # -- importing in the background -----------------------------------------
+
+    def _start_import(self, paths: Sequence[Path]) -> None:
+        """Look for the figures without holding the window up.
+
+        A PDF of a dense vector plot takes a long time to render, and the
+        window has to stay alive while it does: the figures go into the
+        material list as they are found.
+        """
+        if self._import_thread is not None and self._import_thread.is_alive():
+            self._status("还有一个导入在进行中。")
+            return
+        cfg = self.cfg
+        margin = self._detect_margin()
+        self._import_queue = queue.Queue()
+        self._import_total = len(paths)
+        self._import_done = 0
+        self._import_added = 0
+        self._import_empty: List[str] = []
+        self._import_failed: List[str] = []
+        self._import_thread = threading.Thread(
+            target=self._import_worker, args=(list(paths), cfg, margin),
+            daemon=True)
+        self._import_thread.start()
+        self._status(f"正在找图……（0/{self._import_total}）")
+        self.after(100, self._poll_import)
+
+    def _import_worker(self, paths: Sequence[Path], cfg: CropConfig,
+                       margin: float) -> None:
+        """The figures are found here, away from the window."""
+        for path in paths:
+            try:
+                found = comp.detect_figures(Path(path), cfg)
+            except Exception as exc:  # noqa: BLE001 -- shown to the user
+                self._import_queue.put(("failed", Path(path).name, str(exc)))
+                continue
+            if not found:
+                self._import_queue.put(("empty", Path(path).name, None))
+                continue
+            for fig in found:
+                if margin > 0:
+                    # The detector measures the ink; a pale element, or one
+                    # that sits just outside it, would be cut off.  The
+                    # margin gives everything a little room.
+                    fig.region = fitz.Rect(
+                        fig.region.x0 - margin, fig.region.y0 - margin,
+                        fig.region.x1 + margin, fig.region.y1 + margin)
+            self._import_queue.put(("found", Path(path).name, found))
+
+    def _poll_import(self) -> None:
+        """Take the figures that have been found and put them in the list."""
+        try:
+            while True:
+                kind, name, payload = self._import_queue.get_nowait()
+                if kind == "found":
+                    self.palette.extend(payload)
+                    self._import_added += len(payload)
+                elif kind == "empty":
+                    self._import_empty.append(name)
+                else:
+                    self._import_failed.append(f"{name}：{payload}")
+                self._import_done += 1
+        except queue.Empty:
+            pass
+        if self._import_thread is not None and self._import_thread.is_alive():
+            self._status(
+                f"正在找图……（{self._import_done}/{self._import_total}）")
+            self.after(100, self._poll_import)
+            return
+        if self._import_added:
+            self._refresh_palette()
+            self._update_count()
+        if self._import_failed:
+            messagebox.showwarning(
+                "部分文件读取失败",
+                "以下文件没有读进来：\n\n" + "\n".join(self._import_failed),
+            )
+        if self._import_empty:
+            messagebox.showinfo(
+                "没有检测到子图",
+                "这些 PDF 里没有自动检测出图片：\n"
+                + "\n".join(self._import_empty)
+                + "\n\n可以用「导入整页…」把整页作为一个图放进来。",
+            )
+        if self._import_added:
+            self._status(f"从 {self._import_total} 个文件导入 "
+                         f"{self._import_added} 个子图。")
+        elif not self._import_failed and not self._import_empty:
+            self._status("没有导入任何图。")
 
     def _import_images(self) -> None:
         """Bring one or more pictures in.
@@ -2461,6 +2571,23 @@ class ComposePanel(tk.Frame):
         if added:
             self._status(f"已整页导入 {added} 个图。")
 
+    def _import_folder(self) -> None:
+        """Import the figures of every PDF in a folder.
+
+        A folder of plots is a folder of figures, and there are often a
+        great many of them -- so the work happens in the background and the
+        figures go into the material list as they are found.
+        """
+        folder = filedialog.askdirectory(title="选择要取子图的文件夹")
+        if not folder:
+            return
+        root = Path(folder)
+        paths = sorted(root.rglob("*.pdf"))
+        if not paths:
+            self._status("这个文件夹里没有 PDF。")
+            return
+        self._start_import(paths)
+
     def _import_pdf(self) -> None:
         """Import the figures of one or more PDFs into the palette."""
         paths = filedialog.askopenfilenames(
@@ -2469,25 +2596,7 @@ class ComposePanel(tk.Frame):
         )
         if not paths:
             return
-        added, empty, failed = self.import_pdfs([Path(p) for p in paths])
-        if failed:
-            messagebox.showwarning(
-                "部分文件读取失败",
-                "以下文件没有读进来：\n\n" + "\n".join(failed),
-            )
-        if empty:
-            messagebox.showinfo(
-                "没有检测到子图",
-                "这些 PDF 里没有自动检测出图片：\n"
-                + "\n".join(empty)
-                + "\n\n可以用「导入已裁剪的图」把整页作为一个图放进来。",
-            )
-        if added:
-            names = "、".join(Path(n).name for n in paths[:3])
-            more = " 等" if len(paths) > 3 else ""
-            self._status(f"从 {names}{more} 导入 {added} 个子图。")
-        elif not failed and not empty:
-            self._status("没有导入任何图。")
+        self._start_import([Path(p) for p in paths])
 
     def add_paths(self, paths: Sequence[Path]) -> int:
         """Put whole pages of files into the palette.

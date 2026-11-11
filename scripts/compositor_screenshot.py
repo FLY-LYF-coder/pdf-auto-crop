@@ -1975,6 +1975,25 @@ def main() -> int:
     win._on_shape_changed()
     win.update()
 
+    # -- the import happens in the background --------------------------------
+    # A PDF of a dense plot takes a long time to look at, and the window
+    # has to stay alive while it does.
+    check("there is a 导入文件夹 button",
+          _button("导入文件夹…") is not None)
+    n_palette = len(win.palette)
+    compositor_gui.filedialog.askopenfilenames = lambda *a, **k: (str(fixture),)
+    win._import_pdf()
+    alive = win._import_thread is not None
+    for _ in range(200):
+        win.update()
+        if win._import_thread is None or not win._import_thread.is_alive():
+            break
+        time.sleep(0.05)
+    win.update()
+    check("the figures are found without holding the window up",
+          len(win.palette) > n_palette, f"{len(win.palette)} entries")
+    check("the import ran in a thread", alive)
+
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
     n_palette = len(win.palette)

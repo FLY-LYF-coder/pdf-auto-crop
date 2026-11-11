@@ -1906,6 +1906,68 @@ def figure_display_size(figure: Figure) -> Tuple[float, float]:
 # ---------------------------------------------------------------------------
 
 
+#: A page whose content stream is bigger than this carries so many vector
+#: paths that rendering it takes minutes.  Such a page is one dense plot --
+#: a scatter of hundreds of thousands of points, say -- and the detector
+#: would find the whole of it anyway.  The page is taken as it is.
+DENSE_CONTENT_BYTES = 1_000_000
+
+
+def _stored_length(doc: fitz.Document, xref: int) -> int:
+    """The length of a stream, as it is stored.
+
+    The length is often given by another object, so it is followed.
+    """
+    try:
+        key = doc.xref_get_key(xref, "Length")
+    except Exception:  # noqa: BLE001 -- the length is a hint, not a fact
+        return 0
+    if not isinstance(key, tuple) or len(key) < 2:
+        return 0
+    kind, value = str(key[0]), str(key[1]).strip()
+    if kind == "int":
+        try:
+            return int(value.split()[0])
+        except ValueError:
+            return 0
+    if kind == "xref":
+        # "12 0 R": the length is the object 12, which holds the number.
+        try:
+            number = int(value.split()[0])
+            return int(str(doc.xref_object(number)).strip())
+        except Exception:  # noqa: BLE001 -- the length is a hint, not a fact
+            return 0
+    return 0
+
+
+def _page_content_bytes(doc: fitz.Document, page: fitz.Page) -> int:
+    """How much drawing a page carries, in bytes of content stream.
+
+    The length is read from the cross-reference table, so the page is not
+    rendered to find out how big it is.
+    """
+    try:
+        key = doc.xref_get_key(page.xref, "Contents")
+    except Exception:  # noqa: BLE001 -- a page that cannot be asked
+        return 0
+    if not isinstance(key, tuple) or len(key) < 2:
+        return 0
+    kind, value = str(key[0]), str(key[1])
+    if kind == "xref":
+        numbers = value.split()[:1]
+    elif kind == "array":
+        numbers = value.replace("[", " ").replace("]", " ").split()
+    else:
+        return 0
+    total = 0
+    for number in numbers:
+        try:
+            total += _stored_length(doc, int(number))
+        except ValueError:
+            continue
+    return total
+
+
 def detect_figures(
     pdf_path: Path, cfg: Optional[CropConfig] = None
 ) -> List[Figure]:
@@ -1919,6 +1981,10 @@ def detect_figures(
     frame -- are not part of the box it returns.  They are folded back in
     from the page's text, otherwise a curve plot would arrive without its
     axes.
+
+    A page that carries a huge amount of vector drawing is taken as one
+    figure without being rendered: such a page takes minutes to draw, and
+    the detector would find the whole of it in any case.
     """
     from .figure_text import expand_regions_with_text, text_blocks
     from .pdf_processor import render_page_to_array
@@ -1930,10 +1996,17 @@ def detect_figures(
     doc = fitz.open(str(pdf_path))
     try:
         for pno in range(len(doc)):
-            rgb, size_pt = render_page_to_array(doc, pno, cfg.dpi)
-            regions = detect(rgb, size_pt, cfg)
-            page_h = size_pt[1]
-            if regions:
+            page = doc[pno]
+            visible = source_visible_rect(doc, pno)
+            dense = _page_content_bytes(doc, page) > DENSE_CONTENT_BYTES
+            if dense:
+                # Too much drawing to render: the whole page is the figure.
+                regions = [fitz.Rect(0, 0, visible.width, visible.height)]
+            else:
+                rgb, size_pt = render_page_to_array(doc, pno, cfg.dpi)
+                regions = detect(rgb, size_pt, cfg)
+            page_h = visible.height
+            if regions and not dense:
                 # The detector speaks bottom-up user space; the page's text
                 # is reported top-down.  Both conversions are the same flip.
                 top_down = [

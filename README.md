@@ -274,7 +274,8 @@ Open it with the **组合…** button in the main window's toolbar.
 
 1. **导入 PDF…** — pick one or more PDFs (the dialog takes a whole selection)
    and the same detector used for cropping finds the figures on every page;
-   they land in the palette on the left.  **导入图片…** brings in PNG, JPEG
+   they land in the palette on the left.  **导入文件夹…** does the same for
+   every PDF in a folder, however deep it is nested.  **导入图片…** brings in PNG, JPEG
    and the rest: a picture is turned into a page of its own first, so it can
    be placed and aligned like any other figure.  **导入整页…** brings the
    pages in as they are, nothing cut off — that is the way to take in a
@@ -283,6 +284,16 @@ Open it with the **组合…** button in the main window's toolbar.
    whole.
    A file that cannot be read, or that holds no figure, is reported and the
    rest still come in.
+
+   The figures are found **in the background**, so the window stays alive
+   while it works: the status bar says how far it has come, and the figures
+   go into the material list as they are found.
+
+   A plot drawn with hundreds of thousands of points is a huge PDF, and
+   rendering one takes minutes.  Such a page is taken **whole** — it is one
+   dense figure, and the detector would find the whole of it in any case.
+   (The same applies to the cropping pipeline: a page that carries more than
+   a megabyte of drawing is not rendered at all.)
 
    The detector measures the **ink**, so a very pale element — or one that
    sits just outside the ink — can end up cut off.  **识别留白** (in the
