@@ -560,6 +560,11 @@ class Figure:
     page_index: int
     region: fitz.Rect
     name: str = ""
+    #: Whether the figure is a whole page that carries a huge amount of
+    #: vector drawing.  Such a page is not cut out -- cutting it out would
+    #: mean drawing hundreds of thousands of strokes -- and there is no
+    #: point in keeping a margin around it.
+    whole_page: bool = False
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -583,6 +588,7 @@ class Figure:
             "page_index": self.page_index,
             "region": [self.region.x0, self.region.y0, self.region.x1, self.region.y1],
             "name": self.name,
+            "whole_page": self.whole_page,
         }
 
     @classmethod
@@ -592,6 +598,7 @@ class Figure:
             page_index=int(data["page_index"]),
             region=fitz.Rect(*data["region"]),
             name=data.get("name", ""),
+            whole_page=bool(data.get("whole_page", False)),
         )
 
 
@@ -1859,13 +1866,24 @@ def bake_figure(figure: Figure, cache_dir: Optional[Path] = None) -> Path:
             clip = region_to_page_rect(figure.region, visible)
             rw = max(figure.region.width, 1.0)
             rh = max(figure.region.height, 1.0)
+            # A figure that is the whole page needs no clip, and a clip is
+            # what makes MuPDF draw the page instead of embedding it: a page
+            # of hundreds of thousands of strokes takes minutes to draw and
+            # a moment to embed.
+            whole = (clip.x0 <= 0.5 and clip.y0 <= 0.5
+                     and clip.x1 >= visible.width - 0.5
+                     and clip.y1 >= visible.height - 0.5)
 
             # Step one: lift the region out of the unrotated copy.
             stage1 = fitz.open()
             try:
                 p1 = stage1.new_page(width=rw, height=rh)
-                p1.show_pdf_page(
-                    fitz.Rect(0, 0, rw, rh), scratch, 0, rotate=0, clip=clip)
+                if whole:
+                    p1.show_pdf_page(
+                        fitz.Rect(0, 0, rw, rh), scratch, 0, rotate=0)
+                else:
+                    p1.show_pdf_page(
+                        fitz.Rect(0, 0, rw, rh), scratch, 0, rotate=0, clip=clip)
 
                 # Step two: turn it the way the viewer sees it.  The page's
                 # own /Rotate turns the page clockwise, while show_pdf_page
@@ -1874,11 +1892,17 @@ def bake_figure(figure: Figure, cache_dir: Optional[Path] = None) -> Path:
                 out = fitz.open()
                 try:
                     p2 = out.new_page(width=w, height=h)
-                    p2.show_pdf_page(
-                        fitz.Rect(0, 0, w, h), stage1, 0,
-                        rotate=embed_rotation(rotation),
-                        clip=fitz.Rect(0, 0, rw, rh),
-                    )
+                    if whole:
+                        p2.show_pdf_page(
+                            fitz.Rect(0, 0, w, h), stage1, 0,
+                            rotate=embed_rotation(rotation),
+                        )
+                    else:
+                        p2.show_pdf_page(
+                            fitz.Rect(0, 0, w, h), stage1, 0,
+                            rotate=embed_rotation(rotation),
+                            clip=fitz.Rect(0, 0, rw, rh),
+                        )
                     out.save(str(out_path), garbage=4, deflate=True)
                 finally:
                     out.close()
@@ -1892,13 +1916,24 @@ def bake_figure(figure: Figure, cache_dir: Optional[Path] = None) -> Path:
 
 
 def figure_display_size(figure: Figure) -> Tuple[float, float]:
-    """Size of the figure in points, as a viewer sees it."""
-    baked = fitz.open(str(bake_figure(figure)))
+    """Size of the figure in points, as a viewer sees it.
+
+    The figure is the region that was cut out of the page, so its size is
+    the size of the region -- the page does not have to be baked to find
+    out.  Baking a page of hundreds of thousands of strokes takes minutes,
+    and the material list asks for the size of every figure it holds.
+    """
+    region = fitz.Rect(figure.region)
+    rotation = 0
     try:
-        r = baked[0].rect
-        return (r.width, r.height)
-    finally:
-        baked.close()
+        doc = fitz.open(str(figure.path))
+        try:
+            rotation = doc[figure.page_index].rotation
+        finally:
+            doc.close()
+    except Exception:  # noqa: BLE001 -- the size is a help, not a fact
+        rotation = 0
+    return displayed_size(region.width, region.height, rotation)
 
 
 # ---------------------------------------------------------------------------
@@ -2026,6 +2061,7 @@ def detect_figures(
                         page_index=pno,
                         region=fitz.Rect(rect),
                         name=f"{Path(pdf_path).stem} p{pno + 1} #{i}",
+                        whole_page=dense,
                     )
                 )
     finally:

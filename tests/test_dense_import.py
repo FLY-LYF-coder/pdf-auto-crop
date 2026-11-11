@@ -77,3 +77,44 @@ def test_the_content_of_a_page_is_read_without_rendering(tmp_path) -> None:
         doc.close()
     assert content > 0
     assert elapsed < 1.0, elapsed
+
+
+def test_a_whole_page_figure_is_embedded_whole(tmp_path) -> None:
+    """A dense page is not cut out: it is embedded as it is.
+
+    Cutting it out would mean drawing every one of its strokes, and a page
+    of three million strokes takes a quarter of an hour to draw.
+    """
+    src = tmp_path / "page.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.draw_rect(fitz.Rect(10, 10, 190, 190), color=(0, 0, 0),
+                   fill=(0, 0, 0), width=1)
+    doc.save(str(src))
+    doc.close()
+    figure = comp.Figure(path=src, page_index=0,
+                         region=fitz.Rect(0, 0, 200, 200), whole_page=True)
+    started = time.time()
+    baked = comp.bake_figure(figure)
+    elapsed = time.time() - started
+    out = fitz.open(str(baked))
+    try:
+        assert abs(out[0].rect.width - 200) < 1, out[0].rect
+        assert abs(out[0].rect.height - 200) < 1, out[0].rect
+    finally:
+        out.close()
+    assert elapsed < 10.0, elapsed
+
+
+def test_the_size_of_a_figure_does_not_need_the_page_drawn(tmp_path) -> None:
+    """The material list asks for the size of every figure it holds."""
+    src = tmp_path / "panels.pdf"
+    _two_panels(src)
+    figure = comp.Figure(path=src, page_index=0,
+                         region=fitz.Rect(0, 0, 400, 200))
+    started = time.time()
+    width, height = comp.figure_display_size(figure)
+    elapsed = time.time() - started
+    assert width == pytest.approx(400.0, abs=1.0)
+    assert height == pytest.approx(200.0, abs=1.0)
+    assert elapsed < 5.0, elapsed

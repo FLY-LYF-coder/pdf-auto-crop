@@ -2384,10 +2384,12 @@ class ComposePanel(tk.Frame):
                 empty.append(Path(path).name)
                 continue
             for fig in found:
-                if margin > 0:
+                if margin > 0 and not fig.whole_page:
                     # The detector measures the ink; a pale element, or one
                     # that sits just outside it, would be cut off.  The
-                    # margin gives everything a little room.
+                    # margin gives everything a little room.  A whole dense
+                    # page keeps no margin: it is the page, and cutting
+                    # it out would mean drawing every one of its strokes.
                     fig.region = fitz.Rect(
                         fig.region.x0 - margin, fig.region.y0 - margin,
                         fig.region.x1 + margin, fig.region.y1 + margin)
@@ -2439,10 +2441,12 @@ class ComposePanel(tk.Frame):
                 self._import_queue.put(("empty", Path(path).name, None))
                 continue
             for fig in found:
-                if margin > 0:
+                if margin > 0 and not fig.whole_page:
                     # The detector measures the ink; a pale element, or one
                     # that sits just outside it, would be cut off.  The
-                    # margin gives everything a little room.
+                    # margin gives everything a little room.  A whole dense
+                    # page keeps no margin: it is the page, and cutting
+                    # it out would mean drawing every one of its strokes.
                     fig.region = fitz.Rect(
                         fig.region.x0 - margin, fig.region.y0 - margin,
                         fig.region.x1 + margin, fig.region.y1 + margin)
@@ -3074,9 +3078,17 @@ class ComposePanel(tk.Frame):
             button.configure(state="normal" if ready else "disabled")
 
     def _figure_image(self, fig: comp.Figure) -> Optional[Image.Image]:
-        """Raster of a figure, for the canvas preview."""
+        """Raster of a figure, for the canvas preview.
+
+        A page that carries hundreds of thousands of strokes is not drawn
+        here: drawing it takes a quarter of an hour, whatever the
+        resolution, and the canvas must not stop for it.  Such a figure is
+        shown as a placeholder -- the file still holds it whole.
+        """
         if fig.key in self._thumb_cache:
             return self._thumb_cache[fig.key]
+        if fig.whole_page:
+            return None
         try:
             baked = fitz.open(str(comp.bake_figure(fig)))
             try:

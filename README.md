@@ -289,11 +289,16 @@ Open it with the **组合…** button in the main window's toolbar.
    while it works: the status bar says how far it has come, and the figures
    go into the material list as they are found.
 
-   A plot drawn with hundreds of thousands of points is a huge PDF, and
-   rendering one takes minutes.  Such a page is taken **whole** — it is one
-   dense figure, and the detector would find the whole of it in any case.
-   (The same applies to the cropping pipeline: a page that carries more than
-   a megabyte of drawing is not rendered at all.)
+   A plot drawn with hundreds of thousands of points is a huge PDF: a page
+   with three million strokes takes MuPDF a quarter of an hour to draw, and
+   no resolution makes that faster — the strokes are the cost, not the
+   pixels.  Such a page is therefore taken **whole**: it is one dense
+   figure, and the detector would find the whole of it in any case.  It is
+   embedded into the sheet rather than drawn, so it costs nothing — and
+   the text in it stays real, selectable vector text, as it is in the
+   source.  On the canvas such a figure is shown as a placeholder, because
+   a picture of it cannot be drawn in reasonable time; the file holds it
+   in full.
 
    The detector measures the **ink**, so a very pale element — or one that
    sits just outside the ink — can end up cut off.  **识别留白** (in the
