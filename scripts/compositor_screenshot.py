@@ -922,6 +922,33 @@ def main() -> int:
           str(canvas_texts))
     _shot(win, "11_text.png")
 
+    # -- a formula stands where it was put, and has no paper of its own ----
+    # The formula used to come with a sheet of white around it, and it
+    # used to stand lower than the place it was put at.
+    anchor = fitz.Point(200.0, 300.0)
+    box = win._draw_formula("check", "$E = mc^2$", 12.0, anchor,
+                             ("text", "check"))
+    check("a formula is drawn", box is not None)
+    if box is not None:
+        _, base = win._to_user(box[0], box[3])
+        check("the formula stands on the place it was put",
+              abs(base - anchor.y) < 2.0,
+              f"{base:.1f} vs {anchor.y:.1f}")
+    # The page the formula is written on holds the mathematics and nothing
+    # else: a white box would cover whatever is under it in the file.
+    formula_page = WORK / "formula.pdf"
+    only_formula = comp.Composition(width=400.0, height=400.0)
+    only_formula.texts.append(comp.TextItem(
+        text="$E = mc^2$", position=fitz.Point(100, 200), size=12.0,
+        formula=True))
+    comp.export_composition(
+        only_formula, formula_page, fit_to_content=False,
+        page_size=(400, 400), white_background=False)
+    whites = [d for d in fitz.open(str(formula_page))[0].get_drawings()
+              if d.get("fill") and all(v > 0.99 for v in d["fill"])]
+    check("the formula has no white box of its own",
+          not whites, str(len(whites)))
+
     # -- aligning a mixed selection -----------------------------------------
     # A figure, a box and a note, all lined up against each other.
     win._clear_selection()

@@ -3661,10 +3661,6 @@ class ComposePanel(tk.Frame):
                      for line in b.get("lines", []) for s in line["spans"]]
             if not spans:
                 return None
-            box = (min(s["bbox"][0] for s in spans),
-                   min(s["bbox"][1] for s in spans),
-                   max(s["bbox"][2] for s in spans),
-                   max(s["bbox"][3] for s in spans))
             origin = spans[0]["origin"]
             # The picture has to match the zoom, so the formula is the same
             # size on the canvas as it is on the sheet.
@@ -3672,17 +3668,22 @@ class ComposePanel(tk.Frame):
             pix = page.get_pixmap(dpi=render_dpi, alpha=True)
             img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
             scale = render_dpi / 72.0
-            # The ink, cropped out of the rendered page.
-            ink = img.crop((int(box[0] * scale), int(box[1] * scale),
-                            int(box[2] * scale) + 1,
-                            int(box[3] * scale) + 1))
+            # The ink of the page, cropped out of it.  The paper of the
+            # formula is transparent, so the ink is what is not.  The box of
+            # the letters cannot be used for this: mathtext reports boxes
+            # that reach out of the page.
+            alpha = img.getchannel("A")
+            box = alpha.getbbox()
+            if box is None:
+                return None
+            ink = img.crop(box)
             photo = ImageTk.PhotoImage(ink)
             self._photo_cache[key] = photo
             # The baseline of the formula starts at the anchor, the way the
             # exporter writes it.
             px, py = self._to_canvas(anchor.x, anchor.y)
-            left = px + (origin[0] - box[0]) * scale
-            top = py + (origin[1] - box[1]) * scale
+            left = px - (origin[0] * scale - box[0])
+            top = py - (origin[1] * scale - box[1])
             self.canvas.create_image(left, top, image=photo, anchor=tk.NW,
                                      tags=tags)
             return (left, top, left + ink.width, top + ink.height)

@@ -24,6 +24,10 @@ from typing import List, Optional, Tuple
 #: the body font of most papers.
 MATH_FONTSET = "stix"
 
+#: Bumped when the rendered formulas change in a way that the cached files
+#: do not show: the cache is keyed on it, so the old files are not used.
+CACHE_VERSION = "2"
+
 #: Where the rendered formulas are cached.
 CACHE_DIR = Path(tempfile.gettempdir()) / "pdf_auto_crop_math"
 
@@ -143,7 +147,8 @@ def render_math(text: str, size: float = 12.0) -> Optional[Path]:
         return None
 
     key = hashlib.sha256(
-        f"{source}\x00{size:.4f}\x00{MATH_FONTSET}".encode("utf-8")
+        f"{source}\x00{size:.4f}\x00{MATH_FONTSET}\x00{CACHE_VERSION}"
+        .encode("utf-8")
     ).hexdigest()[:24]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     out_path = CACHE_DIR / f"math_{key}.pdf"
@@ -166,12 +171,17 @@ def render_math(text: str, size: float = 12.0) -> Optional[Path]:
         matplotlib.rcParams["pdf.fonttype"] = 42
         fig = Figure(figsize=(0.01, 0.01))
         FigureCanvasPdf(fig)
+        # The formula is written on transparent paper: a sheet of white of
+        # its own would show on the canvas as a white box, and in the file
+        # it would cover whatever was under the formula.
+        fig.patch.set_alpha(0.0)
         fig.text(0.0, 0.0, source, fontsize=size, color=(0.0, 0.0, 0.0))
         fig.savefig(
             str(out_path),
             format="pdf",
             bbox_inches="tight",
             pad_inches=0.0,
+            transparent=True,
         )
     except Exception:  # noqa: BLE001 -- a formula mathtext cannot parse
         return None

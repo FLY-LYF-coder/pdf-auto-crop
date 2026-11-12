@@ -468,6 +468,12 @@ it stays sharp and the symbols remain selectable.
 Matplotlib is an optional dependency: without it a formula is written as
 ordinary text — the LaTeX source as it stands — rather than failing.
 
+A formula is written on **transparent paper**: it does not bring a white box
+of its own, so it covers nothing that lies under it — neither on the sheet nor
+in the file.  It stands exactly where the text was put: the baseline starts at
+the text's own place, the way the exporter writes it, so the sheet and the
+file cannot disagree about it.
+
 A turned text is drawn on the sheet the way the exporter writes it: the very
 page the PDF holds is rendered and shown, and it is put where the exporter
 puts it — the baseline starts at the text's own place and the text is turned
