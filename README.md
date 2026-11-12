@@ -641,6 +641,35 @@ one makes the page bigger or smaller.  **The edge you grab follows the
 mouse** and the opposite one stays where it was — pulling the top edge up
 makes the page taller, and the content stays where it was.
 
+### The white background of an imported figure
+
+A figure that comes out of a plotting library usually carries its own white
+paper: matplotlib paints the whole page white before it draws anything.  That
+white is real ink in the file, so it hides whatever the figure is put on top
+of.
+
+**去白底** in the toolbar takes it away.  The figures imported from now on
+lose their white background, and a single figure can be turned back in the
+**标签** tab of the properties panel.
+
+How it is done: the white is not coloured out but *stopped being painted*.
+The painting operator of a background fill is rewritten -- `f` becomes `n`
+(end the path, paint nothing) and `B` becomes `S` (stroke, but do not fill) --
+one byte per fill, and every other byte of the stream is left as it was.  The
+result is still **vector**: the paths, the text and the colours are untouched,
+so the figure can still be scaled and printed.
+
+What counts as a background: a white fill that covers at least a tenth of the
+figure.  That takes the page of the plot and the panel of the axes with it
+and leaves a small white legend box alone.  Only the head of the content
+stream is looked at -- a plot can carry hundreds of thousands of strokes, but
+the background is always drawn first -- so the work takes a fraction of a
+second even for a very large figure.
+
+The file on disk is never touched: the white is taken away in the copy that
+is baked for the sheet.  A figure whose content stream is larger than 256 MB
+is left as it is, and says so.
+
 ### Picking several objects at once
 
 Dragging on the empty sheet draws a **rubber band**: everything the band
@@ -855,7 +884,9 @@ searched and copied.
 The page is painted white before anything is put on it, the way the sheet
 looks on the canvas: a pale fill then does not let the background through.
 The **白底** button in the toolbar turns that off, and the page comes out
-transparent.
+transparent.  The white a *figure* carries is a separate matter, and
+**去白底** takes that away too -- see
+[The white background of an imported figure](#the-white-background-of-an-imported-figure).
 
 **It goes straight into a LaTeX document.**  The exported PDF is a normal PDF:
 `\includegraphics` takes it, and both `pdflatex` and `xelatex` compile it

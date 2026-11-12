@@ -83,6 +83,7 @@ import pymupdf as fitz
 from .config import CropConfig
 from .geometry import mm_to_pt
 from . import fonts
+from . import whiten
 
 #: Label placement modes.
 LABEL_BELOW = "below"      # centred under the figure -- the journal convention
@@ -565,6 +566,11 @@ class Figure:
     #: mean drawing hundreds of thousands of strokes -- and there is no
     #: point in keeping a margin around it.
     whole_page: bool = False
+    #: Whether the white background the figure carries is taken away, so
+    #: that whatever the figure is put on top of shows through.  The white
+    #: is ink in the source file, so it has to be taken out of the content
+    #: stream; see :mod:`pdf_auto_crop.whiten`.
+    transparent_bg: bool = False
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -578,7 +584,8 @@ class Figure:
         raw = (
             f"{self.path.resolve()}|{self.page_index}|"
             f"{self.region.x0:.4f},{self.region.y0:.4f},"
-            f"{self.region.x1:.4f},{self.region.y1:.4f}"
+            f"{self.region.x1:.4f},{self.region.y1:.4f}|"
+            f"{int(self.transparent_bg)}"
         )
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -589,6 +596,7 @@ class Figure:
             "region": [self.region.x0, self.region.y0, self.region.x1, self.region.y1],
             "name": self.name,
             "whole_page": self.whole_page,
+            "transparent_bg": self.transparent_bg,
         }
 
     @classmethod
@@ -599,6 +607,7 @@ class Figure:
             region=fitz.Rect(*data["region"]),
             name=data.get("name", ""),
             whole_page=bool(data.get("whole_page", False)),
+            transparent_bg=bool(data.get("transparent_bg", False)),
         )
 
 
@@ -1862,6 +1871,14 @@ def bake_figure(figure: Figure, cache_dir: Optional[Path] = None) -> Path:
             scratch.insert_pdf(
                 src, from_page=figure.page_index, to_page=figure.page_index)
             scratch[0].set_rotation(0)
+
+            # A figure that carries its own white paper has that white
+            # taken away here, in the copy -- the file on disk is never
+            # touched.  The white is ink in the source, so the only way to
+            # make it transparent and keep the drawing vector is to stop
+            # it being painted.
+            if figure.transparent_bg:
+                whiten.strip_page_background(scratch, scratch[0], figure.region)
 
             clip = region_to_page_rect(figure.region, visible)
             rw = max(figure.region.width, 1.0)

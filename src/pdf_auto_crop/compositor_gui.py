@@ -1589,24 +1589,33 @@ class ComposePanel(tk.Frame):
             bar, text="白底", variable=self.var_white_bg)
         self.chk_white_bg.grid(row=0, column=21, padx=(0, 6), sticky="w")
 
+        # The white background a figure carries is taken away from the
+        # figures that are imported from now on, so that they can be put
+        # on top of something else.  A single figure can be turned back
+        # in the panel on the right.
+        self.var_strip_bg = tk.BooleanVar(value=True)
+        self.chk_strip_bg = ttk.Checkbutton(
+            bar, text="去白底", variable=self.var_strip_bg)
+        self.chk_strip_bg.grid(row=0, column=22, padx=(0, 6), sticky="w")
+
         # The layout of the sheet, so that the work can be put down and
         # picked up again.  It sits in the toolbar where the export is:
         # the buttons are there to be found.
         ttk.Button(bar, text="保存布局…", command=self._save_layout).grid(
-            row=0, column=22, padx=6, sticky="e")
-        ttk.Button(bar, text="打开布局…", command=self._open_layout).grid(
             row=0, column=23, padx=6, sticky="e")
+        ttk.Button(bar, text="打开布局…", command=self._open_layout).grid(
+            row=0, column=24, padx=6, sticky="e")
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
-            row=0, column=24, padx=12, sticky="e")
+            row=0, column=25, padx=12, sticky="e")
         ttk.Button(bar, text="快捷键…", command=self._show_shortcuts).grid(
-            row=0, column=25, padx=(0, 6), sticky="e")
+            row=0, column=26, padx=(0, 6), sticky="e")
 
         # The tools and the graphic elements are shown in the panel on the
         # left, each one as it looks -- a name in a list says much less
         # than a small picture of the element.
         self.var_tool = tk.StringVar(value=TOOL_CHOICES[0][0])
         tools = ttk.Frame(bar)
-        tools.grid(row=1, column=0, columnspan=24, sticky="w", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=26, sticky="w", pady=(6, 0))
         ttk.Label(
             tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐；"
                         "V/L/R/E/T 换工具，Ctrl+A 全选，快捷键见『快捷键…』",
@@ -1879,24 +1888,34 @@ class ComposePanel(tk.Frame):
         ttk.Label(tab, text="度", style="Hint.TLabel").grid(
             row=6, column=2, sticky="w", padx=(4, 0))
 
+        # Whether the white background the figure carries is taken away.
+        # It is real ink in the imported file, so it has to be taken out
+        # of the drawing for the figure to show what it is put on.
+        self.var_fig_strip_bg = tk.BooleanVar(value=False)
+        self.chk_fig_strip_bg = ttk.Checkbutton(
+            tab, text="去白底（背景透明）", variable=self.var_fig_strip_bg,
+            command=self._on_figure_strip_changed)
+        self.chk_fig_strip_bg.grid(row=7, column=0, columnspan=3,
+                                   sticky="w", pady=(6, 0))
+
         ttk.Button(tab, text="编辑图中的文字…", width=16,
                    command=self._edit_figure_text).grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(8, 3))
+            row=8, column=0, columnspan=3, sticky="w", pady=(8, 3))
         ttk.Button(tab, text="取图范围…", width=16,
                    command=self._edit_figure_region).grid(
-            row=8, column=0, columnspan=3, sticky="w", pady=(3, 3))
+            row=9, column=0, columnspan=3, sticky="w", pady=(3, 3))
         ttk.Label(
             tab,
             text="识别并改写导入图里的文字\n（矢量保留，留空即删除）\n"
                  "取图范围：只保留框住的部分",
             style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
-        ).grid(row=9, column=0, columnspan=3, sticky="w")
+        ).grid(row=10, column=0, columnspan=3, sticky="w")
 
         ttk.Label(
             tab,
             text="编号写成 $x^2$ 时会自动按 LaTeX 公式渲染。",
             style="Hint.TLabel", wraplength=180, justify=tk.LEFT,
-        ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ).grid(row=11, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
     # -- the free text tab --------------------------------------------------
 
@@ -2565,6 +2584,10 @@ class ComposePanel(tk.Frame):
             while True:
                 kind, name, payload = self._import_queue.get_nowait()
                 if kind == "found":
+                    # The figures that come in lose their white
+                    # background if the toolbar says so.
+                    for fig in payload:
+                        fig.transparent_bg = bool(self.var_strip_bg.get())
                     self.palette.extend(payload)
                     self._import_added += len(payload)
                 elif kind == "empty":
@@ -2667,7 +2690,8 @@ class ComposePanel(tk.Frame):
                     visible = comp.source_visible_rect(doc, pno)
                     self.palette.append(comp.Figure(
                         path=path, page_index=pno,
-                        region=fitz.Rect(0, 0, visible.width, visible.height)))
+                        region=fitz.Rect(0, 0, visible.width, visible.height),
+                        transparent_bg=bool(self.var_strip_bg.get())))
                     added += 1
             finally:
                 doc.close()
@@ -2728,7 +2752,9 @@ class ComposePanel(tk.Frame):
             finally:
                 doc.close()
             self.palette.append(comp.Figure(path=Path(p), page_index=0,
-                                             region=region))
+                                             region=region,
+                                             transparent_bg=bool(
+                                                 self.var_strip_bg.get())))
             added += 1
         if added:
             self._refresh_palette()
@@ -3199,8 +3225,12 @@ class ComposePanel(tk.Frame):
         try:
             baked = fitz.open(str(comp.bake_figure(fig)))
             try:
-                pix = baked[0].get_pixmap(dpi=PREVIEW_DPI)
-                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                # With an alpha channel the paper of the page does not
+                # count: what the figure does not paint stays see-through,
+                # so a figure does not hide what it is put on top of.
+                pix = baked[0].get_pixmap(dpi=PREVIEW_DPI, alpha=True)
+                img = Image.frombytes("RGBA", (pix.width, pix.height),
+                                      pix.samples)
             finally:
                 baked.close()
         except Exception:  # noqa: BLE001
@@ -5379,6 +5409,8 @@ class ComposePanel(tk.Frame):
             widget.configure(state="normal" if has_fig else "disabled")
         self.spin_fig_rotation.configure(
             state="normal" if has_fig else "disabled")
+        self.chk_fig_strip_bg.configure(
+            state="normal" if has_fig else "disabled")
         if has_fig:
             p = self.composition.placements[label_index]
             self.var_label.set(p.label)
@@ -5389,6 +5421,7 @@ class ComposePanel(tk.Frame):
             self.var_label_italic.set(bool(p.label_italic))
             self.var_label_formula.set(bool(p.label_formula))
             self.var_fig_rotation.set(f"{p.rotation:g}")
+            self.var_fig_strip_bg.set(bool(p.figure.transparent_bg))
             self._set_swatch(self.btn_label_color, p.label_color)
         else:
             self.var_label.set("")
@@ -5744,6 +5777,28 @@ class ComposePanel(tk.Frame):
         for i in self._sel_figs:
             if 0 <= i < len(self.composition.placements):
                 self.composition.placements[i].rotation = rotation
+        self._redraw()
+
+    def _on_figure_strip_changed(self) -> None:
+        """Take the white background away, or put it back.
+
+        The two settings of a figure -- its angle and its background --
+        are kept apart on purpose: writing the angle into the panel would
+        otherwise carry a stale answer for the background along with it.
+        """
+        if not self._sel_figs:
+            return
+        strip = bool(self.var_fig_strip_bg.get())
+        for i in self._sel_figs:
+            if not 0 <= i < len(self.composition.placements):
+                continue
+            figure = self.composition.placements[i].figure
+            if figure.transparent_bg == strip:
+                continue
+            # The preview is cached under the figure's key, and the key
+            # says whether the background was taken away.
+            self._thumb_cache.pop(figure.key, None)
+            figure.transparent_bg = strip
         self._redraw()
 
     def _duplicate_selected(self) -> None:
@@ -6791,8 +6846,10 @@ class ComposeWindow(tk.Toplevel):
         # the geometry has to be scaled to come out the same size on screen.
         scale = dpi.scale_factor(self)
         # The window has to fit on the screen: a window whose lower edge
-        # lies off-screen cannot have its border dragged.
-        width = min(int(1240 * scale), self.winfo_screenwidth() - 40)
+        # lies off-screen cannot have its border dragged.  It also has to
+        # be wide enough for the toolbar, or the buttons at the far end
+        # of it -- the export among them -- lie outside the window.
+        width = min(int(2020 * scale), self.winfo_screenwidth() - 40)
         height = min(int(820 * scale), self.winfo_screenheight() - 80)
         self.geometry(f"{width}x{height}")
         self.minsize(min(int(1000 * scale), width),

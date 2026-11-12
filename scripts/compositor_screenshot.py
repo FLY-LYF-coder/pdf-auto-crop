@@ -34,7 +34,7 @@ import pytest  # noqa: E402
 import pymupdf as fitz  # noqa: E402
 import tkinter as tk  # noqa: E402
 import tkinter.font as tkfont  # noqa: E402
-from PIL import ImageGrab  # noqa: E402
+from PIL import Image, ImageGrab  # noqa: E402
 
 from pdf_auto_crop import compositor as comp  # noqa: E402
 from pdf_auto_crop import compositor_gui  # noqa: E402
@@ -71,6 +71,34 @@ def make_fixture(path: Path) -> None:
                    fill=(0.1, 0.6, 0.2), width=0)
     doc.save(str(path))
     doc.close()
+
+
+def make_white_fixture(path: Path) -> None:
+    """A page that carries its own white paper, the way a plot does."""
+    doc = fitz.open()
+    page = doc.new_page(width=200, height=200)
+    page.draw_rect(fitz.Rect(0, 0, 200, 200), color=None, fill=(1, 1, 1),
+                   width=0)
+    page.draw_rect(fitz.Rect(40, 40, 160, 160), color=(0.1, 0.3, 0.8),
+                   fill=(0.1, 0.3, 0.8), width=0)
+    doc.save(str(path))
+    doc.close()
+
+
+def alpha_map(path: Path) -> np.ndarray:
+    """The transparency of every pixel of the page."""
+    doc = fitz.open(str(path))
+    try:
+        pix = doc[0].get_pixmap(dpi=72, alpha=True)
+        img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
+        return np.array(img.getchannel("A"))
+    finally:
+        doc.close()
+
+
+def corner_alpha(path: Path) -> int:
+    """The transparency of the top-left corner of the page."""
+    return int(alpha_map(path)[1, 1])
 
 
 def figure_colour(pdf: Path, page_index: int, region: fitz.Rect) -> tuple[int, int, int]:
@@ -1813,6 +1841,23 @@ def main() -> int:
         walk(win)
         return found[0] if found else None
 
+    def _checkbutton(text: str):
+        """The check box with that text, wherever it sits in the panel."""
+        found = []
+
+        def walk(widget):
+            for child in widget.winfo_children():
+                try:
+                    if child.winfo_class() in ("TCheckbutton", "Checkbutton") \
+                            and str(child.cget("text")) == text:
+                        found.append(child)
+                except Exception:  # noqa: BLE001 -- only the search suffers
+                    pass
+                walk(child)
+
+        walk(win)
+        return found[0] if found else None
+
     for name in ("置于顶层", "置于底层", "上移一层", "下移一层"):
         check(f"there is a {name} button", _button(name) is not None)
 
@@ -2124,6 +2169,106 @@ def main() -> int:
                for s in turned_spans]))
     win.composition.texts.pop()
     win.update()
+
+    # -- a figure that carries its own white paper --------------------------
+    # A plot that comes out of a plotting library paints its own white
+    # background.  Turning that white into nothing is what makes it
+    # possible to lay such a figure on top of something else.
+    white_pdf = WORK / "white_panel.pdf"
+    make_white_fixture(white_pdf)
+
+    check("there is a 去白底 check box",
+          _checkbutton("去白底") is not None)
+
+    n_palette = len(win.palette)
+    original_names = compositor_gui.filedialog.askopenfilenames
+    compositor_gui.filedialog.askopenfilenames = (
+        lambda *a, **k: (str(white_pdf),))
+    try:
+        win._import_whole_pages()
+    finally:
+        compositor_gui.filedialog.askopenfilenames = original_names
+    win.update()
+    check("the figure with a white background comes in",
+          len(win.palette) == n_palette + 1,
+          f"{len(win.palette)} entries")
+    imported = win.palette[-1]
+    check("it loses its white by default", imported.transparent_bg is True,
+          str(imported.transparent_bg))
+
+    # Put it on the sheet the way a user does.
+    win.lst_palette.selection_clear(0, "end")
+    win.lst_palette.selection_set(len(win.palette) - 1)
+    win._add_selected()
+    win.update()
+    placed = win.composition.placements[-1]
+    baked = comp.bake_figure(placed.figure, cache_dir=WORK / "bake_cache")
+    check("the figure on the sheet has no white left",
+          corner_alpha(baked) == 0, str(corner_alpha(baked)))
+    baked_doc = fitz.open(str(baked))
+    try:
+        check("the drawing of the figure is still there",
+              len(baked_doc[0].get_images()) == 0
+              and len(baked_doc[0].get_drawings()) >= 1)
+    finally:
+        baked_doc.close()
+
+    # The check box on the figure itself can give the white back.
+    last = len(win.composition.placements) - 1
+    win._clear_selection()
+    win._selected = last
+    win._sel_figs = [last]
+    win._last_kind = "figure"
+    win._sync_properties()
+    win.update()
+    check("the panel shows what the figure does",
+          win.var_fig_strip_bg.get() is True)
+    win.chk_fig_strip_bg.invoke()
+    win.update()
+    check("the figure can be given its white back",
+          win.composition.placements[-1].figure.transparent_bg is False)
+    baked_white = comp.bake_figure(
+        win.composition.placements[-1].figure, cache_dir=WORK / "bake_cache")
+    check("the white is back", corner_alpha(baked_white) == 255,
+          str(corner_alpha(baked_white)))
+
+    # -- and it has to show in the exported file ---------------------------
+    # The page of the export gets no white of its own, so what the figure
+    # does not paint stays see-through there.
+    def _export_to(path: Path) -> Path:
+        original = compositor_gui.filedialog.asksaveasfilename
+        compositor_gui.filedialog.asksaveasfilename = (
+            lambda *a, **k: str(path))
+        try:
+            win._export()
+        finally:
+            compositor_gui.filedialog.asksaveasfilename = original
+        win.update()
+        return path
+
+    was_white = bool(win.var_white_bg.get())
+    if was_white:
+        win.chk_white_bg.invoke()
+    win.chk_fig_strip_bg.invoke()      # the white goes away again
+    win.update()
+    clear_file = _export_to(WORK / "export_clear.pdf")
+    check("the file with the clear background is written",
+          clear_file.exists(), str(clear_file))
+    win.chk_fig_strip_bg.invoke()      # and back again
+    win.update()
+    white_file = _export_to(WORK / "export_white.pdf")
+    if was_white:
+        win.chk_white_bg.invoke()
+    win.update()
+
+    if clear_file.exists() and white_file.exists():
+        # Where the white was, the page has to come through.  What lies
+        # on top of it may still veil it, so it is not enough to count
+        # the pixels that turned from opaque to clear: the ones that
+        # turned see-through count as well.
+        freed = int((alpha_map(clear_file) < alpha_map(white_file)).sum())
+        check("the exported file lets the page through where the white was",
+              freed > 50, f"{freed} pixels")
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
