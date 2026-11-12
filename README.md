@@ -368,12 +368,14 @@ and the aspect ratio it was given.
 they are and the ones in between are moved so that the gaps between them come
 out equal — 水平等间距 and 垂直等间距 for the two directions.
 
-**一样大** makes the first selected object the size of the second: 同宽
-matches the width, 同高 the height (both keeping the aspect ratio), and 等大
-makes it exactly the other's size, which may stretch it.  Pick the object to
-change first and the one to copy second.  It works on every kind of object:
-figures, graphic elements, free text and labels — a text changes its size by
-changing the size of its letters.
+**一样大** makes every other selected object the size of one: the **last one
+picked** is the reference, and it does not change itself.  同宽 matches the
+width, 同高 the height (both keeping the aspect ratio), and 等大 makes it
+exactly the reference's size, which may stretch it.  Pick the object to copy
+*first* and the one to change *last* — or, with three or more picked, pick the
+reference last and all the others follow it.  It works on every kind of
+object: figures, graphic elements, free text and labels — a text changes its
+size by changing the size of its letters.
 
 **矩阵阵列…** lays the selected figures out in a grid of as many rows and
 columns as you ask for.
@@ -466,6 +468,14 @@ it stays sharp and the symbols remain selectable.
 Matplotlib is an optional dependency: without it a formula is written as
 ordinary text — the LaTeX source as it stands — rather than failing.
 
+A turned text is drawn on the sheet the way the exporter writes it: the very
+page the PDF holds is rendered and shown, and it is put where the exporter
+puts it — the baseline starts at the text's own place and the text is turned
+clockwise about it.  The sheet and the file therefore cannot disagree about
+where a vertical caption stands.  A text that holds both words and
+mathematics is turned as well; it used to be written out in parts, and the
+turn was quietly dropped.
+
 ### Graphic elements
 
 The **工具** dropdown offers the shapes PowerPoint offers — 箭头 (a line with a
@@ -490,6 +500,23 @@ Once an element is selected, the properties panel styles it:
 The styles apply to every selected element at once.  Elements can be dragged,
 nudged with the arrow keys, copied (复制), flipped (水平/垂直翻转) and deleted
 with `Delete`.
+
+### Straight lines of a known length
+
+A line that is *exactly* horizontal cannot be drawn by hand, and a line of
+*exactly* 20 mm cannot either.  Two things help:
+
+* Hold **`Shift`** while dragging a line (直线, 箭头, 双箭头): the line is held
+  straight — it is pulled onto the horizontal or onto the vertical, whichever
+  way the cursor went.
+* The **长度 mm** field of the properties panel gives the line its length in
+  millimetres.  A line keeps the direction it points in and is only made
+  longer or shorter; every other element is scaled, so that it keeps its
+  proportions, and it grows about its own middle.
+
+The **宽 mm** and **高 mm** fields give the box of an element its size; all
+three fields follow one another, so the panel always shows what the element
+really is.
 
 **角度** turns an element: it keeps its own shape, so a rectangle that is
 turned is still a rectangle and not the box around it.  The same field
@@ -716,6 +743,53 @@ the way a brace looks.
 The window opens as large as the screen allows.  A window whose lower
 edge lies off-screen cannot have its border dragged, and the user is left
 with a window that will not budge.
+
+### Keyboard shortcuts
+
+Everything that is used every day can be reached by the keyboard as well as
+by the button.  The **快捷键…** button in the toolbar shows the whole list.
+
+*Tools* — a single letter picks the tool:
+
+| Key | Tool |
+| --- | ---- |
+| `V` | 选择/移动 (select and move) |
+| `H` | 移动画布 (move the canvas) |
+| `L` | 直线 (line) |
+| `A` | 箭头 (arrow) |
+| `R` | 矩形 (rectangle) |
+| `E` | 椭圆 (ellipse) |
+| `T` | 文本 (text) |
+| `Shift`+`T` | 文本框 (text box) |
+
+*Commands*:
+
+| Key | Command |
+| --- | ------- |
+| `Ctrl`+`A` | Pick everything |
+| `Ctrl`+`D` | Copy the selection |
+| `Ctrl`+`G` / `Ctrl`+`U` | Group / ungroup |
+| `Ctrl`+`Z` / `Ctrl`+`Y` | Undo / redo |
+| `Ctrl`+`S` / `Ctrl`+`O` | Save the layout / open it |
+| `Ctrl`+`I` / `Ctrl`+`E` | Import a PDF / export a PDF |
+| `Ctrl`+`0` | Fit the sheet in the window |
+| `Delete` / `BackSpace` | Delete the selection |
+| `Escape` | Put the selection down |
+| Arrow keys | Move by 1 pt (`Shift`+arrow: 10 pt) |
+
+*Aligning and the same size*:
+
+| Key | Command |
+| --- | ------- |
+| `Ctrl`+`Shift`+`W` | 同宽 (the same width) |
+| `Ctrl`+`Shift`+`H` | 同高 (the same height) |
+| `Ctrl`+`Shift`+`D` | 等大 (the same size) |
+| `Ctrl`+`Shift`+`Left` / `Right` / `Up` / `Down` | 左 / 右 / 顶 / 底对齐 |
+| `Ctrl`+`Shift`+`C` | 水平居中 (centre horizontally) |
+| `Ctrl`+`Shift`+`M` | 垂直居中 (centre vertically) |
+
+While the user is typing into a box, a letter is a letter and not a
+shortcut.
 
 ### The graphic elements
 

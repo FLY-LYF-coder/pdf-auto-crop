@@ -200,6 +200,95 @@ TOOL_BY_NAME: Dict[str, str] = dict(TOOL_CHOICES)
 TOOL_NAME_BY_KIND: Dict[str, str] = {kind: name for name, kind in TOOL_CHOICES}
 
 
+@dataclasses.dataclass(frozen=True)
+class Shortcut:
+    """One keyboard shortcut of the sheet.
+
+    The table of the shortcuts is the one the help window shows, so the two
+    can never disagree about what a key does.
+    """
+
+    #: The key sequence, as Tk writes it: "Control-Shift-D".
+    sequence: str
+    #: What the key does, in the user's words.
+    label: str
+    #: The method of the panel that does it.
+    method: str
+    #: What the method is given.
+    args: Tuple[Any, ...] = ()
+    #: Whether the shortcut changes the sheet.  Such a key waits while the
+    #: user is typing: a letter written into a box is a letter.
+    editing: bool = False
+
+
+#: The shortcuts of the commands.  The file operations work wherever the
+#: cursor is; the ones that change the sheet wait until the user stops
+#: typing.
+SHORTCUTS: Tuple[Shortcut, ...] = (
+    Shortcut("Control-a", "全选", "_select_all", (), True),
+    Shortcut("Control-d", "复制一份", "_duplicate_selected", (), True),
+    Shortcut("Control-Shift-W", "同宽", "_match_size", ("width",), True),
+    Shortcut("Control-Shift-H", "同高", "_match_size", ("height",), True),
+    Shortcut("Control-Shift-D", "等大", "_match_size", ("both",), True),
+    Shortcut("Control-Shift-Left", "左对齐", "_align",
+             (comp.ALIGN_LEFT,), True),
+    Shortcut("Control-Shift-Right", "右对齐", "_align",
+             (comp.ALIGN_RIGHT,), True),
+    Shortcut("Control-Shift-Up", "顶对齐", "_align",
+             (comp.ALIGN_TOP,), True),
+    Shortcut("Control-Shift-Down", "底对齐", "_align",
+             (comp.ALIGN_BOTTOM,), True),
+    Shortcut("Control-Shift-C", "水平居中", "_align",
+             (comp.ALIGN_HCENTER,), True),
+    Shortcut("Control-Shift-M", "垂直居中", "_align",
+             (comp.ALIGN_VCENTER,), True),
+    Shortcut("Control-s", "保存布局", "_save_layout"),
+    Shortcut("Control-o", "打开布局", "_open_layout"),
+    Shortcut("Control-i", "导入 PDF", "_import_pdf"),
+    Shortcut("Control-e", "导出 PDF", "_export"),
+    Shortcut("Control-0", "适应窗口", "_zoom_fit"),
+)
+
+#: The keys that pick a tool: the key, the tool, and the name to show.
+TOOL_KEYS: Tuple[Tuple[str, str, str], ...] = (
+    ("v", "select", "选择/移动"),
+    ("h", TOOL_PAN, "移动画布"),
+    ("l", comp.SHAPE_LINE, "直线"),
+    ("a", comp.SHAPE_ARROW, "箭头"),
+    ("r", comp.SHAPE_RECT, "矩形"),
+    ("e", comp.SHAPE_ELLIPSE, "椭圆"),
+    ("t", TOOL_TEXT, "文本"),
+    ("T", TOOL_TEXTBOX, "文本框"),
+)
+
+#: The widgets where a letter is a letter and not a shortcut.
+TYPING_WIDGETS = ("Entry", "TEntry", "Text", "Spinbox", "TSpinbox",
+                  "TCombobox", "Listbox")
+
+
+def _key_text(sequence: str) -> str:
+    """How a key is written for the user.
+
+    Tk writes "Control-Shift-D"; the user reads "Ctrl+Shift+D".  A single
+    capital letter means the shift key is held down with it.
+    """
+    if "-" not in sequence:
+        if len(sequence) == 1:
+            return ("Shift+" + sequence if sequence.isupper()
+                    else sequence.upper())
+        return sequence
+    names = {"Control": "Ctrl", "Shift": "Shift", "Alt": "Alt"}
+    parts = []
+    for part in sequence.split("-"):
+        if part in names:
+            parts.append(names[part])
+        elif len(part) == 1:
+            parts.append(part.upper())
+        else:
+            parts.append(part)
+    return "+".join(parts)
+
+
 class _Hint:
     """A little note that appears when the cursor rests on something."""
 
@@ -1191,6 +1280,10 @@ class ComposePanel(tk.Frame):
         self._sel_tables: List[int] = []
         #: The labels that are picked, by the figure they belong to.
         self._sel_labels: List[int] = []
+        #: The object that was picked last, as ``(kind, index)``.  It is the
+        #: reference the tools that work on several objects need -- "make
+        #: them the same size" measures the others against it.
+        self._last_picked: Optional[Tuple[str, int]] = None
         #: The pictures of the gradients, kept so that Tk does not forget
         #: them.
         self._shape_photos: List[ImageTk.PhotoImage] = []
@@ -1505,6 +1598,8 @@ class ComposePanel(tk.Frame):
             row=0, column=23, padx=6, sticky="e")
         ttk.Button(bar, text="导出 PDF…", command=self._export).grid(
             row=0, column=24, padx=12, sticky="e")
+        ttk.Button(bar, text="快捷键…", command=self._show_shortcuts).grid(
+            row=0, column=25, padx=(0, 6), sticky="e")
 
         # The tools and the graphic elements are shown in the panel on the
         # left, each one as it looks -- a name in a list says much less
@@ -1513,7 +1608,8 @@ class ComposePanel(tk.Frame):
         tools = ttk.Frame(bar)
         tools.grid(row=1, column=0, columnspan=24, sticky="w", pady=(6, 0))
         ttk.Label(
-            tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐",
+            tools, text="滚轮缩放画布 · 中键平移；Ctrl+点击 可多选并对齐；"
+                        "V/L/R/E/T 换工具，Ctrl+A 全选，快捷键见『快捷键…』",
             style="Hint.TLabel",
         ).pack(side=tk.LEFT)
 
@@ -1605,6 +1701,7 @@ class ComposePanel(tk.Frame):
         for key in ("<Left>", "<Right>", "<Up>", "<Down>"):
             self.canvas.bind(key, self._on_key)
             self.canvas.bind(f"<Shift-{key[1:-1]}>", self._on_key)
+        self._bind_shortcuts()
 
         # -- properties
         right = ttk.Labelframe(body, text="属性", style="Section.TLabelframe",
@@ -2042,20 +2139,30 @@ class ComposePanel(tk.Frame):
         ttk.Label(tab, text="度", style="Hint.TLabel").grid(
             row=7, column=2, sticky="w", padx=(4, 0))
 
-        ttk.Label(tab, text="内容").grid(row=8, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="长度 mm").grid(row=8, column=0, sticky="w", pady=3)
+        self.var_shape_length = tk.StringVar(value="")
+        self.ent_shape_length = ttk.Entry(
+            tab, textvariable=self.var_shape_length, width=6)
+        self.ent_shape_length.grid(row=8, column=1, sticky="w", pady=3)
+        # The length has a handler of its own: it is not a style, and it
+        # must not be put back by the other fields of the panel.
+        self.var_shape_length.trace_add(
+            "write", lambda *_a: self._on_length_changed())
+
+        ttk.Label(tab, text="内容").grid(row=9, column=0, sticky="w", pady=3)
         self.var_shape_text = tk.StringVar(value="")
         self.ent_shape_text = ttk.Entry(tab, textvariable=self.var_shape_text)
-        self.ent_shape_text.grid(row=8, column=1, columnspan=2, sticky="ew", pady=3)
+        self.ent_shape_text.grid(row=9, column=1, columnspan=2, sticky="ew", pady=3)
         self.var_shape_text.trace_add(
             "write", lambda *_a: self._on_shape_changed())
 
-        ttk.Label(tab, text="文字字号").grid(row=9, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="文字字号").grid(row=10, column=0, sticky="w", pady=3)
         self.var_shape_text_size = tk.StringVar(value="9")
         self.spin_shape_text_size = ttk.Spinbox(
             tab, from_=4, to=48, increment=1,
             textvariable=self.var_shape_text_size, width=6,
         )
-        self.spin_shape_text_size.grid(row=9, column=1, sticky="w", pady=3)
+        self.spin_shape_text_size.grid(row=10, column=1, sticky="w", pady=3)
         self.var_shape_text_size.trace_add(
             "write", lambda *_a: self._on_shape_changed())
 
@@ -2067,29 +2174,29 @@ class ComposePanel(tk.Frame):
         self.chk_shape_formula = ttk.Checkbutton(
             tab, text="LaTeX 公式", variable=self.var_shape_formula,
             command=self._on_shape_formula_toggled)
-        self.chk_shape_formula.grid(row=10, column=0, sticky="w", pady=3)
+        self.chk_shape_formula.grid(row=11, column=0, sticky="w", pady=3)
 
         # The size of the element: the width and the height, in millimetres,
         # so it can be set exactly instead of being dragged out by hand.
-        ttk.Label(tab, text="宽 mm").grid(row=11, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="宽 mm").grid(row=12, column=0, sticky="w", pady=3)
         self.var_shape_w = tk.StringVar(value="")
         self.ent_shape_w = ttk.Entry(tab, textvariable=self.var_shape_w, width=6)
-        self.ent_shape_w.grid(row=11, column=1, sticky="w", pady=3)
+        self.ent_shape_w.grid(row=12, column=1, sticky="w", pady=3)
         self.var_shape_w.trace_add("write", lambda *_a: self._on_shape_changed())
 
-        ttk.Label(tab, text="高 mm").grid(row=12, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="高 mm").grid(row=13, column=0, sticky="w", pady=3)
         self.var_shape_h = tk.StringVar(value="")
         self.ent_shape_h = ttk.Entry(tab, textvariable=self.var_shape_h, width=6)
-        self.ent_shape_h.grid(row=12, column=1, sticky="w", pady=3)
+        self.ent_shape_h.grid(row=13, column=1, sticky="w", pady=3)
         self.var_shape_h.trace_add("write", lambda *_a: self._on_shape_changed())
 
-        ttk.Label(tab, text="渐变色").grid(row=13, column=0, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变色").grid(row=14, column=0, sticky="w", pady=3)
         self.var_shape_gradient = tk.BooleanVar(value=False)
         self.chk_shape_gradient = ttk.Checkbutton(
             tab, text="渐变填充", variable=self.var_shape_gradient,
             command=self._on_shape_changed)
-        self.chk_shape_gradient.grid(row=13, column=1, sticky="w", pady=3)
-        ttk.Label(tab, text="渐变色").grid(row=14, column=0, sticky="w", pady=3)
+        self.chk_shape_gradient.grid(row=14, column=1, sticky="w", pady=3)
+        ttk.Label(tab, text="渐变色").grid(row=15, column=0, sticky="w", pady=3)
         self.var_shape_gradient_color = tk.StringVar(value="#3060d0")
         self.btn_shape_gradient_color = tk.Button(
             tab, width=6, background="#3060d0", relief=tk.RAISED,
@@ -2289,7 +2396,7 @@ class ComposePanel(tk.Frame):
             text="多选（Ctrl+点击）后：\n"
                  "对齐 = 彼此对齐；单个时对齐到纸张\n"
                  "分布 = 首尾不动，中间等间距\n"
-                 "一样大 = 第一个跟第二个（先选的改）\n"
+                 "一样大 = 后选的是参照，其余全改成和它一样\n"
                  "编号也能单独选中一起对齐",
             style="Hint.TLabel", wraplength=190, justify=tk.LEFT,
         ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
@@ -3687,47 +3794,64 @@ class ComposePanel(tk.Frame):
                                     px + width * self._zoom, py))
         return box
 
-    def _draw_turned_text(self, idx: int, item: comp.TextItem) -> None:
-        """Show a turned text the way it will be printed."""
-        rendered = None
-        if item.formula:
-            from .tex import render_math
-            rendered = render_math(item.text, item.size)
-        else:
-            rendered = comp.render_text_pdf(item)
+    def _draw_turned_text(self, idx: int, item: comp.TextItem
+                          ) -> Optional[Tuple[float, float, float, float]]:
+        """Show a turned text the way it will be printed.
+
+        The very page the export writes is rendered and shown, and it is
+        put where the exporter puts it: the baseline starts at the text's
+        own place.  The sheet and the file therefore cannot disagree.
+
+        Returns:
+            The box the text takes on the canvas, or ``None`` when it
+            cannot be rendered.
+        """
+        rendered = comp.render_text_pdf(item)
         if rendered is None:
-            return
-        doc = fitz.open(str(rendered))
+            return None
+        doc = fitz.open(str(rendered.path))
         try:
             page = doc[0]
-            spans = [s for b in page.get_text("dict")["blocks"]
-                     for line in b.get("lines", []) for s in line["spans"]]
-            if not spans:
-                return
-            box = spans[0]["bbox"]
-            origin = spans[0]["origin"]
             # The raster has to match the zoom, so the text is the same
             # size on the canvas as it is on the sheet.
             render_dpi = int(round(max(36.0, 72.0 * self._zoom)))
-            pix = page.get_pixmap(dpi=render_dpi)
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            pix = page.get_pixmap(dpi=render_dpi, alpha=True)
+            img = Image.frombytes("RGBA", (pix.width, pix.height), pix.samples)
             scale = render_dpi / 72.0
-            # The ink, cropped out of the rendered page.
-            ink = img.crop((int(box[0] * scale), int(box[1] * scale),
-                            int(box[2] * scale) + 1,
-                            int(box[3] * scale) + 1))
+            # The ink of the page, cropped out of it.  The paper is
+            # transparent, so the ink is what is not.
+            alpha = img.getchannel("A")
+            box = alpha.getbbox()
+            if box is None:
+                return None
+            ink = img.crop(box)
             if abs(item.rotation) > 1e-6:
                 # Pillow turns anticlockwise; the sheet turns clockwise.
                 ink = ink.rotate(-item.rotation, expand=True,
                                  resample=Image.BICUBIC)
             photo = ImageTk.PhotoImage(ink)
             self._photo_cache[f"text{idx}"] = photo
-            # The middle of the ink, in the composition's user space.
-            cx = item.position.x + ((box[0] + box[2]) / 2 - origin[0])
-            cy = item.position.y - ((box[1] + box[3]) / 2 - origin[1])
-            px, py = self._to_canvas(cx, cy)
-            self.canvas.create_image(px, py, image=photo, anchor=tk.CENTER,
-                                     tags=("text", str(idx)))
+            # Where the baseline starts, in the page's own frame.
+            origin = rendered.origin
+            # The middle of the ink, in the same frame.
+            centre = fitz.Point((box[0] + box[2]) / 2 / scale,
+                                (box[1] + box[3]) / 2 / scale)
+            # The text is put where the exporter puts it: the baseline
+            # starts at the text's own place.  The ink is turned about its
+            # middle first, and the turned ink is moved so that the
+            # baseline still starts there.
+            turned = comp.rotate_point(
+                fitz.Point(origin.x - centre.x, origin.y - centre.y),
+                fitz.Point(0, 0), item.rotation)
+            px, py = self._to_canvas(item.position.x, item.position.y)
+            # The picture's own middle, in canvas pixels.
+            mid_x = ink.width / 2 + turned.x * scale
+            mid_y = ink.height / 2 + turned.y * scale
+            left = px - mid_x
+            top = py - mid_y
+            self.canvas.create_image(left, top, image=photo,
+                                     anchor=tk.NW, tags=("text", str(idx)))
+            return (left, top, left + ink.width, top + ink.height)
         finally:
             doc.close()
 
@@ -4182,6 +4306,29 @@ class ComposePanel(tk.Frame):
              + len(self._sel_texts) + len(self._sel_tables))
         self._status(f"框选了 {n} 个元素。")
 
+    def _note_the_last_pick(self, kind: Optional[str],
+                            index: Optional[int]) -> None:
+        """Remember which object was picked last.
+
+        The tools that work on several objects at once need a reference, and
+        the reference is the object the user picked last: they pick the one
+        they want the others to look like first.  An object that was picked
+        and then picked off again is not the reference any more.
+        """
+        if kind is None or index is None:
+            return
+        chosen = {
+            "figure": self._sel_figs,
+            "shape": self._sel_shapes,
+            "text": self._sel_texts,
+            "table": self._sel_tables,
+            "label": self._sel_labels,
+        }.get(kind)
+        if chosen is None or index not in chosen:
+            self._last_picked = None
+            return
+        self._last_picked = (kind, index)
+
     def _clear_selection(self) -> None:
         """Forget the selection, whichever kinds it held."""
         self._sel_figs = []
@@ -4190,6 +4337,7 @@ class ComposePanel(tk.Frame):
         self._sel_tables = []
         self._sel_labels = []
         self._last_kind = None
+        self._last_picked = None
 
     def _clamp_to_sheet_point(self, x: float, y: float) -> Tuple[float, float]:
         """A point pulled back onto the sheet.
@@ -4202,6 +4350,21 @@ class ComposePanel(tk.Frame):
         sheet = self._sheet_rect()
         return (min(max(x, sheet.x0), sheet.x1),
                 min(max(y, sheet.y0), sheet.y1))
+
+    def _shape_end(self, event: tk.Event, start: fitz.Point) -> fitz.Point:
+        """Where the graphic element that is being drawn ends.
+
+        The shift key holds a line straight: it is pulled onto the horizontal
+        or onto the vertical, whichever way the cursor went.  A line that is
+        exactly horizontal or exactly vertical cannot be drawn by hand, so
+        this is what makes it possible.
+        """
+        ux, uy = self._to_user(event.x, event.y)
+        ux, uy = self._clamp_to_sheet_point(ux, uy)
+        end = fitz.Point(ux, uy)
+        if (event.state & 0x0001) and self.tool in comp.LINE_KINDS:
+            end = comp.constrain_to_axis(start, end)
+        return end
 
     def _on_press(self, event: tk.Event) -> None:
         self.canvas.focus_set()
@@ -4405,6 +4568,8 @@ class ComposePanel(tk.Frame):
                                    "table-body"):
             mode = "selection-body"
 
+        self._note_the_last_pick(kind, index)
+
         self._drag_mode = mode
         self._drag_start = (event.x, event.y)
         self._drag_rect = None
@@ -4592,10 +4757,9 @@ class ComposePanel(tk.Frame):
             self._drag_rotate(event)
             return
         if self._drag_mode == "shape":
-            ux, uy = self._to_user(event.x, event.y)
-            ux, uy = self._clamp_to_sheet_point(ux, uy)
             if self._shape_preview is not None:
-                self._shape_preview.end = fitz.Point(ux, uy)
+                self._shape_preview.end = self._shape_end(
+                    event, self._shape_preview.start)
                 self._redraw()
             return
         if self._drag_mode == "selection-body":
@@ -4801,7 +4965,7 @@ class ComposePanel(tk.Frame):
             if (abs(ux - preview.start.x) > 1.0
                     or abs(uy - preview.start.y) > 1.0):
                 # A drag: the shape is exactly what was dragged out.
-                end = fitz.Point(ux, uy)
+                end = self._shape_end(event, preview.start)
             else:
                 # A click: the shape is placed with a sensible size, so a
                 # single click is enough to put one on the sheet.
@@ -4997,6 +5161,127 @@ class ComposePanel(tk.Frame):
         self._redo_step()
         return "break"
 
+    # -- the keyboard shortcuts ----------------------------------------------
+
+    def _bind_shortcuts(self) -> None:
+        """Bind the keyboard shortcuts.
+
+        They are bound on the window, so they work wherever the cursor is --
+        as long as the user is not typing into a box, where a letter is a
+        letter and not a command.
+        """
+        top = self.winfo_toplevel()
+        for shortcut in SHORTCUTS:
+            top.bind(f"<{shortcut.sequence}>",
+                     lambda e, s=shortcut: self._run_shortcut(s, e))
+        for key, _tool, _label in TOOL_KEYS:
+            top.bind(f"<KeyPress-{key}>", self._on_tool_key)
+
+    def _typing_in_a_field(self, widget: Any) -> bool:
+        """Whether the key press went into a box where a letter is a letter."""
+        try:
+            name = widget.winfo_class()
+        except Exception:  # noqa: BLE001 -- a widget that is gone
+            return True
+        return name in TYPING_WIDGETS
+
+    def _belongs_to_the_sheet(self, widget: Any) -> bool:
+        """Whether the key press came from this window and not from a dialog.
+
+        Tk hands a key to the widget that has the focus, and the window
+        itself takes the focus when nothing else has it -- so a key pressed
+        out of focus belongs to the sheet as well.
+        """
+        try:
+            path = str(widget)
+        except Exception:  # noqa: BLE001 -- a widget that is gone
+            return False
+        if path == str(self.winfo_toplevel()):
+            return True
+        return path.startswith(str(self))
+
+    def _run_shortcut(self, shortcut: Shortcut, event: tk.Event) -> None:
+        """Do what a shortcut says."""
+        if not self._belongs_to_the_sheet(event.widget):
+            return
+        if shortcut.editing and self._typing_in_a_field(event.widget):
+            # The user is typing: the key is a letter, not a command.
+            return
+        method = getattr(self, shortcut.method, None)
+        if method is None:
+            return
+        method(*shortcut.args)
+
+    def _on_tool_key(self, event: tk.Event) -> None:
+        """A key was pressed: it may pick a tool."""
+        if not self._belongs_to_the_sheet(event.widget):
+            return
+        if self._typing_in_a_field(event.widget):
+            return
+        for key, tool, _label in TOOL_KEYS:
+            if key != event.keysym:
+                continue
+            self._pick_tool(tool)
+            return
+
+    def _pick_tool(self, kind: str) -> None:
+        """Switch to another tool, as the dropdown does."""
+        name = TOOL_NAME_BY_KIND.get(kind)
+        if name is None:
+            return
+        self.var_tool.set(name)
+        self._on_tool_changed()
+
+    def _select_all(self) -> None:
+        """Pick every object on the sheet."""
+        self._sel_figs = list(range(len(self.composition.placements)))
+        self._sel_shapes = list(range(len(self.composition.shapes)))
+        self._sel_texts = list(range(len(self.composition.texts)))
+        self._sel_tables = list(range(len(self.composition.tables)))
+        self._sel_labels = []
+        self._last_kind = None
+        self._last_picked = None
+        self._sync_properties()
+        self._redraw()
+        n = (len(self._sel_figs) + len(self._sel_shapes)
+             + len(self._sel_texts) + len(self._sel_tables))
+        self._status(f"已选中 {n} 个元素。")
+
+    def _show_shortcuts(self) -> None:
+        """Show the list of the keyboard shortcuts."""
+        win = tk.Toplevel(self.winfo_toplevel())
+        win.title("快捷键")
+        win.transient(self.winfo_toplevel())
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text="工具", style="Section.TLabelframe").grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(frame, text="按键", style="Section.TLabelframe").grid(
+            row=0, column=1, sticky="w", padx=(20, 0), pady=(0, 4))
+        row = 1
+        for key, _tool, label in TOOL_KEYS:
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
+            ttk.Label(frame, text=_key_text(key)).grid(
+                row=row, column=1, sticky="w", padx=(20, 0))
+            row += 1
+        row += 1
+        ttk.Label(frame, text="命令", style="Section.TLabelframe").grid(
+            row=row, column=0, sticky="w", pady=(4, 4))
+        ttk.Label(frame, text="按键", style="Section.TLabelframe").grid(
+            row=row, column=1, sticky="w", padx=(20, 0), pady=(4, 4))
+        row += 1
+        for shortcut in SHORTCUTS:
+            ttk.Label(frame, text=shortcut.label).grid(row=row, column=0,
+                                                       sticky="w")
+            ttk.Label(frame, text=_key_text(shortcut.sequence)).grid(
+                row=row, column=1, sticky="w", padx=(20, 0))
+            row += 1
+        ttk.Label(
+            frame,
+            text="\n在文字框里打字时，普通字母不会被当成快捷键。",
+            style="Hint.TLabel", wraplength=320, justify=tk.LEFT,
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(10, 0))
+
     def _on_key(self, event: tk.Event) -> None:
         key = event.keysym
         # Ctrl+G groups the selection, Ctrl+U lets it go.
@@ -5150,6 +5435,8 @@ class ComposePanel(tk.Frame):
             state="normal" if has_shape else "disabled")
         self.spin_shape_rotation.configure(
             state="normal" if has_shape else "disabled")
+        self.ent_shape_length.configure(
+            state="normal" if has_shape else "disabled")
         self.ent_shape_text.configure(
             state="normal" if has_shape else "disabled")
         self.spin_shape_text_size.configure(
@@ -5175,6 +5462,8 @@ class ComposePanel(tk.Frame):
             # The size of the element, in the unit the panel shows.
             self.var_shape_w.set(f"{pt_to_mm(shape.rect.width):.1f}")
             self.var_shape_h.set(f"{pt_to_mm(shape.rect.height):.1f}")
+            self.var_shape_length.set(
+                f"{pt_to_mm(comp.shape_length(shape)):.1f}")
             self._set_swatch(self.btn_shape_color, shape.color)
             self._set_swatch(self.btn_shape_fill_color, shape.fill_rgb)
 
@@ -5346,7 +5635,69 @@ class ComposePanel(tk.Frame):
                     cx + size[0] / 2, cy + size[1] / 2), resize=True)
         self._set_swatch(self.btn_shape_color, color)
         self._set_swatch(self.btn_shape_fill_color, fill_color)
+        # The size of the element may have changed, so the length the panel
+        # shows has to be brought up to date.
+        self._refresh_the_shape_size_fields()
         self._redraw()
+
+    @_action
+    def _on_length_changed(self, event=None) -> None:
+        """Give the picked elements the length the panel asks for.
+
+        A line is made longer or shorter, keeping the direction it points
+        in; every other element is scaled, so that it keeps its
+        proportions.
+        """
+        if self._syncing:
+            # The panel is being filled in from the model.
+            return
+        if not self._sel_shapes:
+            return
+        length = self._shape_length()
+        if length is None:
+            return
+        for i in self._sel_shapes:
+            if not 0 <= i < len(self.composition.shapes):
+                continue
+            self.composition.shapes[i] = comp.set_shape_length(
+                self.composition.shapes[i], length)
+        self._refresh_the_shape_size_fields()
+        self._redraw()
+
+    def _shape_length(self) -> Optional[float]:
+        """The length the panel asks for, in points.
+
+        ``None`` when the panel does not say -- then the element keeps the
+        length it has.
+        """
+        try:
+            length = mm_to_pt(float(self.var_shape_length.get()))
+        except ValueError:
+            return None
+        if length <= 0:
+            return None
+        return length
+
+    def _refresh_the_shape_size_fields(self) -> None:
+        """Put the size of the picked element back into the panel.
+
+        The width, the height and the length say the same thing in three
+        ways, so one of them has to follow the other two.
+        """
+        if self._selected_shape is None:
+            return
+        if not 0 <= self._selected_shape < len(self.composition.shapes):
+            return
+        shape = self.composition.shapes[self._selected_shape]
+        saved = self._syncing
+        self._syncing = True
+        try:
+            self.var_shape_w.set(f"{pt_to_mm(shape.rect.width):.1f}")
+            self.var_shape_h.set(f"{pt_to_mm(shape.rect.height):.1f}")
+            self.var_shape_length.set(
+                f"{pt_to_mm(comp.shape_length(shape)):.1f}")
+        finally:
+            self._syncing = saved
 
     def _shape_size(self) -> Optional[Tuple[float, float]]:
         """The size the panel asks for, in points.
@@ -5630,40 +5981,58 @@ class ComposePanel(tk.Frame):
                     item.size = max(1.0, item.size * rect.width / width)
             item.position = fitz.Point(rect.x0, rect.y0)
 
+    def _reference_unit(self, units: List[Tuple[str, int, fitz.Rect]]
+                        ) -> Tuple[str, int, fitz.Rect]:
+        """The picked thing the others are measured against.
+
+        It is the one that was picked last: the user picks the element they
+        want the others to look like, and then picks the others.  When the
+        last pick is not in the selection any more -- it was deleted, or the
+        undo brought the sheet back -- the last of the picked things is used
+        instead.
+        """
+        picked = self._last_picked
+        if picked is not None:
+            kind, index = picked
+            for unit in units:
+                if unit[0] == kind and unit[1] == index:
+                    return unit
+                if unit[0] == "group":
+                    # A member of a group brings the whole group along, so
+                    # the group is what is measured.
+                    group = self.composition.groups[unit[1]]
+                    if group.holds(kind, index):
+                        return unit
+        return units[-1]
+
     @_action
     def _match_size(self, how: str) -> None:
-        """Make the first selected thing the size of the second.
+        """Make the picked things the size of the reference.
 
-        "width" and "height" keep the thing's own proportions; "both" makes
-        it exactly the other's size, which may stretch it.  A group is made
-        the size of the other as a whole.
+        The reference is the one that was picked last; it does not change.
+        Every other picked thing is made the size of it: "width" and
+        "height" keep the thing's own proportions, "both" makes it exactly
+        the other's size, which may stretch it.  A group is made the size of
+        the reference as a whole.
         """
         units = self._selection_units()
         if len(units) < 2:
-            self._status("选中两个元素：先选的要改，后选的是参照。")
+            self._status("至少选中两个元素：后选的是参照，其余的改成和它一样。")
             return
-        unit_a, unit_b = units[0], units[1]
-        source = self._box_of(unit_b)
-        target = self._box_of(unit_a)
-        if how == "width":
-            scale = source.width / target.width if target.width else 1.0
-            new = fitz.Rect(target.x0, target.y0,
-                            target.x0 + source.width,
-                            target.y0 + source.width * target.height / target.width)
-        elif how == "height":
-            new = fitz.Rect(target.x0, target.y0,
-                            target.x0 + source.height * target.width / target.height,
-                            target.y0 + source.height)
-        else:
-            new = fitz.Rect(target.x0, target.y0,
-                            target.x0 + source.width,
-                            target.y0 + source.height)
-        self._resize_unit(unit_a, new)
+        reference = self._reference_unit(units)
+        source = self._box_of(reference)
+        changed = 0
+        for unit in units:
+            if unit is reference:
+                continue
+            target = self._box_of(unit)
+            self._resize_unit(unit, comp.match_size_rect(target, source, how))
+            changed += 1
         self._redraw()
         name = {"width": "同宽", "height": "同高", "both": "等大"}[how]
         kind_name = {"figure": "图", "shape": "图形", "text": "文字",
-                     "label": "标签", "group": "组合"}[unit_a[0]]
-        self._status(f"已把{kind_name}改为与参照元素{name}。")
+                     "label": "标签", "group": "组合"}[reference[0]]
+        self._status(f"已把 {changed} 个元素改为与参照元素{kind_name}{name}。")
 
     def _array_dialog(self) -> None:
         """Ask how many rows and columns the array should have."""

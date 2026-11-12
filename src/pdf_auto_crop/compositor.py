@@ -2304,6 +2304,43 @@ def aligned_rect(rect: fitz.Rect, mode: str, target: float) -> fitz.Rect:
     return out
 
 
+#: The ways an element can be made the size of another one.
+MATCH_WIDTH = "width"
+MATCH_HEIGHT = "height"
+MATCH_BOTH = "both"
+
+
+def match_size_rect(target: fitz.Rect, source: fitz.Rect, how: str
+                    ) -> fitz.Rect:
+    """The box an element takes when it is made the size of another one.
+
+    "width" and "height" give the element the reference's width or height
+    and keep its own proportions; "both" gives it exactly the reference's
+    size, which may stretch it.  The element stays where it stands: the box
+    grows out of its own corner.
+
+    Args:
+        target: The box of the element that is to be changed.
+        source: The box of the reference element.
+        how: ``"width"``, ``"height"`` or ``"both"``.
+
+    Returns:
+        The box the element is to take.
+    """
+    if how == MATCH_WIDTH:
+        width = source.width
+        height = (width * target.height / target.width if target.width
+                  else target.height)
+    elif how == MATCH_HEIGHT:
+        height = source.height
+        width = (height * target.width / target.height if target.height
+                 else target.width)
+    else:
+        width, height = source.width, source.height
+    return fitz.Rect(target.x0, target.y0,
+                     target.x0 + width, target.y0 + height)
+
+
 #: The two directions a group can be spread out in.
 DISTRIBUTE_HORIZONTAL = "horizontal"
 DISTRIBUTE_VERTICAL = "vertical"
@@ -3042,6 +3079,80 @@ def boolean_bounds(shape: Shape) -> Optional[fitz.Rect]:
     return box
 
 
+#: The elements that are a straight segment from one point to another.
+LINE_KINDS = (SHAPE_LINE, SHAPE_ARROW, SHAPE_DOUBLE_ARROW)
+
+
+def constrain_to_axis(start: fitz.Point, end: fitz.Point) -> fitz.Point:
+    """The end of a line pulled onto the horizontal or the vertical.
+
+    The line follows the way the cursor went: a drag that went mostly
+    sideways becomes a horizontal line, one that went mostly up and down
+    becomes a vertical one.  This is what the shift key does while a line
+    is being drawn.
+    """
+    dx = end.x - start.x
+    dy = end.y - start.y
+    if abs(dx) >= abs(dy):
+        return fitz.Point(end.x, start.y)
+    return fitz.Point(start.x, end.y)
+
+
+def shape_length(shape: Shape) -> float:
+    """How long the element is, in points.
+
+    A line is as long as the distance between its two ends; every other
+    element is as long as the longer side of its box.
+    """
+    if shape.kind in LINE_KINDS:
+        return math.hypot(shape.end.x - shape.start.x,
+                          shape.end.y - shape.start.y)
+    rect = shape.rect
+    return max(rect.width, rect.height)
+
+
+def set_shape_length(shape: Shape, length: float) -> Shape:
+    """The element with the given length.
+
+    A line keeps the direction it points in and is only made longer or
+    shorter.  Every other element is scaled, so that it keeps its
+    proportions, and it grows about its own middle -- it stays where it
+    stands.
+    """
+    if length <= 0.0:
+        return shape
+    if shape.kind in LINE_KINDS:
+        dx = shape.end.x - shape.start.x
+        dy = shape.end.y - shape.start.y
+        current = math.hypot(dx, dy)
+        if current <= 1e-9:
+            return shape
+        scale = length / current
+        return dataclasses.replace(shape, end=fitz.Point(
+            shape.start.x + dx * scale, shape.start.y + dy * scale))
+    rect = shape.rect
+    long_side = max(rect.width, rect.height)
+    if long_side <= 1e-9:
+        return shape
+    scale = length / long_side
+    cx = (rect.x0 + rect.x1) / 2
+    cy = (rect.y0 + rect.y1) / 2
+    width = rect.width * scale
+    height = rect.height * scale
+    # The element keeps the direction it was drawn in: an arrow that was
+    # drawn to the left still points to the left.
+    if shape.end.x >= shape.start.x:
+        x0, x1 = cx - width / 2, cx + width / 2
+    else:
+        x0, x1 = cx + width / 2, cx - width / 2
+    if shape.end.y >= shape.start.y:
+        y0, y1 = cy - height / 2, cy + height / 2
+    else:
+        y0, y1 = cy + height / 2, cy - height / 2
+    return dataclasses.replace(shape, start=fitz.Point(x0, y0),
+                               end=fitz.Point(x1, y1))
+
+
 def shift_shape(shape: Shape, dx: float, dy: float) -> Shape:
     """Move a shape, and the shapes a result was made from."""
     parts = [dataclasses.replace(
@@ -3349,27 +3460,44 @@ def _draw_shape_caption(page: fitz.Page, shape: Shape, box: fitz.Rect,
                      color=shape.caption_rgb)
 
 
+def rendered_origin(rendered: Path) -> Optional[fitz.Point]:
+    """Where the baseline starts on a rendered page.
+
+    The point is in the page's own frame, where the y grows downwards.
+    """
+    doc = fitz.open(str(rendered))
+    try:
+        page = doc[0]
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    return fitz.Point(*span["origin"])
+        return None
+    finally:
+        doc.close()
+
+
 def place_rendered(page: fitz.Page, rendered: Path, anchor: fitz.Point,
-                   page_height: float, angle: float = 0.0) -> None:
+                   page_height: float, angle: float = 0.0,
+                   origin: Optional[fitz.Point] = None) -> None:
     """Put a rendered page on the page so that its text starts at ``anchor``.
 
     ``anchor`` is in the composition's user space.  ``angle`` turns the
     content clockwise about its own middle, and the anchor travels with the
     text -- so turning a caption does not make it jump away.
+
+    ``origin`` is where the baseline starts on the rendered page; when it is
+    not given, the first line of the page is taken for it.
     """
     doc = fitz.open(str(rendered))
     try:
         src = doc[0]
         w, h = src.rect.width, src.rect.height
         # Where the baseline starts inside the rendered page.
-        origin = fitz.Point(0.0, h * 0.8)
-        for block in src.get_text("dict")["blocks"]:
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    origin = fitz.Point(*span["origin"])
-                    break
-                break
-            break
+        if origin is None:
+            origin = rendered_origin(rendered)
+        if origin is None:
+            origin = fitz.Point(0.0, h * 0.8)
         centre = fitz.Point(w / 2, h / 2)
         d = fitz.Point(origin.x - centre.x, origin.y - centre.y)
         rad = math.radians(angle)
@@ -3385,7 +3513,11 @@ def place_rendered(page: fitz.Page, rendered: Path, anchor: fitz.Point,
                            target_centre.y - size.height / 2,
                            target_centre.x + size.width / 2,
                            target_centre.y + size.height / 2)
-        page.show_pdf_page(target, doc, 0, rotate=angle)
+        # MuPDF turns the page it inserts anticlockwise, so the angle is
+        # given the other way round: a positive angle turns the text
+        # clockwise, the way the shapes are turned and the way the canvas
+        # shows it.
+        page.show_pdf_page(target, doc, 0, rotate=-angle)
     finally:
         doc.close()
 
@@ -3396,15 +3528,61 @@ def draw_formula(page: fitz.Page, formula_pdf: Path, anchor: fitz.Point,
     place_rendered(page, formula_pdf, anchor, page_height, angle)
 
 
-def render_text_pdf(item: "TextItem") -> Optional[Path]:
+@dataclass
+class RenderedText:
+    """A piece of text written to a page of its own.
+
+    The page is what the canvas shows and what the export places, so the
+    two cannot disagree about where the text stands.
+    """
+
+    #: The rendered page.
+    path: Path
+    #: Where the baseline starts on that page, in the page's own frame --
+    #: the y grows downwards there.
+    origin: fitz.Point
+
+
+def render_text_pdf(item: "TextItem") -> Optional[RenderedText]:
     """Write a piece of text to a one-page PDF, as real text.
 
     A turned text cannot be inserted straight onto the page -- MuPDF writes
     text along the baseline only -- so it is written here first and then
     placed with an angle, which keeps it real, selectable text.
+
+    Ordinary words are written as text and mathematics is typeset, so a text
+    that holds both comes out as it should -- turned or not.
     """
     if not item.text:
         return None
+    parts = None
+    if item.formula:
+        from . import tex
+        parts = tex.math_parts(item.text, item.size)
+    if parts is not None and len(parts) == 1 and parts[0][1]:
+        # It is nothing but mathematics: it is typeset as it is.
+        from .tex import render_math
+        rendered = render_math(parts[0][0], item.size)
+        if rendered is None:
+            return None
+        origin = rendered_origin(rendered)
+        if origin is None:
+            return None
+        return RenderedText(rendered, origin)
+    if parts:
+        return render_mixed_pdf(item, parts)
+    return render_plain_pdf(item)
+
+
+def _text_cache_dir() -> Path:
+    """Where the rendered texts are kept."""
+    cache = Path(tempfile.gettempdir()) / "pdf_auto_crop_text"
+    cache.mkdir(parents=True, exist_ok=True)
+    return cache
+
+
+def render_plain_pdf(item: "TextItem") -> Optional[RenderedText]:
+    """Write ordinary words to a one-page PDF, as real text."""
     fontname, fontfile = item.font_info()
     width = text_width(item.text, fontname, item.size, fontfile)
     height = item.size * 1.6
@@ -3413,11 +3591,10 @@ def render_text_pdf(item: "TextItem") -> Optional[Path]:
         f"{item.text}\x00{item.size:.3f}\x00{fontname}\x00{fontfile}\x00"
         f"{item.color}\x00{item.bold}\x00{item.italic}".encode("utf-8")
     ).hexdigest()[:24]
-    cache = Path(tempfile.gettempdir()) / "pdf_auto_crop_text"
-    cache.mkdir(parents=True, exist_ok=True)
-    out_path = cache / f"text_{key}.pdf"
+    out_path = _text_cache_dir() / f"text_{key}.pdf"
+    origin = fitz.Point(pad, pad + item.size * 0.95)
     if out_path.exists():
-        return out_path
+        return RenderedText(out_path, origin)
     doc = fitz.open()
     try:
         page = doc.new_page(width=width + 2 * pad, height=height + 2 * pad)
@@ -3431,7 +3608,69 @@ def render_text_pdf(item: "TextItem") -> Optional[Path]:
         doc.save(str(out_path), garbage=4, deflate=True)
     finally:
         doc.close()
-    return out_path if out_path.exists() else None
+    if not out_path.exists():
+        return None
+    return RenderedText(out_path, origin)
+
+
+def render_mixed_pdf(item: "TextItem",
+                     parts: Sequence[Tuple[str, bool]]
+                     ) -> Optional[RenderedText]:
+    """Write a text that holds words and mathematics to a one-page PDF.
+
+    The words are written as text, in the face the user chose, and the
+    mathematics is typeset.  The parts follow one another along the
+    baseline, the way they are written.
+    """
+    from .tex import render_math
+    fontname, fontfile = item.font_info()
+    widths: List[float] = []
+    for text, is_math in parts:
+        if not is_math:
+            widths.append(text_width(text, fontname, item.size, fontfile))
+            continue
+        rendered = render_math(text, item.size)
+        widths.append(formula_width(rendered) if rendered is not None else 0.0)
+    total = sum(widths)
+    height = item.size * 1.6
+    pad = max(1.0, item.size * 0.3)
+    baseline = pad + item.size * 0.95
+    key = hashlib.sha256(
+        f"{item.text}\x00{item.size:.3f}\x00{fontname}\x00{fontfile}\x00"
+        f"{item.color}\x00{item.bold}\x00{item.italic}".encode("utf-8")
+    ).hexdigest()[:24]
+    out_path = _text_cache_dir() / f"mixed_{key}.pdf"
+    origin = fitz.Point(pad, baseline)
+    if out_path.exists():
+        return RenderedText(out_path, origin)
+    doc = fitz.open()
+    try:
+        page = doc.new_page(width=total + 2 * pad, height=height + 2 * pad)
+        page_height = height + 2 * pad
+        x = pad
+        for (text, is_math), width in zip(parts, widths):
+            if not is_math:
+                page.insert_text(
+                    fitz.Point(x, baseline), text, fontsize=item.size,
+                    fontname=fontname, fontfile=fontfile or None,
+                    color=item.color,
+                )
+            else:
+                rendered = render_math(text, item.size)
+                if rendered is not None:
+                    # The anchor is in the page's own frame here, where the
+                    # y grows downwards.
+                    draw_formula(page, rendered,
+                                 fitz.Point(x, page_height - baseline),
+                                 page_height)
+            x += width
+        subset_fonts(doc)
+        doc.save(str(out_path), garbage=4, deflate=True)
+    finally:
+        doc.close()
+    if not out_path.exists():
+        return None
+    return RenderedText(out_path, origin)
 
 
 def formula_width(rendered: Path) -> float:
@@ -3462,6 +3701,18 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
     from . import tex
     anchor = fitz.Point(item.position.x, page_height - item.position.y)
 
+    if abs(item.rotation) > 1e-6:
+        # A turned text is written on its own page and then placed with an
+        # angle, so it stays real text rather than a picture.  This is the
+        # only way to turn text, so it is done for every kind of text --
+        # words, mathematics, or both.
+        rendered = render_text_pdf(item)
+        if rendered is not None:
+            place_rendered(page, rendered.path, item.position, page_height,
+                           item.rotation, origin=rendered.origin)
+            _draw_text_frame(page, item, anchor, page_height)
+            return
+
     if item.formula:
         parts = tex.math_parts(item.text, item.size)
         if parts is not None and len(parts) > 1:
@@ -3480,16 +3731,6 @@ def draw_text_item(page: fitz.Page, item: TextItem, page_height: float,
                              item.rotation)
                 _draw_text_frame(page, item, anchor, page_height)
                 return
-
-    if abs(item.rotation) > 1e-6:
-        # A turned text is written on its own page and then placed with an
-        # angle, so it stays real text rather than a picture.
-        rendered = render_text_pdf(item)
-        if rendered is not None:
-            place_rendered(page, rendered, item.position, page_height,
-                           item.rotation)
-            _draw_text_frame(page, item, anchor, page_height)
-            return
 
     fontname, fontfile = item.font_info()
     _note_font(written, fontname, item.text)

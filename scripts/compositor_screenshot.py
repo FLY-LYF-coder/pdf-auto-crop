@@ -219,19 +219,38 @@ def _click(win, x: int, y: int, ctrl: bool = False) -> None:
     win.update()
 
 
-def _drag(win, x0: int, y0: int, x1: int, y1: int) -> None:
-    """Press, move, release -- the three events a real drag produces."""
+def _drag(win, x0: int, y0: int, x1: int, y1: int, state: int = 0) -> None:
+    """Press, move, release -- the three events a real drag produces.
+
+    The button that is held down is part of the event's state, and without
+    it the motion events do not look like a drag at all: Tk hands them to
+    nobody.
+    """
     canvas = win.canvas
-    canvas.event_generate("<Button-1>", x=x0, y=y0)
+    held = state | 0x0100
+    canvas.event_generate("<Button-1>", x=x0, y=y0, state=held)
     win.update()
     for step in range(1, 5):
         canvas.event_generate(
             "<B1-Motion>",
             x=x0 + (x1 - x0) * step // 4,
             y=y0 + (y1 - y0) * step // 4,
+            state=held,
         )
         win.update()
-    canvas.event_generate("<ButtonRelease-1>", x=x1, y=y1)
+    canvas.event_generate("<ButtonRelease-1>", x=x1, y=y1, state=state)
+    win.update()
+
+
+def _press_key(win, keysym: str, state: int = 0) -> None:
+    """Press a key on the canvas, the way a user does.
+
+    The focus is forced: another program on the desktop may hold it, and
+    then the key would go nowhere.
+    """
+    win.canvas.focus_force()
+    win.update()
+    win.canvas.event_generate(f"<KeyPress-{keysym}>", state=state)
     win.update()
 
 
@@ -1993,6 +2012,91 @@ def main() -> int:
     check("the figures are found without holding the window up",
           len(win.palette) > n_palette, f"{len(win.palette)} entries")
     check("the import ran in a thread", alive)
+
+    # -- the keyboard shortcuts ---------------------------------------------
+    _press_key(win, "l")
+    check("a letter picks the tool",
+          win.tool == comp.SHAPE_LINE, win.tool)
+    _press_key(win, "v")
+    check("a letter goes back to moving things",
+          win.tool == "select", win.tool)
+    n_figs = len(win.composition.placements)
+    _press_key(win, "a", 0x0004)
+    check("ctrl+a picks everything",
+          len(win._sel_figs) == n_figs,
+          f"{len(win._sel_figs)} of {n_figs}")
+
+    # -- several elements at once -------------------------------------------
+    win._clear_selection()
+    win.update()
+    picked = list(range(min(3, len(win.composition.placements))))
+    win._sel_figs = picked
+    win._last_picked = ("figure", picked[-1])
+    win._match_size("width")
+    win.update()
+    widths = [win.composition.placements[i].rect.width for i in picked]
+    check("several figures are made the same width",
+          len(picked) > 1 and len({round(w, 3) for w in widths}) == 1,
+          str([round(w, 1) for w in widths]))
+    _press_key(win, "W", 0x0004 | 0x0001)
+    widths = [win.composition.placements[i].rect.width for i in picked]
+    check("ctrl+shift+w makes them the same width",
+          len({round(w, 3) for w in widths}) == 1,
+          str([round(w, 1) for w in widths]))
+
+    # -- a line can be held straight, and given a length --------------------
+    _pick_tool(win, compositor_gui.TOOL_NAME_BY_KIND[comp.SHAPE_LINE])
+    win._clear_selection()
+    sheet = win._sheet_rect()
+    n_shapes = len(win.composition.shapes)
+    x0, y0 = win._to_canvas(sheet.x0 + sheet.width * 0.15,
+                             sheet.y0 + sheet.height * 0.5)
+    x1, y1 = win._to_canvas(sheet.x0 + sheet.width * 0.45,
+                             sheet.y0 + sheet.height * 0.5 + 14)
+    _drag(win, int(x0), int(y0), int(x1), int(y1), state=0x0001)
+    drawn = len(win.composition.shapes) > n_shapes
+    check("the shift key holds the line straight",
+          drawn and abs(win.composition.shapes[-1].start.y
+                        - win.composition.shapes[-1].end.y) < 1.0,
+          "" if not drawn else
+          f"{win.composition.shapes[-1].start.y:.2f} -> "
+          f"{win.composition.shapes[-1].end.y:.2f}")
+    win._clear_selection()
+    win._sel_shapes = [len(win.composition.shapes) - 1]
+    win._last_kind = "shape"
+    win._sync_properties()
+    win.update()
+    win.var_shape_length.set("20")
+    win.update()
+    length = comp.shape_length(win.composition.shapes[-1])
+    check("the length of the line can be written in millimetres",
+          abs(length - 20 * 72 / 25.4) < 1.5, f"{length:.1f} pt")
+    _pick_tool(win, compositor_gui.TOOL_NAME_BY_KIND["select"])
+
+    # -- a turned text: the sheet and the file must agree --------------------
+    win._clear_selection()
+    win.composition.texts.append(comp.TextItem(
+        text="Turned", position=fitz.Point(sheet.x0 + 40, sheet.y0 + 40),
+        size=14.0, rotation=90.0))
+    win.update()
+    win._redraw()
+    win.update()
+    turned = WORK / "turned.pdf"
+    comp.export_composition(
+        win.composition, turned, fit_to_content=False,
+        page_size=(win.sheet_w, win.sheet_h))
+    page = fitz.open(str(turned))[0]
+    spans = [s for b in page.get_text("dict")["blocks"]
+             for line in b.get("lines", []) for s in line["spans"]]
+    turned_spans = [s for s in spans if "Turned" in s.get("text", "")]
+    check("a turned text is turned in the file",
+          bool(turned_spans)
+          and turned_spans[0]["bbox"][3] - turned_spans[0]["bbox"][1]
+          > turned_spans[0]["bbox"][2] - turned_spans[0]["bbox"][0],
+          str([tuple(round(v, 1) for v in s["bbox"])
+               for s in turned_spans]))
+    win.composition.texts.pop()
+    win.update()
 
     # -- taking a figure out of the palette -------------------------------
     # Last, because it takes a figure off the sheet.
